@@ -216,22 +216,29 @@ def save_monthly_archive(
     df_detail: Optional[pd.DataFrame],
     df_count_l2: Optional[pd.DataFrame],
 ) -> Dict[str, Any]:
-    """Upsert báo cáo tháng và tự động prune nếu vượt quá MAX_MONTHLY_ARCHIVES.
-
-    Args:
-        year_month: Chuỗi "YYYY-MM", VD "2026-07"
-        label: Nhãn hiển thị, VD "Tháng 07/2026 — Khánh Hội"
-        df_summary: DataFrame báo cáo tổng hợp TH-HANG HOA
-        df_recon: DataFrame tồn kho đối soát
-        df_detail: DataFrame chi tiết serial
-        df_count_l2: DataFrame kiểm đếm lần 2
-    """
+    """Upsert báo cáo tháng và tự động prune nếu vượt quá MAX_MONTHLY_ARCHIVES."""
     client = get_client()
+
+    # Lưu label vào trong summary JSONB để tránh phụ thuộc vào cột label riêng
+    summary_with_meta = None
+    if df_summary is not None:
+        import json as _json
+        raw = _json.loads(df_summary.to_json(orient="split", date_format="iso"))
+        raw["_label"] = label
+        raw["_year_month"] = year_month
+        import zlib as _zlib, base64 as _b64
+        compressed = _zlib.compress(_json.dumps(raw).encode("utf-8"), level=6)
+        summary_with_meta = _b64.b64encode(compressed).decode("ascii")
+    else:
+        # Không có df_summary nhưng vẫn cần lưu label
+        import json as _json, zlib as _zlib, base64 as _b64
+        raw = {"columns": [], "data": [], "_label": label, "_year_month": year_month}
+        compressed = _zlib.compress(_json.dumps(raw).encode("utf-8"), level=6)
+        summary_with_meta = _b64.b64encode(compressed).decode("ascii")
 
     row = {
         "year_month": year_month,
-        "label": label,
-        "summary": _compress_df(df_summary),
+        "summary": summary_with_meta,
         "df_recon": _compress_df(df_recon),
         "df_detail": _compress_df(df_detail),
         "df_count_l2": _compress_df(df_count_l2),
@@ -263,15 +270,28 @@ def save_monthly_archive(
 
 @st.cache_data(ttl=120, show_spinner=False)
 def list_monthly_archives() -> List[Dict[str, Any]]:
-    """Trả về danh sách các tháng đã lưu, mới nhất trước."""
+    """Trả về danh sách các tháng đã lưu, mới nhất trước.
+    Không select cột 'label' để tương thích cả bảng cũ lẫn mới.
+    """
     response = (
         get_client()
         .table("monthly_archives")
-        .select("id, year_month, label, created_at, updated_at")
+        .select("id, year_month, created_at, updated_at")
         .order("year_month", desc=True)
         .execute()
     )
-    return response.data or []
+    rows = response.data or []
+    # Tự tạo label từ year_month nếu không có cột label
+    for r in rows:
+        if "label" not in r or not r.get("label"):
+            try:
+                import datetime as _dt
+                ym = r["year_month"]  # "2026-07"
+                y, m = ym.split("-")
+                r["label"] = f"Tháng {m}/{y}"
+            except Exception:
+                r["label"] = r.get("year_month", "")
+    return rows
 
 
 def load_monthly_archive(year_month: str) -> Dict[str, Any]:
@@ -287,10 +307,39 @@ def load_monthly_archive(year_month: str) -> Dict[str, Any]:
     if not response.data:
         raise RuntimeError(f"Không tìm thấy archive tháng {year_month}.")
     rec = response.data
+
+    # Lấy label: ưu tiên từ cột label, rồi từ summary._label, rồi tự tạo
+    label = rec.get("label", "") or ""
+    df_sum = _decompress_df(rec.get("summary"))
+    if not label and df_sum is None:
+        # Thử đọc label từ summary raw (chưa decompress)
+        pass
+    # Nếu summary là base64 string, thử đọc _label từ bên trong
+    _sum_raw = rec.get("summary")
+    if not label and isinstance(_sum_raw, str):
+        try:
+            import zlib as _z, base64 as _b, json as _j
+            _payload = _j.loads(_z.decompress(_b.b64decode(_sum_raw.encode())).decode())
+            label = _payload.get("_label", "")
+            if df_sum is None and _payload.get("columns") is not None:
+                import pandas as _pd
+                cols = _payload.get("columns", [])
+                data = _payload.get("data", [])
+                if cols:
+                    df_sum = _pd.DataFrame(data, columns=cols)
+        except Exception:
+            pass
+    if not label:
+        try:
+            y, m = year_month.split("-")
+            label = f"Tháng {m}/{y}"
+        except Exception:
+            label = year_month
+
     return {
         "year_month": rec["year_month"],
-        "label": rec.get("label", ""),
-        "df_summary": _decompress_df(rec.get("summary")),
+        "label": label,
+        "df_summary": df_sum,
         "df_recon": _decompress_df(rec.get("df_recon")),
         "df_detail": _decompress_df(rec.get("df_detail")),
         "df_count_l2": _decompress_df(rec.get("df_count_l2")),
