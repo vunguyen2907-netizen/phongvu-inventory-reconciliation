@@ -381,9 +381,13 @@ with st.sidebar:
     else:
         st.warning("Chưa kết nối Supabase. Xem README để cấu hình secrets.")
 
-    if st.button("Tạo đợt kiểm kê mới", use_container_width=True):
-        reset_session_state()
-        st.rerun()
+    # Callback chạy trước khi widgets được render trong lần rerun tiếp theo,
+    # nhờ đó có thể reset `session_name` an toàn.
+    st.button(
+        "Tạo đợt kiểm kê mới",
+        use_container_width=True,
+        on_click=reset_session_state,
+    )
 
     if st.session_state.last_saved_time:
         st.caption(f"Đã lưu: {st.session_state.last_saved_time}")
