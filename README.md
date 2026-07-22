@@ -1,0 +1,30 @@
+# Đối soát kiểm kê Phong Vũ
+
+Ứng dụng Streamlit đối soát tồn kho sổ sách với dữ liệu kiểm kê ERP, hỗ trợ kiểm đếm lần 2 và xuất Excel/PDF.
+
+## Chạy local
+
+1. Cài Python 3.9+ và tạo môi trường ảo.
+2. Chạy `pip install -r requirements.txt`.
+3. Sao chép `.streamlit/secrets.toml.example` thành `.streamlit/secrets.toml`, rồi điền thông tin Supabase.
+4. Trong Supabase Dashboard, mở **SQL Editor** và chạy toàn bộ [supabase_schema.sql](supabase_schema.sql).
+5. Chạy `python -m streamlit run app.py`.
+
+## Deploy web bằng Streamlit Community Cloud
+
+1. Đưa thư mục này lên một GitHub repository riêng tư.
+2. Vào [share.streamlit.io](https://share.streamlit.io), chọn repository, branch và `app.py`.
+3. Trong **Advanced settings > Secrets**, thêm:
+
+```toml
+SUPABASE_URL = "https://<project-ref>.supabase.co"
+SUPABASE_KEY = "<service_role_key>"
+```
+
+Lấy `SUPABASE_URL` và `service_role key` ở Supabase **Project Settings > API**. Không đưa key này vào GitHub hoặc trình duyệt.
+
+## Lịch sử và bảo mật
+
+Mỗi đợt kiểm kê được lưu trong bảng `inventory_sessions` dưới dạng JSONB; sidebar cho phép tạo, lưu và mở lại các đợt đã có.
+
+Phiên bản hiện tại chưa có đăng nhập người dùng. Vì vậy chỉ chia sẻ URL app cho người được phép; nếu cần phân quyền theo nhân viên/chi nhánh, bước tiếp theo là thêm Supabase Auth và cột `owner_id` với RLS policy.

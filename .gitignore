@@ -1,0 +1,4 @@
+.session_cache/
+.streamlit/secrets.toml
+__pycache__/
+*.py[cod]
