@@ -70,7 +70,7 @@
     const { useState, useEffect, useMemo } = React;
 
     // --- SMART EXCEL HEADER & COLUMN MATCHING ---
-    const skuCandidates = ['mã sản phẩm', 'mã hàng hóa', 'mã hàng', 'mã sp', 'mã hh', 'mã vật tư', 'mã vt', 'mã thiết bị', 'sku', 'item code', 'product code', 'mã', 'part number', 'part_number', 'mã part'];
+    const skuCandidates = ['mã sản phẩm', 'mã hàng hóa', 'mã hàng', 'mã sp', 'mã hh', 'mã vật tư', 'mã vt', 'mã thiết bị', 'sku', 'item code', 'product code', 'mã', 'part number', 'part_number', 'mã part', 'stt'];
     const nameCandidates = ['tên sản phẩm', 'tên hàng hóa', 'tên hàng', 'tên sp', 'tên hh', 'tên vật tư', 'tên thiết bị', 'description', 'product name', 'item name', 'tên'];
     const uomCandidates = ['đơn vị tính', 'đvt', 'uom', 'unit', 'đơn vị'];
     const qtyCandidates = ['số lượng sổ sách', 'tồn cuối', 'số lượng tồn', 'tồn kho', 'tồn sổ sách', 'sl sổ sách', 'sl tồn', 'tồn cuối kỳ', 'số lượng', 'tồn', 'sl', 'thực tế đếm', 'thực tế đã đếm', 'sl thực tế', 'đã đếm'];
@@ -96,59 +96,41 @@
     }
 
     function parseSmartSheet(ws) {
-      const rows2d = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
-      if (!rows2d || rows2d.length === 0) return [];
-      
-      const headerKeywords = ['mã', 'sku', 'product', 'item', 'tên', 'serial', 'tồn', 'số lượng', 'sl', 'bin', 'đvt'];
-      let headerRowIdx = -1;
-      
-      // Header row MUST have at least 3 non-empty cells across columns
-      for (let i = 0; i < Math.min(20, rows2d.length); i++) {
-        const rowCells = rows2d[i].map(c => String(c).trim()).filter(c => c !== "");
-        if (rowCells.length >= 3) {
-          const rowStr = rowCells.map(c => c.toLowerCase()).join(" ");
-          if (headerKeywords.some(kw => rowStr.includes(kw))) {
-            headerRowIdx = i;
-            break;
-          }
-        }
-      }
+      // Direct SheetJS json parse
+      const rawObjects = XLSX.utils.sheet_to_json(ws, { defval: "" });
+      if (!rawObjects || rawObjects.length === 0) return [];
 
-      if (headerRowIdx === -1) {
-        for (let i = 0; i < Math.min(20, rows2d.length); i++) {
-          const rowCells = rows2d[i].map(c => String(c).trim()).filter(c => c !== "");
-          if (rowCells.length >= 3) {
-            headerRowIdx = i;
-            break;
-          }
-        }
-      }
+      const invalidSkus = ['tổng', 'tổng cộng', 'total', 'nan', 'none', 'null', 'sum', ''];
+      const validRows = [];
 
-      if (headerRowIdx === -1) headerRowIdx = 0;
-
-      const headers = rows2d[headerRowIdx].map(c => String(c).trim());
-      const dataRows = [];
-      const invalidSkus = ['tổng', 'tổng cộng', 'total', 'nan', 'none', 'null', 'sum', '', 'stt'];
-
-      for (let i = headerRowIdx + 1; i < rows2d.length; i++) {
-        const r = rows2d[i];
-        if (!r || r.every(cell => String(cell).trim() === "")) continue;
-        const obj = {};
-        headers.forEach((h, colIdx) => {
-          if (h) obj[h] = r[colIdx] !== undefined ? r[colIdx] : "";
-        });
+      rawObjects.forEach(obj => {
+        let skuVal = findVal(obj, skuCandidates);
         
-        const skuVal = findVal(obj, skuCandidates);
-        if (skuVal && !invalidSkus.includes(skuVal.toLowerCase())) {
-          dataRows.push(obj);
+        // Fallback: check first available key if findVal returned empty
+        if (!skuVal) {
+          const keys = Object.keys(obj);
+          for (const k of keys) {
+            if (!k.startsWith('__EMPTY') && String(obj[k]).trim() !== "") {
+              const testVal = String(obj[k]).trim();
+              if (!invalidSkus.includes(testVal.toLowerCase())) {
+                skuVal = testVal;
+                break;
+              }
+            }
+          }
         }
-      }
-      
-      return dataRows;
+
+        if (skuVal && !invalidSkus.includes(skuVal.toLowerCase())) {
+          validRows.push(obj);
+        }
+      });
+
+      return validRows.length > 0 ? validRows : rawObjects;
     }
 
-    function readWorkbookSmart(binaryData) {
-      const wb = XLSX.read(binaryData, { type: 'binary' });
+    function readWorkbookSmart(arrayBuffer) {
+      const data = new Uint8Array(arrayBuffer);
+      const wb = XLSX.read(data, { type: 'array' });
       for (const sheetName of wb.SheetNames) {
         const ws = wb.Sheets[sheetName];
         const rows = parseSmartSheet(ws);
@@ -268,21 +250,21 @@
 
         // Standardize columns using smart candidate matching
         const stockRows = stockRowsRaw.map(r => {
-          const sku = findVal(r, skuCandidates);
+          const sku = findVal(r, skuCandidates) || Object.values(r)[0] || "";
           const name = findVal(r, nameCandidates, "Chưa có tên");
           const serial = findVal(r, serialCandidates);
           const qty = parseInt(findVal(r, qtyCandidates, "1")) || 1;
           const bin = findVal(r, binCandidates);
           const uom = findVal(r, uomCandidates, "Cái");
           const type = findVal(r, typeCandidates, "Hàng bán");
-          return { sku, name, serial, qty, bin, uom, type };
+          return { sku: String(sku).trim(), name, serial, qty, bin, uom, type };
         }).filter(r => r.sku);
 
         const erpRows = erpRowsRaw.map(r => {
-          const sku = findVal(r, skuCandidates);
+          const sku = findVal(r, skuCandidates) || Object.values(r)[0] || "";
           const serial = findVal(r, serialCandidates);
           const qty = parseInt(findVal(r, qtyCandidates, "1")) || 1;
-          return { sku, serial, qty };
+          return { sku: String(sku).trim(), serial, qty };
         }).filter(r => r.sku);
 
         if (stockRows.length === 0 || erpRows.length === 0) {
@@ -862,7 +844,7 @@
                               const parsedRows = readWorkbookSmart(evt.target.result);
                               setRawStockData(parsedRows);
                             };
-                            reader.readAsBinaryString(file);
+                            reader.readAsArrayBuffer(file);
                           }}
                         />
                         <div className={`w-12 h-12 rounded-full mx-auto flex items-center justify-center font-bold text-xl mb-3 ${rawStockFileName ? 'bg-emerald-100 text-emerald-700' : 'bg-brand-50 text-brand-600'}`}>
@@ -895,7 +877,7 @@
                               const parsedRows = readWorkbookSmart(evt.target.result);
                               setRawErpData(parsedRows);
                             };
-                            reader.readAsBinaryString(file);
+                            reader.readAsArrayBuffer(file);
                           }}
                         />
                         <div className={`w-12 h-12 rounded-full mx-auto flex items-center justify-center font-bold text-xl mb-3 ${rawErpFileName ? 'bg-emerald-100 text-emerald-700' : 'bg-emerald-50 text-emerald-600'}`}>
@@ -931,7 +913,7 @@
                             <div className="font-mono text-[11px] text-slate-600 max-h-28 overflow-y-auto space-y-1">
                               {rawStockData.slice(0, 4).map((r, i) => (
                                 <div key={i} className="truncate bg-white p-1 rounded border border-slate-200">
-                                  <b>Mã:</b> {findVal(r, skuCandidates, "—")} | <b>Tên:</b> {findVal(r, nameCandidates, "—")} | <b>Serial:</b> {findVal(r, serialCandidates, "—")}
+                                  <b>Mã:</b> {findVal(r, skuCandidates) || Object.values(r)[0]} | <b>Tên:</b> {findVal(r, nameCandidates, "—")} | <b>Serial:</b> {findVal(r, serialCandidates, "—")}
                                 </div>
                               ))}
                             </div>
@@ -941,7 +923,7 @@
                             <div className="font-mono text-[11px] text-slate-600 max-h-28 overflow-y-auto space-y-1">
                               {rawErpData.slice(0, 4).map((r, i) => (
                                 <div key={i} className="truncate bg-white p-1 rounded border border-slate-200">
-                                  <b>Mã:</b> {findVal(r, skuCandidates, "—")} | <b>Serial:</b> {findVal(r, serialCandidates, "—")}
+                                  <b>Mã:</b> {findVal(r, skuCandidates) || Object.values(r)[0]} | <b>Serial:</b> {findVal(r, serialCandidates, "—")}
                                 </div>
                               ))}
                             </div>
