@@ -11,8 +11,11 @@ from supabase_store import (
     download_source_file,
     is_configured as supabase_is_configured,
     list_inventory_sessions,
+    list_monthly_archives,
     load_inventory_session,
+    load_monthly_archive,
     save_inventory_session,
+    save_monthly_archive,
     upload_source_files,
 )
 
@@ -262,7 +265,7 @@ def read_smart_dataframe(file_obj, is_erp=False):
 
 
 def save_session_state(show_progress=False):
-    """Tự động lưu đợt kiểm kê hiện tại lên Supabase nếu đã cấu hình."""
+    """Lưu đợt kiểm kê hiện tại lên Supabase (gọi trực tiếp khi cần lưu ngay)."""
     if not supabase_is_configured() or st.session_state.df_check_detail is None:
         return False
 
@@ -287,6 +290,8 @@ def save_session_state(show_progress=False):
 
             list_inventory_sessions.clear()
             st.session_state.last_saved_time = display_time(saved.get('updated_at'))
+            st.session_state.last_auto_save_time = datetime.datetime.now()
+            st.session_state._is_dirty = False
             st.session_state.db_error = None
             st.session_state.save_notice = "Đã lưu dữ liệu kiểm kê lên cloud."
             return True
@@ -298,6 +303,29 @@ def save_session_state(show_progress=False):
         with st.spinner("Đang lưu và đồng bộ dữ liệu lên cloud…"):
             return persist()
     return persist()
+
+
+def mark_dirty():
+    """Đánh dấu có thay đổi chưa lưu — không gọi Supabase ngay.
+
+    Dùng thay cho save_session_state() trong các editor loop để tránh lag.
+    flush_if_dirty() sẽ thực sự gọi Supabase sau DEBOUNCE_SECONDS giây idle.
+    """
+    st.session_state._is_dirty = True
+
+
+DEBOUNCE_SECONDS = 10  # Số giây idle trước khi tự động lưu
+
+
+def flush_if_dirty():
+    """Gọi ở đầu mỗi rerun; lưu lên Supabase nếu đã qua DEBOUNCE_SECONDS giây."""
+    if not st.session_state.get('_is_dirty', False):
+        return
+    if st.session_state.df_check_detail is None:
+        return
+    last_save = st.session_state.get('last_auto_save_time')
+    if last_save is None or (datetime.datetime.now() - last_save).total_seconds() >= DEBOUNCE_SECONDS:
+        save_session_state(show_progress=False)
 
 def reset_session_state():
     """Dọn màn hình để tạo một đợt mới; lịch sử Supabase vẫn được giữ."""
@@ -327,6 +355,10 @@ if 'session_name' not in st.session_state:
     st.session_state.session_name = f"Kiểm kê {datetime.date.today().strftime('%d/%m/%Y')}"
 if 'last_saved_time' not in st.session_state:
     st.session_state.last_saved_time = None
+if 'last_auto_save_time' not in st.session_state:
+    st.session_state.last_auto_save_time = None
+if '_is_dirty' not in st.session_state:
+    st.session_state._is_dirty = False
 if 'db_error' not in st.session_state:
     st.session_state.db_error = None
 if 'source_files' not in st.session_state:
@@ -337,6 +369,11 @@ if 'save_notice' not in st.session_state:
     st.session_state.save_notice = None
 if 'source_file_download' not in st.session_state:
     st.session_state.source_file_download = None
+if 'archive_view' not in st.session_state:
+    st.session_state.archive_view = None   # dict chứa dữ liệu tháng đang xem
+
+# Flush debounce: tự động lưu sau DEBOUNCE_SECONDS giây idle (đặt trước sidebar)
+flush_if_dirty()
 
 def load_selected_session(session_id):
     saved = load_inventory_session(session_id)
@@ -356,7 +393,11 @@ with st.sidebar:
     st.header("Lịch sử kiểm kê")
     st.text_input("Tên đợt kiểm kê", key="session_name")
     if supabase_is_configured():
-        if st.button("Lưu đợt hiện tại", use_container_width=True, disabled=st.session_state.df_check_detail is None):
+        # Nút lưu thủ công — lưu ngay, bỏ qua debounce
+        _btn_save_label = "💾 Lưu đợt hiện tại"
+        if st.session_state.get('_is_dirty', False):
+            _btn_save_label = "💾 Lưu đợt hiện tại ●"
+        if st.button(_btn_save_label, use_container_width=True, disabled=st.session_state.df_check_detail is None):
             save_session_state(show_progress=True)
             st.rerun()
         try:
@@ -390,7 +431,8 @@ with st.sidebar:
     )
 
     if st.session_state.last_saved_time:
-        st.caption(f"Đã lưu: {st.session_state.last_saved_time}")
+        _dirty_indicator = " (có thay đổi chưa lưu)" if st.session_state.get('_is_dirty') else ""
+        st.caption(f"Đã lưu: {st.session_state.last_saved_time}{_dirty_indicator}")
     if st.session_state.source_files:
         st.caption("Đã lưu file nguồn: " + ", ".join(item['name'] for item in st.session_state.source_files))
         with st.expander("Tải lại dữ liệu nguồn của đợt này"):
@@ -422,6 +464,93 @@ with st.sidebar:
         st.session_state.save_notice = None
     if st.session_state.db_error:
         st.warning(f"Chưa lưu được lên Supabase: {st.session_state.db_error}")
+
+    # ── PHẦN LƯU TRỮ HÀNG THÁNG ──────────────────────────
+    if supabase_is_configured():
+        st.markdown("---")
+        st.subheader("📅 Lưu trữ hàng tháng")
+        st.caption(f"Lưu snapshot cuối tháng. Giữ tối đa 12 tháng, tự động xóa tháng cũ nhất.")
+
+        # Chọn tháng/năm cần lưu
+        _default_ym = datetime.date.today().replace(day=1)
+        _archive_month = st.date_input(
+            "Tháng cần lưu:",
+            value=_default_ym,
+            format="MM/YYYY",
+            key="archive_month_picker",
+        )
+        _archive_label = st.text_input(
+            "Nhãn (VD: Khánh Hội, CP74...):",
+            value="",
+            key="archive_label_input",
+            placeholder="Tên kho / Chi nhánh",
+        )
+
+        _can_archive = (
+            st.session_state.df_check_detail is not None
+            and st.session_state.df_count_l2 is not None
+        )
+        if st.button("💾 Lưu báo cáo tháng này", use_container_width=True, disabled=not _can_archive, key="btn_save_archive"):
+            try:
+                _ym_str = _archive_month.strftime("%Y-%m")
+                _label_str = f"Tháng {_archive_month.strftime('%m/%Y')}"
+                if _archive_label.strip():
+                    _label_str += f" — {_archive_label.strip()}"
+
+                # Build df_summary từ df_count_l2 hiện tại
+                _df_l2_snap = st.session_state.df_count_l2.copy()
+                _snap_rows = []
+                for _i, _r in _df_l2_snap.iterrows():
+                    _sk = str(_r['Mã vật tư']).strip()
+                    _q_sys = int(_r['Số lượng sổ sách (hệ thống)'])
+                    _q_l1 = int(_r['Số liệu thực tế đã đếm lần 1'])
+                    _q_l2 = int(_r['Số liệu thực tế đếm lại lần 2'])
+                    _tot = _q_l1 + _q_l2
+                    _snap_rows.append({
+                        'SKU': _sk,
+                        'Tên hàng hóa': str(_r['Tên vật tư']).strip(),
+                        'ĐVT': str(_r['Đvt']).strip(),
+                        'Số lượng sổ sách': _q_sys,
+                        'Số lượng thực tế': _tot,
+                        'Chênh lệch': _tot - _q_sys,
+                    })
+                _df_summary_snap = pd.DataFrame(_snap_rows)
+
+                with st.spinner(f"Đang lưu báo cáo {_label_str}…"):
+                    save_monthly_archive(
+                        year_month=_ym_str,
+                        label=_label_str,
+                        df_summary=_df_summary_snap,
+                        df_recon=st.session_state.df_recon,
+                        df_detail=st.session_state.df_check_detail,
+                        df_count_l2=st.session_state.df_count_l2,
+                    )
+                st.success(f"✅ Đã lưu báo cáo {_label_str}")
+            except Exception as _exc:
+                st.error(f"Lỗi lưu archive: {_exc}")
+
+        # Danh sách các tháng đã lưu
+        try:
+            _monthly_list = list_monthly_archives()
+            if _monthly_list:
+                st.caption(f"**{len(_monthly_list)}/12 tháng** đã lưu:")
+                for _arch in _monthly_list:
+                    _arch_col1, _arch_col2 = st.columns([3, 1])
+                    with _arch_col1:
+                        _updated = display_time(_arch.get('updated_at', ''))
+                        st.caption(f"📁 **{_arch['label']}** \n_{_updated}_")
+                    with _arch_col2:
+                        if st.button("Xem", key=f"view_arch_{_arch['year_month']}", use_container_width=True):
+                            try:
+                                with st.spinner("Đang tải…"):
+                                    st.session_state.archive_view = load_monthly_archive(_arch['year_month'])
+                                st.rerun()
+                            except Exception as _exc:
+                                st.error(str(_exc))
+            else:
+                st.caption("Chưa có tháng nào được lưu.")
+        except Exception as _exc:
+            st.caption(f"Không tải được danh sách: {_exc}")
 
 @st.dialog("Lý Do Loại Bỏ Serial Bắn Dư Khỏi Báo Cáo")
 def modal_clear_surplus(sku_val, serial_val):
@@ -464,7 +593,8 @@ tabs = st.tabs([
     "2. Kiểm đếm lần 2",
     "3. Kết quả kiểm lần 2",
     "4. Bảng tổng hợp chênh lệch",
-    "5. Xuất báo cáo"
+    "5. Xuất báo cáo",
+    "📅 6. Lưu trữ hàng tháng",
 ])
 
 # ==========================================
@@ -932,7 +1062,7 @@ with tabs[1]:
                     st.session_state.df_check_detail.loc[mask, 'Note đơn hàng'] = user_note
 
         if has_changes:
-            save_session_state(show_progress=True)
+            mark_dirty()
 
     else:
         st.warning("Vui lòng tải lên file dữ liệu tại Tab 1 trước.")
@@ -1035,7 +1165,7 @@ with tabs[2]:
                 st.session_state.df_count_l2.loc[mask, 'Kết quả xử lý sau khi đếm lại lần 2'] = st.session_state.df_count_l2.loc[mask, 'Số liệu thực tế đã đếm lần 1'] + l2_val
                 st.session_state.df_count_l2.loc[mask, 'Note mã đơn'] = note_val
         if has_l2_changes:
-            save_session_state(show_progress=True)
+            mark_dirty()
     else:
         st.warning("Vui lòng tải lên file dữ liệu tại Tab 1 trước.")
 
@@ -1545,3 +1675,132 @@ with tabs[4]:
 
     else:
         st.warning("⚠️ Không có dữ liệu để xuất báo cáo. Vui lòng hoàn thành ở các Tab trước.")
+
+# ==========================================
+# TAB 6: LƯU TRỮ HÀNG THÁNG (Xem & Tải archive)
+# ==========================================
+with tabs[5]:
+    st.subheader("📅 Lưu trữ báo cáo hàng tháng")
+    st.caption("Xem lại và tải xuống báo cáo tổng hợp của từng tháng đã lưu. Dữ liệu được giữ tối đa 12 tháng gần nhất.")
+
+    if not supabase_is_configured():
+        st.warning("Chưa kết nối Supabase. Xem README để cấu hình secrets.")
+    else:
+        # Nếu đang xem một archive cụ thể
+        arch_data = st.session_state.get('archive_view')
+
+        try:
+            monthly_list = list_monthly_archives()
+        except Exception as _exc:
+            monthly_list = []
+            st.error(f"Không tải được danh sách archive: {_exc}")
+
+        if monthly_list:
+            col_arch_sel, col_arch_close = st.columns([4, 1])
+            with col_arch_sel:
+                arch_options = {a['year_month']: f"{a['label']} (lưu: {display_time(a.get('updated_at', ''))})" for a in monthly_list}
+                selected_ym = st.selectbox(
+                    "Chọn tháng cần xem:",
+                    list(arch_options.keys()),
+                    format_func=lambda k: arch_options[k],
+                    key="tab6_arch_select",
+                )
+            with col_arch_close:
+                st.write("")
+                st.write("")
+                if st.button("📂 Tải tháng này", use_container_width=True, key="btn_load_arch_tab6"):
+                    try:
+                        with st.spinner("Đang tải dữ liệu tháng…"):
+                            st.session_state.archive_view = load_monthly_archive(selected_ym)
+                        st.rerun()
+                    except Exception as _exc:
+                        st.error(str(_exc))
+
+            if st.session_state.archive_view and st.session_state.archive_view.get('year_month') == selected_ym:
+                arch_data = st.session_state.archive_view
+
+        if arch_data:
+            st.markdown(f"### 📁 {arch_data.get('label', arch_data.get('year_month', ''))}")
+            st.caption(f"Lưu lần cuối: {display_time(arch_data.get('updated_at', ''))}")
+            st.markdown("---")
+
+            df_sum = arch_data.get('df_summary')
+            df_cnt = arch_data.get('df_count_l2')
+            df_det = arch_data.get('df_detail')
+
+            if df_sum is not None and not df_sum.empty:
+                # Metrics
+                a1, a2, a3, a4 = st.columns(4)
+                a1.metric("Tổng SKU", len(df_sum))
+                a2.metric("Tổng SL Sổ sách", f"{int(df_sum['Số lượng sổ sách'].sum()):,}" if 'Số lượng sổ sách' in df_sum.columns else "—")
+                a3.metric("Tổng SL Thực tế", f"{int(df_sum['Số lượng thực tế'].sum()):,}" if 'Số lượng thực tế' in df_sum.columns else "—")
+                _arch_diff = int(df_sum['Chênh lệch'].sum()) if 'Chênh lệch' in df_sum.columns else 0
+                a4.metric("Tổng Chênh lệch", f"{_arch_diff:,}", delta=_arch_diff, delta_color="inverse")
+
+                st.dataframe(df_sum, use_container_width=True, hide_index=True)
+            else:
+                st.info("Không có dữ liệu tổng hợp cho tháng này.")
+
+            # Nút tải Excel cho archive
+            st.markdown("---")
+            st.markdown("**Tải xuống file Excel đầy đủ của tháng này:**")
+
+            _arch_excel = io.BytesIO()
+            with pd.ExcelWriter(_arch_excel, engine='openpyxl') as _arch_writer:
+                if df_sum is not None and not df_sum.empty:
+                    df_sum.to_excel(_arch_writer, sheet_name="Tổng hợp", index=False)
+                if df_cnt is not None and not df_cnt.empty:
+                    df_cnt.to_excel(_arch_writer, sheet_name="Kiểm đếm lần 2", index=False)
+                if df_det is not None and not df_det.empty:
+                    df_det.to_excel(_arch_writer, sheet_name="Chi tiết Serial", index=False)
+
+                # Style header cho các sheet
+                _wb_arch = _arch_writer.book
+                _fill_hdr_a = PatternFill(start_color='D9E1F2', end_color='D9E1F2', fill_type='solid')
+                _font_hdr_a = Font(name='Arial', size=10, bold=True)
+                _font_data_a = Font(name='Arial', size=9)
+                _align_c_a = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                _align_l_a = Alignment(horizontal='left', vertical='center', wrap_text=True)
+                _border_a = Border(
+                    left=Side(style='thin', color='BBBBBB'), right=Side(style='thin', color='BBBBBB'),
+                    top=Side(style='thin', color='BBBBBB'), bottom=Side(style='thin', color='BBBBBB')
+                )
+                for _sname in _wb_arch.sheetnames:
+                    _ws_a = _wb_arch[_sname]
+                    for _cell in _ws_a[1]:
+                        _cell.font = _font_hdr_a
+                        _cell.fill = _fill_hdr_a
+                        _cell.alignment = _align_c_a
+                        _cell.border = _border_a
+                    _ws_a.row_dimensions[1].height = 28
+                    _ws_a.freeze_panes = 'A2'
+                    for _row in _ws_a.iter_rows(min_row=2, max_row=_ws_a.max_row):
+                        for _cell in _row:
+                            _cell.font = _font_data_a
+                            _cell.alignment = _align_l_a
+                            _cell.border = _border_a
+                    for _col in _ws_a.columns:
+                        _col_letter = get_column_letter(_col[0].column)
+                        _max_len = max((len(str(_c.value or '')) for _c in _col), default=10)
+                        _ws_a.column_dimensions[_col_letter].width = min(_max_len + 4, 60)
+
+            _arch_ym = arch_data.get('year_month', 'archive').replace('-', '')
+            st.download_button(
+                label=f"📥 Tải Excel — {arch_data.get('label', arch_data.get('year_month', ''))}",
+                data=_arch_excel.getvalue(),
+                file_name=f"BaoCao_ThangKiemKe_{_arch_ym}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                use_container_width=True,
+                key="dl_arch_excel",
+            )
+
+            if st.button("✖ Đóng / Xem tháng khác", use_container_width=True, key="btn_close_arch"):
+                st.session_state.archive_view = None
+                st.rerun()
+
+        elif not monthly_list:
+            st.info("Chưa có báo cáo tháng nào được lưu. Sử dụng nút **'💾 Lưu báo cáo tháng này'** ở thanh sidebar sau khi hoàn tất kiểm kê.")
+        else:
+            st.info("Chọn một tháng trong danh sách bên trên và nhấn **'📂 Tải tháng này'** để xem chi tiết.")
+

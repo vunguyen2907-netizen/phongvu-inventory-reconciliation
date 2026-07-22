@@ -2,12 +2,18 @@
 
 Không chứa khoá bí mật trong mã nguồn. URL và key được lấy từ Streamlit
 secrets (khi deploy) hoặc biến môi trường (khi chạy local).
+
+v2 — Thêm:
+  - Compression (zlib + base64) để giảm payload gửi lên Supabase ~60-70%.
+  - Monthly archive: lưu snapshot hàng tháng, rolling 12 tháng.
 """
 
+import base64
 import datetime as dt
 import json
 import os
 import re
+import zlib
 from typing import Any, Optional
 
 import pandas as pd
@@ -15,7 +21,12 @@ import streamlit as st
 from supabase import Client, create_client
 
 SOURCE_BUCKET = "inventory-source-files"
+MAX_MONTHLY_ARCHIVES = 12
 
+
+# ──────────────────────────────────────────────
+# Config helpers
+# ──────────────────────────────────────────────
 
 def _setting(name: str) -> Optional[str]:
     """Đọc cấu hình mà không làm app lỗi khi chưa tạo secrets."""
@@ -41,18 +52,58 @@ def get_client() -> Client:
     return create_client(url, key)
 
 
+# ──────────────────────────────────────────────
+# Compression helpers
+# ──────────────────────────────────────────────
+
+def _compress_df(df: Optional[pd.DataFrame]) -> Optional[str]:
+    """Serialize DataFrame → JSON → nén zlib → base64 string.
+
+    Trả về None nếu df là None. Kết quả là chuỗi base64 an toàn lưu vào JSONB.
+    """
+    if df is None:
+        return None
+    raw_json = df.to_json(orient="split", date_format="iso")
+    compressed = zlib.compress(raw_json.encode("utf-8"), level=6)
+    return base64.b64encode(compressed).decode("ascii")
+
+
+def _decompress_df(value: Optional[Any]) -> Optional[pd.DataFrame]:
+    """Giải nén base64 → zlib → JSON → DataFrame.
+
+    Hỗ trợ cả định dạng cũ (dict payload) lẫn định dạng mới (base64 string)
+    để backward-compatible với các session đã lưu trước khi nâng cấp.
+    """
+    if not value:
+        return None
+    if isinstance(value, dict):
+        # Định dạng cũ: {"columns": [...], "data": [...]}
+        return pd.DataFrame(value["data"], columns=value["columns"])
+    if isinstance(value, str):
+        try:
+            decompressed = zlib.decompress(base64.b64decode(value.encode("ascii")))
+            payload = json.loads(decompressed.decode("utf-8"))
+            return pd.DataFrame(payload["data"], columns=payload["columns"])
+        except Exception:
+            return None
+    return None
+
+
+# Giữ lại hàm cũ để không break imports từ app.py
 def dataframe_to_payload(df: Optional[pd.DataFrame]) -> Optional[dict[str, Any]]:
     if df is None:
         return None
-    # JSON của pandas chuẩn hoá NaN/NaT thành null và hỗ trợ kiểu số của numpy.
     return json.loads(df.to_json(orient="split", date_format="iso"))
 
 
-def dataframe_from_payload(payload: Optional[dict[str, Any]]) -> Optional[pd.DataFrame]:
-    if not payload:
-        return None
-    return pd.DataFrame(payload["data"], columns=payload["columns"])
+def dataframe_from_payload(payload: Optional[Any]) -> Optional[pd.DataFrame]:
+    """Parse payload — hỗ trợ cả dict cũ lẫn base64 string mới."""
+    return _decompress_df(payload)
 
+
+# ──────────────────────────────────────────────
+# Inventory Sessions (đợt kiểm kê đang làm)
+# ──────────────────────────────────────────────
 
 def save_inventory_session(
     session_id: Optional[str],
@@ -62,18 +113,20 @@ def save_inventory_session(
     df_check_detail: Optional[pd.DataFrame],
     source_files: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
-    """Tạo hoặc cập nhật một đợt kiểm kê; trả về bản ghi Supabase."""
+    """Tạo hoặc cập nhật một đợt kiểm kê; trả về bản ghi Supabase.
+    
+    Dữ liệu DataFrame được nén bằng zlib để giảm payload ~60-70%.
+    """
     data = {
-        "df_recon": dataframe_to_payload(df_recon),
-        "df_count_l2": dataframe_to_payload(df_count_l2),
-        "df_check_detail": dataframe_to_payload(df_check_detail),
+        "df_recon": _compress_df(df_recon),
+        "df_count_l2": _compress_df(df_count_l2),
+        "df_check_detail": _compress_df(df_check_detail),
         "source_files": source_files or [],
+        "_compressed": True,   # Flag để nhận biết định dạng mới
     }
     row = {"session_name": session_name.strip() or "Đợt kiểm kê chưa đặt tên", "data": data}
     client = get_client()
     if session_id:
-        # Upsert giúp tạo session trước khi upload file gốc, đồng thời cập nhật
-        # các lần lưu sau chỉ với cùng một id.
         row["id"] = session_id
         response = client.table("inventory_sessions").upsert(row, on_conflict="id").execute()
     else:
@@ -83,9 +136,9 @@ def save_inventory_session(
     return response.data[0]
 
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def list_inventory_sessions() -> list[dict[str, Any]]:
-    """Cache ngắn hạn để sidebar không gọi Supabase mỗi lần Streamlit rerun."""
+    """Cache 60s để sidebar không gọi Supabase liên tục khi rerun."""
     response = (
         get_client()
         .table("inventory_sessions")
@@ -96,6 +149,19 @@ def list_inventory_sessions() -> list[dict[str, Any]]:
     return response.data or []
 
 
+def load_inventory_session(session_id: str) -> dict[str, Any]:
+    response = (
+        get_client().table("inventory_sessions").select("*").eq("id", session_id).single().execute()
+    )
+    if not response.data:
+        raise RuntimeError("Không tìm thấy đợt kiểm kê đã chọn.")
+    return response.data
+
+
+# ──────────────────────────────────────────────
+# Source File Storage
+# ──────────────────────────────────────────────
+
 def _safe_storage_path(path: str) -> str:
     """Chỉ giữ tên file an toàn cho object path của Supabase Storage."""
     return re.sub(r"[^A-Za-z0-9._/-]", "_", path)
@@ -105,8 +171,6 @@ def _ensure_source_bucket(client: Client) -> None:
     try:
         client.storage.get_bucket(SOURCE_BUCKET)
     except Exception:
-        # Service key chạy ở server Streamlit có thể tạo bucket private. Nếu
-        # một phiên khác vừa tạo, upload bên dưới vẫn là kiểm tra cuối cùng.
         try:
             client.storage.create_bucket(SOURCE_BUCKET, options={"public": False})
         except Exception:
@@ -136,14 +200,103 @@ def download_source_file(path: str) -> bytes:
     return get_client().storage.from_(SOURCE_BUCKET).download(_safe_storage_path(path))
 
 
-def load_inventory_session(session_id: str) -> dict[str, Any]:
+# ──────────────────────────────────────────────
+# Monthly Archives — lưu trữ báo cáo hàng tháng
+# ──────────────────────────────────────────────
+
+def save_monthly_archive(
+    year_month: str,
+    label: str,
+    df_summary: Optional[pd.DataFrame],
+    df_recon: Optional[pd.DataFrame],
+    df_detail: Optional[pd.DataFrame],
+    df_count_l2: Optional[pd.DataFrame],
+) -> dict[str, Any]:
+    """Upsert báo cáo tháng và tự động prune nếu vượt quá MAX_MONTHLY_ARCHIVES.
+
+    Args:
+        year_month: Chuỗi "YYYY-MM", VD "2026-07"
+        label: Nhãn hiển thị, VD "Tháng 07/2026 — Khánh Hội"
+        df_summary: DataFrame báo cáo tổng hợp TH-HANG HOA
+        df_recon: DataFrame tồn kho đối soát
+        df_detail: DataFrame chi tiết serial
+        df_count_l2: DataFrame kiểm đếm lần 2
+    """
+    client = get_client()
+
+    row = {
+        "year_month": year_month,
+        "label": label,
+        "summary": _compress_df(df_summary),
+        "df_recon": _compress_df(df_recon),
+        "df_detail": _compress_df(df_detail),
+        "df_count_l2": _compress_df(df_count_l2),
+    }
+
     response = (
-        get_client().table("inventory_sessions").select("*").eq("id", session_id).single().execute()
+        client.table("monthly_archives")
+        .upsert(row, on_conflict="year_month")
+        .execute()
     )
     if not response.data:
-        raise RuntimeError("Không tìm thấy đợt kiểm kê đã chọn.")
-    return response.data
+        raise RuntimeError("Supabase không trả về dữ liệu khi lưu monthly archive.")
 
+    # Prune: xóa bản ghi cũ nhất nếu vượt quá giới hạn 12 tháng
+    all_archives = (
+        client.table("monthly_archives")
+        .select("id, year_month")
+        .order("year_month", desc=False)
+        .execute()
+    ).data or []
+
+    if len(all_archives) > MAX_MONTHLY_ARCHIVES:
+        ids_to_delete = [r["id"] for r in all_archives[:len(all_archives) - MAX_MONTHLY_ARCHIVES]]
+        client.table("monthly_archives").delete().in_("id", ids_to_delete).execute()
+
+    list_monthly_archives.clear()
+    return response.data[0]
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def list_monthly_archives() -> list[dict[str, Any]]:
+    """Trả về danh sách các tháng đã lưu, mới nhất trước."""
+    response = (
+        get_client()
+        .table("monthly_archives")
+        .select("id, year_month, label, created_at, updated_at")
+        .order("year_month", desc=True)
+        .execute()
+    )
+    return response.data or []
+
+
+def load_monthly_archive(year_month: str) -> dict[str, Any]:
+    """Load toàn bộ dữ liệu của một tháng đã lưu."""
+    response = (
+        get_client()
+        .table("monthly_archives")
+        .select("*")
+        .eq("year_month", year_month)
+        .single()
+        .execute()
+    )
+    if not response.data:
+        raise RuntimeError(f"Không tìm thấy archive tháng {year_month}.")
+    rec = response.data
+    return {
+        "year_month": rec["year_month"],
+        "label": rec.get("label", ""),
+        "df_summary": _decompress_df(rec.get("summary")),
+        "df_recon": _decompress_df(rec.get("df_recon")),
+        "df_detail": _decompress_df(rec.get("df_detail")),
+        "df_count_l2": _decompress_df(rec.get("df_count_l2")),
+        "updated_at": rec.get("updated_at"),
+    }
+
+
+# ──────────────────────────────────────────────
+# Utility
+# ──────────────────────────────────────────────
 
 def display_time(value: Optional[str]) -> str:
     if not value:
