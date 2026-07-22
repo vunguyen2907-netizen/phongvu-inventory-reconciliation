@@ -7,6 +7,7 @@ v2 — Thêm:
   - Compression (zlib + base64) để giảm payload gửi lên Supabase ~60-70%.
   - Monthly archive: lưu snapshot hàng tháng, rolling 12 tháng.
 """
+from __future__ import annotations
 
 import base64
 import datetime as dt
@@ -14,11 +15,11 @@ import json
 import os
 import re
 import zlib
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import streamlit as st
-from supabase import Client, create_client
+from supabase import create_client
 
 SOURCE_BUCKET = "inventory-source-files"
 MAX_MONTHLY_ARCHIVES = 12
@@ -44,7 +45,7 @@ def is_configured() -> bool:
 
 
 @st.cache_resource(show_spinner=False)
-def get_client() -> Client:
+def get_client():
     url = _setting("SUPABASE_URL")
     key = _setting("SUPABASE_KEY")
     if not url or not key:
@@ -68,7 +69,7 @@ def _compress_df(df: Optional[pd.DataFrame]) -> Optional[str]:
     return base64.b64encode(compressed).decode("ascii")
 
 
-def _decompress_df(value: Optional[Any]) -> Optional[pd.DataFrame]:
+def _decompress_df(value: Any) -> Optional[pd.DataFrame]:
     """Giải nén base64 → zlib → JSON → DataFrame.
 
     Hỗ trợ cả định dạng cũ (dict payload) lẫn định dạng mới (base64 string)
@@ -78,7 +79,10 @@ def _decompress_df(value: Optional[Any]) -> Optional[pd.DataFrame]:
         return None
     if isinstance(value, dict):
         # Định dạng cũ: {"columns": [...], "data": [...]}
-        return pd.DataFrame(value["data"], columns=value["columns"])
+        try:
+            return pd.DataFrame(value["data"], columns=value["columns"])
+        except Exception:
+            return None
     if isinstance(value, str):
         try:
             decompressed = zlib.decompress(base64.b64decode(value.encode("ascii")))
@@ -90,13 +94,13 @@ def _decompress_df(value: Optional[Any]) -> Optional[pd.DataFrame]:
 
 
 # Giữ lại hàm cũ để không break imports từ app.py
-def dataframe_to_payload(df: Optional[pd.DataFrame]) -> Optional[dict[str, Any]]:
+def dataframe_to_payload(df: Optional[pd.DataFrame]) -> Optional[Dict[str, Any]]:
     if df is None:
         return None
     return json.loads(df.to_json(orient="split", date_format="iso"))
 
 
-def dataframe_from_payload(payload: Optional[Any]) -> Optional[pd.DataFrame]:
+def dataframe_from_payload(payload: Any) -> Optional[pd.DataFrame]:
     """Parse payload — hỗ trợ cả dict cũ lẫn base64 string mới."""
     return _decompress_df(payload)
 
@@ -111,10 +115,10 @@ def save_inventory_session(
     df_recon: Optional[pd.DataFrame],
     df_count_l2: Optional[pd.DataFrame],
     df_check_detail: Optional[pd.DataFrame],
-    source_files: Optional[list[dict[str, Any]]] = None,
-) -> dict[str, Any]:
+    source_files: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
     """Tạo hoặc cập nhật một đợt kiểm kê; trả về bản ghi Supabase.
-    
+
     Dữ liệu DataFrame được nén bằng zlib để giảm payload ~60-70%.
     """
     data = {
@@ -137,7 +141,7 @@ def save_inventory_session(
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def list_inventory_sessions() -> list[dict[str, Any]]:
+def list_inventory_sessions() -> List[Dict[str, Any]]:
     """Cache 60s để sidebar không gọi Supabase liên tục khi rerun."""
     response = (
         get_client()
@@ -149,7 +153,7 @@ def list_inventory_sessions() -> list[dict[str, Any]]:
     return response.data or []
 
 
-def load_inventory_session(session_id: str) -> dict[str, Any]:
+def load_inventory_session(session_id: str) -> Dict[str, Any]:
     response = (
         get_client().table("inventory_sessions").select("*").eq("id", session_id).single().execute()
     )
@@ -167,7 +171,7 @@ def _safe_storage_path(path: str) -> str:
     return re.sub(r"[^A-Za-z0-9._/-]", "_", path)
 
 
-def _ensure_source_bucket(client: Client) -> None:
+def _ensure_source_bucket(client: Any) -> None:
     try:
         client.storage.get_bucket(SOURCE_BUCKET)
     except Exception:
@@ -177,7 +181,7 @@ def _ensure_source_bucket(client: Client) -> None:
             client.storage.get_bucket(SOURCE_BUCKET)
 
 
-def upload_source_files(files: list[dict[str, Any]]) -> None:
+def upload_source_files(files: List[Dict[str, Any]]) -> None:
     """Lưu file Excel/CSV gốc của một đợt vào bucket private, chỉ upload một lần."""
     if not files:
         return
@@ -211,7 +215,7 @@ def save_monthly_archive(
     df_recon: Optional[pd.DataFrame],
     df_detail: Optional[pd.DataFrame],
     df_count_l2: Optional[pd.DataFrame],
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     """Upsert báo cáo tháng và tự động prune nếu vượt quá MAX_MONTHLY_ARCHIVES.
 
     Args:
@@ -258,7 +262,7 @@ def save_monthly_archive(
 
 
 @st.cache_data(ttl=120, show_spinner=False)
-def list_monthly_archives() -> list[dict[str, Any]]:
+def list_monthly_archives() -> List[Dict[str, Any]]:
     """Trả về danh sách các tháng đã lưu, mới nhất trước."""
     response = (
         get_client()
@@ -270,7 +274,7 @@ def list_monthly_archives() -> list[dict[str, Any]]:
     return response.data or []
 
 
-def load_monthly_archive(year_month: str) -> dict[str, Any]:
+def load_monthly_archive(year_month: str) -> Dict[str, Any]:
     """Load toàn bộ dữ liệu của một tháng đã lưu."""
     response = (
         get_client()
