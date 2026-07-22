@@ -69,6 +69,68 @@
   <script type="text/babel">
     const { useState, useEffect, useMemo } = React;
 
+    // --- SMART EXCEL HEADER & COLUMN MATCHING ---
+    const skuCandidates = ['mã sản phẩm', 'mã hàng hóa', 'mã hàng', 'mã sp', 'mã hh', 'mã vật tư', 'mã vt', 'mã thiết bị', 'sku', 'item code', 'product code', 'mã'];
+    const nameCandidates = ['tên sản phẩm', 'tên hàng hóa', 'tên hàng', 'tên sp', 'tên hh', 'tên vật tư', 'tên thiết bị', 'description', 'product name', 'item name', 'tên'];
+    const uomCandidates = ['đơn vị tính', 'đvt', 'uom', 'unit', 'đơn vị'];
+    const qtyCandidates = ['số lượng sổ sách', 'tồn cuối', 'số lượng tồn', 'tồn kho', 'tồn sổ sách', 'sl sổ sách', 'sl tồn', 'tồn cuối kỳ', 'số lượng', 'tồn', 'sl'];
+    const serialCandidates = ['serial/lot', 'serial', 'imei', 'sn', 'số serial', 'seri', 'mã vạch'];
+    const partCandidates = ['part number', 'part_number', 'mã part', 'part no', 'part', 'mã phụ tùng'];
+    const binCandidates = ['mã bin', 'tên bin', 'bin kiểm đếm', 'bin', 'vị trí', 'khu vực', 'kệ', 'ô kiểm đếm'];
+    const typeCandidates = ['loại hàng', 'loại serial', 'loại', 'hàng hóa', 'phân loại'];
+
+    function findVal(row, candidates, defaultVal = "") {
+      if (!row) return defaultVal;
+      const keys = Object.keys(row);
+      for (const cand of candidates) {
+        for (const key of keys) {
+          if (String(key).trim().toLowerCase().includes(cand)) {
+            const val = row[key];
+            if (val !== undefined && val !== null && String(val).trim() !== "") {
+              return String(val).trim();
+            }
+          }
+        }
+      }
+      return defaultVal;
+    }
+
+    function parseSmartSheet(ws) {
+      const rows2d = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+      if (!rows2d || rows2d.length === 0) return [];
+      
+      const headerKeywords = ['mã', 'sku', 'product', 'item', 'tên', 'serial', 'tồn', 'số lượng', 'sl'];
+      let headerRowIdx = 0;
+      
+      for (let i = 0; i < Math.min(15, rows2d.length); i++) {
+        const rowStr = rows2d[i].map(c => String(c).toLowerCase()).join(" ");
+        if (headerKeywords.some(kw => rowStr.includes(kw))) {
+          headerRowIdx = i;
+          break;
+        }
+      }
+
+      const headers = rows2d[headerRowIdx].map(c => String(c).trim());
+      const dataRows = [];
+      const invalidSkus = ['tổng', 'tổng cộng', 'total', 'nan', 'none', 'null', 'sum', ''];
+
+      for (let i = headerRowIdx + 1; i < rows2d.length; i++) {
+        const r = rows2d[i];
+        if (!r || r.every(cell => String(cell).trim() === "")) continue;
+        const obj = {};
+        headers.forEach((h, colIdx) => {
+          if (h) obj[h] = r[colIdx] !== undefined ? r[colIdx] : "";
+        });
+        
+        const skuVal = findVal(obj, skuCandidates);
+        if (skuVal && !invalidSkus.includes(skuVal.toLowerCase())) {
+          dataRows.push(obj);
+        }
+      }
+      
+      return dataRows;
+    }
+
     // --- SUPABASE CONFIG ---
     const getSupabaseConfig = () => {
       let url = window.SUPABASE_URL || localStorage.getItem('SUPABASE_URL') || '';
@@ -126,10 +188,6 @@
       const [filterL2Status, setFilterL2Status] = useState("Tất cả");
       const [searchL2, setSearchL2] = useState("");
 
-      const [filterMainMode, setFilterMainMode] = useState("Chỉ SKU chênh lệch / Sai lý do (Cần xử lý)");
-      const [filterMainStatus, setFilterMainStatus] = useState("Tất cả");
-      const [searchMain, setSearchMain] = useState("");
-
       // Load Supabase sessions list
       const fetchSavedSessions = async () => {
         if (!supabaseClient) return;
@@ -180,24 +238,29 @@
           return;
         }
 
-        // Standardize columns
+        // Standardize columns using smart candidate matching
         const stockRows = stockRowsRaw.map(r => {
-          const sku = String(r['SKU'] || r['Mã vật tư'] || r['Mã sản phẩm'] || r['Mã hàng'] || '').trim();
-          const name = String(r['Tên sản phẩm'] || r['Tên hàng hóa'] || r['Tên vật tư'] || r['Tên hàng'] || 'Chưa có tên').trim();
-          const serial = String(r['Số Serial'] || r['Serial'] || r['Số Serial (Số sách)'] || '').trim();
-          const qty = parseInt(r['Số lượng'] || r['Số lượng sổ sách'] || 1) || 1;
-          const bin = String(r['Mã Bin'] || r['Bin'] || r['Tên Bin'] || '').trim();
-          const uom = String(r['ĐVT'] || r['Đvt'] || 'Cái').trim();
-          const type = String(r['Loại hàng'] || 'Hàng bán').trim();
+          const sku = findVal(r, skuCandidates);
+          const name = findVal(r, nameCandidates, "Chưa có tên");
+          const serial = findVal(r, serialCandidates);
+          const qty = parseInt(findVal(r, qtyCandidates, "1")) || 1;
+          const bin = findVal(r, binCandidates);
+          const uom = findVal(r, uomCandidates, "Cái");
+          const type = findVal(r, typeCandidates, "Hàng bán");
           return { sku, name, serial, qty, bin, uom, type };
-        }).filter(r => r.sku && r.sku.toLowerCase() !== 'sku');
+        }).filter(r => r.sku);
 
         const erpRows = erpRowsRaw.map(r => {
-          const sku = String(r['Mã vật tư'] || r['SKU'] || r['Mã sản phẩm'] || '').trim();
-          const serial = String(r['Serial đã quét'] || r['Serial'] || r['Số Serial'] || '').trim();
-          const qty = parseInt(r['Số lượng'] || 1) || 1;
+          const sku = findVal(r, skuCandidates);
+          const serial = findVal(r, serialCandidates);
+          const qty = parseInt(findVal(r, qtyCandidates, "1")) || 1;
           return { sku, serial, qty };
         }).filter(r => r.sku);
+
+        if (stockRows.length === 0 || erpRows.length === 0) {
+          alert("Không khớp được cột SKU/Mã sản phẩm trên 2 file. Vui lòng kiểm tra lại file!");
+          return;
+        }
 
         // Group ERP serials & quantities
         const erpSerialsBySku = {};
@@ -578,19 +641,6 @@
         });
       }, [dfCountL2, filterL2Mode, filterL2Status, searchL2]);
 
-      // Categorized Main Summary Rows
-      const mainSummaryRows = useMemo(() => {
-        return dfCountL2.map(r => {
-          let checkStatus = "Khớp hoàn toàn";
-          if (r.diffL2 > 0) checkStatus = `Bắn thừa hàng ${r.diffL2}`;
-          else if (r.diffL2 < 0) checkStatus = `Bắn thiếu hàng ${Math.abs(r.diffL2)}`;
-          return {
-            ...r,
-            checkStatus
-          };
-        });
-      }, [dfCountL2]);
-
       return (
         <div className="flex h-screen overflow-hidden">
           {/* SIDEBAR */}
@@ -783,8 +833,8 @@
                             reader.onload = (evt) => {
                               const wb = XLSX.read(evt.target.result, { type: 'binary' });
                               const ws = wb.Sheets[wb.SheetNames[0]];
-                              const data = XLSX.utils.sheet_to_json(ws);
-                              setRawStockData(data);
+                              const parsedRows = parseSmartSheet(ws);
+                              setRawStockData(parsedRows);
                             };
                             reader.readAsBinaryString(file);
                           }}
@@ -796,7 +846,7 @@
                         {rawStockFileName ? (
                           <div className="space-y-1">
                             <p className="text-xs font-bold text-emerald-700 truncate">{rawStockFileName}</p>
-                            <span className="text-[11px] inline-block px-2 py-0.5 bg-emerald-200/60 text-emerald-800 rounded font-medium">Đã nạp {rawStockData.length} dòng</span>
+                            <span className="text-[11px] inline-block px-2 py-0.5 bg-emerald-200/60 text-emerald-800 rounded font-medium">Đã nạp {rawStockData.length} dòng hợp lệ</span>
                           </div>
                         ) : (
                           <p className="text-xs text-slate-400">Chọn file chứa SKU, Tên, Số lượng, Serial, Bin...</p>
@@ -818,8 +868,8 @@
                             reader.onload = (evt) => {
                               const wb = XLSX.read(evt.target.result, { type: 'binary' });
                               const ws = wb.Sheets[wb.SheetNames[0]];
-                              const data = XLSX.utils.sheet_to_json(ws);
-                              setRawErpData(data);
+                              const parsedRows = parseSmartSheet(ws);
+                              setRawErpData(parsedRows);
                             };
                             reader.readAsBinaryString(file);
                           }}
@@ -831,7 +881,7 @@
                         {rawErpFileName ? (
                           <div className="space-y-1">
                             <p className="text-xs font-bold text-emerald-700 truncate">{rawErpFileName}</p>
-                            <span className="text-[11px] inline-block px-2 py-0.5 bg-emerald-200/60 text-emerald-800 rounded font-medium">Đã nạp {rawErpData.length} dòng</span>
+                            <span className="text-[11px] inline-block px-2 py-0.5 bg-emerald-200/60 text-emerald-800 rounded font-medium">Đã nạp {rawErpData.length} dòng hợp lệ</span>
                           </div>
                         ) : (
                           <p className="text-xs text-slate-400">Chọn file chứa SKU và Serial đã quét thực tế</p>
@@ -850,21 +900,25 @@
                     {/* PREVIEW TABLE IF FILES LOADED */}
                     {(rawStockData.length > 0 || rawErpData.length > 0) && (
                       <div className="pt-4 border-t border-slate-200 space-y-3">
-                        <h4 className="text-xs font-bold uppercase text-slate-500 tracking-wider">Xem trước dữ liệu đã nạp:</h4>
+                        <h4 className="text-xs font-bold uppercase text-slate-500 tracking-wider">Xem trước dữ liệu đã đọc:</h4>
                         <div className="grid grid-cols-2 gap-4 text-xs">
                           <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
                             <p className="font-semibold text-slate-700 mb-1">Tồn kho gốc ({rawStockData.length} dòng):</p>
-                            <div className="font-mono text-[11px] text-slate-600 max-h-24 overflow-y-auto space-y-0.5">
+                            <div className="font-mono text-[11px] text-slate-600 max-h-28 overflow-y-auto space-y-1">
                               {rawStockData.slice(0, 4).map((r, i) => (
-                                <div key={i} className="truncate">• {r['SKU'] || r['Mã vật tư']} - {r['Tên sản phẩm'] || r['Tên hàng hóa'] || 'SP'}</div>
+                                <div key={i} className="truncate bg-white p-1 rounded border border-slate-200">
+                                  <b>Mã:</b> {findVal(r, skuCandidates, "—")} | <b>Tên:</b> {findVal(r, nameCandidates, "—")} | <b>Serial:</b> {findVal(r, serialCandidates, "—")}
+                                </div>
                               ))}
                             </div>
                           </div>
                           <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
                             <p className="font-semibold text-slate-700 mb-1">Thực tế đếm ERP ({rawErpData.length} dòng):</p>
-                            <div className="font-mono text-[11px] text-slate-600 max-h-24 overflow-y-auto space-y-0.5">
+                            <div className="font-mono text-[11px] text-slate-600 max-h-28 overflow-y-auto space-y-1">
                               {rawErpData.slice(0, 4).map((r, i) => (
-                                <div key={i} className="truncate">• {r['SKU'] || r['Mã vật tư']} - Serial: {r['Serial đã quét'] || r['Serial'] || '—'}</div>
+                                <div key={i} className="truncate bg-white p-1 rounded border border-slate-200">
+                                  <b>Mã:</b> {findVal(r, skuCandidates, "—")} | <b>Serial:</b> {findVal(r, serialCandidates, "—")}
+                                </div>
                               ))}
                             </div>
                           </div>
