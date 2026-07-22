@@ -36,13 +36,6 @@
   <!-- Supabase JS -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
-  <!-- jsPDF & AutoTable -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
-
-  <!-- Lucide Icons -->
-  <script src="https://unpkg.com/lucide@latest"></script>
-
   <!-- Font Inter -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -54,12 +47,6 @@
       background-color: #f8fafc;
       color: #0f172a;
     }
-    .glass-card {
-      background: rgba(255, 255, 255, 0.9);
-      backdrop-filter: blur(12px);
-      border: 1px solid rgba(226, 232, 240, 0.8);
-    }
-    /* Custom Scrollbars */
     ::-webkit-scrollbar {
       width: 6px;
       height: 6px;
@@ -80,7 +67,7 @@
   <div id="root"></div>
 
   <script type="text/babel">
-    const { useState, useEffect, useMemo, useRef } = React;
+    const { useState, useEffect, useMemo } = React;
 
     // --- SUPABASE CONFIG ---
     const getSupabaseConfig = () => {
@@ -112,8 +99,13 @@
       const [savedSessions, setSavedSessions] = useState([]);
       const [monthlyArchives, setMonthlyArchives] = useState([]);
 
-      // Data States
-      const [dfRecon, setDfRecon] = useState(null);
+      // Raw Uploaded Files States
+      const [rawStockData, setRawStockData] = useState([]);
+      const [rawStockFileName, setRawStockFileName] = useState("");
+      const [rawErpData, setRawErpData] = useState([]);
+      const [rawErpFileName, setRawErpFileName] = useState("");
+
+      // Processed Data States
       const [dfCountL2, setDfCountL2] = useState([]);
       const [dfCheckDetail, setDfCheckDetail] = useState([]);
 
@@ -125,7 +117,6 @@
       const [archiveMonth, setArchiveMonth] = useState(new Date().getMonth() + 1);
       const [archiveYear, setArchiveYear] = useState(new Date().getFullYear());
       const [archiveLabel, setArchiveLabel] = useState("");
-      const [selectedArchiveData, setSelectedArchiveData] = useState(null);
 
       // Filters
       const [filterDetailStatus, setFilterDetailStatus] = useState("Chỉ Serial chênh lệch (Dư / Thiếu)");
@@ -184,6 +175,11 @@
 
       // --- FILE PARSING & RECONCILIATION ENGINE ---
       const handleProcessFiles = (stockRowsRaw, erpRowsRaw) => {
+        if (!stockRowsRaw || stockRowsRaw.length === 0 || !erpRowsRaw || erpRowsRaw.length === 0) {
+          alert("Vui lòng tải lên cả 2 file trước khi bấm đối soát!");
+          return;
+        }
+
         // Standardize columns
         const stockRows = stockRowsRaw.map(r => {
           const sku = String(r['SKU'] || r['Mã vật tư'] || r['Mã sản phẩm'] || r['Mã hàng'] || '').trim();
@@ -222,7 +218,7 @@
           if (r.serial) serialSkusSet.add(r.sku);
         });
 
-        // Build dfRecon & dfCountL2
+        // Build dfCountL2
         const stockQtyBySku = {};
         const stockNameBySku = {};
         const stockUomBySku = {};
@@ -367,7 +363,7 @@
         setDfCountL2(countL2Data);
         setDfCheckDetail(detailRows);
         setIsDirty(true);
-        setActiveTab(1); // Switch to Tab 2
+        setActiveTab(1); // Auto switch to Tab 2
       };
 
       // --- SAVE & LOAD SESSIONS ---
@@ -582,6 +578,19 @@
         });
       }, [dfCountL2, filterL2Mode, filterL2Status, searchL2]);
 
+      // Categorized Main Summary Rows
+      const mainSummaryRows = useMemo(() => {
+        return dfCountL2.map(r => {
+          let checkStatus = "Khớp hoàn toàn";
+          if (r.diffL2 > 0) checkStatus = `Bắn thừa hàng ${r.diffL2}`;
+          else if (r.diffL2 < 0) checkStatus = `Bắn thiếu hàng ${Math.abs(r.diffL2)}`;
+          return {
+            ...r,
+            checkStatus
+          };
+        });
+      }, [dfCountL2]);
+
       return (
         <div className="flex h-screen overflow-hidden">
           {/* SIDEBAR */}
@@ -691,10 +700,7 @@
                     <div key={a.id} className="p-2 bg-slate-800/80 rounded border border-slate-800 text-xs flex justify-between items-center">
                       <span className="font-medium text-slate-200">{a.label}</span>
                       <button
-                        onClick={() => {
-                          // View archive
-                          setActiveTab(5);
-                        }}
+                        onClick={() => setActiveTab(5)}
                         className="px-2 py-0.5 bg-slate-700 hover:bg-slate-600 rounded text-[11px] text-slate-200"
                       >
                         Xem
@@ -755,13 +761,15 @@
               {/* TAB 0: NHẬP DỮ LIỆU */}
               {activeTab === 0 && (
                 <div className="space-y-6 max-w-4xl mx-auto">
-                  <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-                    <h3 className="text-base font-bold text-slate-800">Tải lên file Tồn kho sổ sách & Kết quả quét thực tế</h3>
-                    <p className="text-xs text-slate-500">Hệ thống chấp nhận định dạng Excel (.xlsx, .xls) hoặc CSV. Dữ liệu sẽ được đối soát tự động trong 0.1s.</p>
+                  <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-6">
+                    <div>
+                      <h3 className="text-base font-bold text-slate-800">Tải lên file Tồn kho sổ sách & Kết quả quét thực tế</h3>
+                      <p className="text-xs text-slate-500">Hệ thống chấp nhận định dạng Excel (.xlsx, .xls) hoặc CSV. Dữ liệu sẽ được đối soát tự động trong 0.1s.</p>
+                    </div>
 
-                    <div className="grid grid-cols-2 gap-6 pt-2">
+                    <div className="grid grid-cols-2 gap-6">
                       {/* DROPZONE 1 */}
-                      <div className="border-2 border-dashed border-slate-300 hover:border-brand-500 rounded-xl p-6 text-center bg-slate-50 transition cursor-pointer relative">
+                      <div className={`border-2 border-dashed rounded-xl p-6 text-center transition cursor-pointer relative ${rawStockFileName ? 'border-emerald-500 bg-emerald-50/40' : 'border-slate-300 hover:border-brand-500 bg-slate-50'}`}>
                         <input
                           type="file"
                           accept=".xlsx, .xls, .csv"
@@ -770,23 +778,33 @@
                           onChange={e => {
                             const file = e.target.files[0];
                             if (!file) return;
+                            setRawStockFileName(file.name);
                             const reader = new FileReader();
                             reader.onload = (evt) => {
                               const wb = XLSX.read(evt.target.result, { type: 'binary' });
                               const ws = wb.Sheets[wb.SheetNames[0]];
-                              window._rawStockData = XLSX.utils.sheet_to_json(ws);
-                              alert("✅ Đã đọc thành công File Tồn kho Sổ sách!");
+                              const data = XLSX.utils.sheet_to_json(ws);
+                              setRawStockData(data);
                             };
                             reader.readAsBinaryString(file);
                           }}
                         />
-                        <div className="w-12 h-12 rounded-full bg-brand-50 text-brand-600 mx-auto flex items-center justify-center font-bold text-xl mb-3">📁</div>
+                        <div className={`w-12 h-12 rounded-full mx-auto flex items-center justify-center font-bold text-xl mb-3 ${rawStockFileName ? 'bg-emerald-100 text-emerald-700' : 'bg-brand-50 text-brand-600'}`}>
+                          {rawStockFileName ? '✅' : '📁'}
+                        </div>
                         <h4 className="font-semibold text-sm text-slate-800 mb-1">1. Tồn kho Sổ sách (Hệ thống gốc)</h4>
-                        <p className="text-xs text-slate-400">Chọn file chứa SKU, Tên, Số lượng, Serial, Bin...</p>
+                        {rawStockFileName ? (
+                          <div className="space-y-1">
+                            <p className="text-xs font-bold text-emerald-700 truncate">{rawStockFileName}</p>
+                            <span className="text-[11px] inline-block px-2 py-0.5 bg-emerald-200/60 text-emerald-800 rounded font-medium">Đã nạp {rawStockData.length} dòng</span>
+                          </div>
+                        ) : (
+                          <p className="text-xs text-slate-400">Chọn file chứa SKU, Tên, Số lượng, Serial, Bin...</p>
+                        )}
                       </div>
 
                       {/* DROPZONE 2 */}
-                      <div className="border-2 border-dashed border-slate-300 hover:border-emerald-500 rounded-xl p-6 text-center bg-slate-50 transition cursor-pointer relative">
+                      <div className={`border-2 border-dashed rounded-xl p-6 text-center transition cursor-pointer relative ${rawErpFileName ? 'border-emerald-500 bg-emerald-50/40' : 'border-slate-300 hover:border-emerald-500 bg-slate-50'}`}>
                         <input
                           type="file"
                           accept=".xlsx, .xls, .csv"
@@ -795,36 +813,64 @@
                           onChange={e => {
                             const file = e.target.files[0];
                             if (!file) return;
+                            setRawErpFileName(file.name);
                             const reader = new FileReader();
                             reader.onload = (evt) => {
                               const wb = XLSX.read(evt.target.result, { type: 'binary' });
                               const ws = wb.Sheets[wb.SheetNames[0]];
-                              window._rawErpData = XLSX.utils.sheet_to_json(ws);
-                              alert("✅ Đã đọc thành công File Kiểm đếm Thực tế!");
+                              const data = XLSX.utils.sheet_to_json(ws);
+                              setRawErpData(data);
                             };
                             reader.readAsBinaryString(file);
                           }}
                         />
-                        <div className="w-12 h-12 rounded-full bg-emerald-50 text-emerald-600 mx-auto flex items-center justify-center font-bold text-xl mb-3">⚡</div>
+                        <div className={`w-12 h-12 rounded-full mx-auto flex items-center justify-center font-bold text-xl mb-3 ${rawErpFileName ? 'bg-emerald-100 text-emerald-700' : 'bg-emerald-50 text-emerald-600'}`}>
+                          {rawErpFileName ? '✅' : '⚡'}
+                        </div>
                         <h4 className="font-semibold text-sm text-slate-800 mb-1">2. Thực tế đếm / Máy quét (ERP)</h4>
-                        <p className="text-xs text-slate-400">Chọn file chứa SKU và Serial đã quét thực tế</p>
+                        {rawErpFileName ? (
+                          <div className="space-y-1">
+                            <p className="text-xs font-bold text-emerald-700 truncate">{rawErpFileName}</p>
+                            <span className="text-[11px] inline-block px-2 py-0.5 bg-emerald-200/60 text-emerald-800 rounded font-medium">Đã nạp {rawErpData.length} dòng</span>
+                          </div>
+                        ) : (
+                          <p className="text-xs text-slate-400">Chọn file chứa SKU và Serial đã quét thực tế</p>
+                        )}
                       </div>
                     </div>
 
                     <button
-                      onClick={() => {
-                        const sData = window._rawStockData || [];
-                        const eData = window._rawErpData || [];
-                        if (sData.length === 0 || eData.length === 0) {
-                          alert("Vui lòng chọn đầy đủ cả 2 file Tồn kho và Thực tế quét trước khi đối soát!");
-                          return;
-                        }
-                        handleProcessFiles(sData, eData);
-                      }}
-                      className="w-full py-3 bg-brand-600 hover:bg-brand-700 text-white font-bold text-sm rounded-xl shadow-lg transition"
+                      onClick={() => handleProcessFiles(rawStockData, rawErpData)}
+                      disabled={rawStockData.length === 0 || rawErpData.length === 0}
+                      className={`w-full py-3.5 font-bold text-sm rounded-xl shadow-lg transition flex items-center justify-center gap-2 ${rawStockData.length > 0 && rawErpData.length > 0 ? 'bg-brand-600 hover:bg-brand-700 text-white shadow-brand-500/20 animate-pulse' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}
                     >
                       🚀 Bắt đầu Tự động Đối soát Dữ liệu
                     </button>
+
+                    {/* PREVIEW TABLE IF FILES LOADED */}
+                    {(rawStockData.length > 0 || rawErpData.length > 0) && (
+                      <div className="pt-4 border-t border-slate-200 space-y-3">
+                        <h4 className="text-xs font-bold uppercase text-slate-500 tracking-wider">Xem trước dữ liệu đã nạp:</h4>
+                        <div className="grid grid-cols-2 gap-4 text-xs">
+                          <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
+                            <p className="font-semibold text-slate-700 mb-1">Tồn kho gốc ({rawStockData.length} dòng):</p>
+                            <div className="font-mono text-[11px] text-slate-600 max-h-24 overflow-y-auto space-y-0.5">
+                              {rawStockData.slice(0, 4).map((r, i) => (
+                                <div key={i} className="truncate">• {r['SKU'] || r['Mã vật tư']} - {r['Tên sản phẩm'] || r['Tên hàng hóa'] || 'SP'}</div>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
+                            <p className="font-semibold text-slate-700 mb-1">Thực tế đếm ERP ({rawErpData.length} dòng):</p>
+                            <div className="font-mono text-[11px] text-slate-600 max-h-24 overflow-y-auto space-y-0.5">
+                              {rawErpData.slice(0, 4).map((r, i) => (
+                                <div key={i} className="truncate">• {r['SKU'] || r['Mã vật tư']} - Serial: {r['Serial đã quét'] || r['Serial'] || '—'}</div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
