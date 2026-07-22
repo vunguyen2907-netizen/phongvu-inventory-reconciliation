@@ -471,14 +471,25 @@ with st.sidebar:
         st.subheader("📅 Lưu trữ hàng tháng")
         st.caption(f"Lưu snapshot cuối tháng. Giữ tối đa 12 tháng, tự động xóa tháng cũ nhất.")
 
-        # Chọn tháng/năm cần lưu
-        _default_ym = datetime.date.today().replace(day=1)
-        _archive_month = st.date_input(
-            "Tháng cần lưu:",
-            value=_default_ym,
-            format="MM/YYYY",
-            key="archive_month_picker",
-        )
+        # Chọn tháng/năm cần lưu (dùng selectbox thay date_input để tránh lỗi format)
+        _today = datetime.date.today()
+        _col_m, _col_y = st.columns(2)
+        with _col_m:
+            _sel_month = st.selectbox(
+                "Tháng:",
+                list(range(1, 13)),
+                index=_today.month - 1,
+                format_func=lambda m: f"Tháng {m:02d}",
+                key="archive_month_sel",
+            )
+        with _col_y:
+            _sel_year = st.selectbox(
+                "Năm:",
+                list(range(_today.year - 2, _today.year + 2)),
+                index=2,
+                key="archive_year_sel",
+            )
+        _archive_month = datetime.date(_sel_year, _sel_month, 1)
         _archive_label = st.text_input(
             "Nhãn (VD: Khánh Hội, CP74...):",
             value="",
