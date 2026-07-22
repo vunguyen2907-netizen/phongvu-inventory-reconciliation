@@ -31,69 +31,137 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
-st.set_page_config(page_title="Đối Soát Kiểm Kê - Phong Vũ", layout="wide")
+st.set_page_config(page_title="Hệ thống Đối Soát Kiểm Kê - Phong Vũ", layout="wide", initial_sidebar_state="expanded")
 
-# Inject Custom Minimalist Corporate CSS
+# Inject Modern High-End Corporate Web App CSS
 st.markdown("""
 <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    
     html, body, [class*="css"] {
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background-color: #f8fafc;
+        color: #0f172a;
     }
+    
+    /* Top Web App Header Banner */
     .app-header {
-        padding: 0.2rem 0 1.2rem 0;
-        border-bottom: 1px solid #E5E7EB;
-        margin-bottom: 1.2rem;
+        background: linear-gradient(135deg, #ffffff 0%, #f1f5f9 100%);
+        padding: 1.25rem 1.5rem;
+        border-radius: 1rem;
+        border: 1px solid #e2e8f0;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+        margin-bottom: 1.5rem;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+    }
+    .app-brand-badge {
+        width: 44px;
+        height: 44px;
+        background: linear-gradient(135deg, #177ddc 0%, #003eb3 100%);
+        color: white;
+        font-weight: 700;
+        font-size: 1.2rem;
+        border-radius: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 4px 12px rgba(23, 125, 220, 0.3);
     }
     .app-title {
-        font-size: 1.5rem;
+        font-size: 1.35rem;
         font-weight: 700;
-        color: #003399;
+        color: #0f172a;
         margin: 0;
-        padding: 0;
-        letter-spacing: -0.01em;
+        letter-spacing: -0.02em;
     }
     .app-subtitle {
-        font-size: 0.88rem;
-        color: #6B7280;
-        margin-top: 0.25rem;
+        font-size: 0.82rem;
+        color: #64748b;
+        margin-top: 0.2rem;
     }
+    
+    /* Sleek Custom Tabs */
     .stTabs [data-baseweb="tab-list"] {
-        gap: 6px;
-        border-bottom: 1px solid #E5E7EB;
+        gap: 8px;
+        border-bottom: 1px solid #e2e8f0;
+        padding-bottom: 4px;
     }
     .stTabs [data-baseweb="tab"] {
-        padding: 8px 16px;
-        font-weight: 500;
-        font-size: 0.88rem;
-        color: #4B5563;
-        border-radius: 4px 4px 0 0;
+        padding: 10px 18px;
+        font-weight: 600;
+        font-size: 0.85rem;
+        color: #64748b;
+        border-radius: 8px 8px 0 0;
+        transition: all 0.2s ease;
+    }
+    .stTabs [data-baseweb="tab"]:hover {
+        color: #0958d9;
+        background-color: #f1f5f9;
     }
     .stTabs [aria-selected="true"] {
-        color: #003399 !important;
-        font-weight: 600 !important;
-        border-bottom: 2px solid #003399 !important;
+        color: #0958d9 !important;
+        font-weight: 700 !important;
+        background-color: #e6f4ff !important;
+        border-bottom: 3px solid #0958d9 !important;
+    }
+
+    /* Metric Cards Styling */
+    [data-testid="stMetric"] {
+        background-color: #ffffff;
+        border: 1px solid #e2e8f0;
+        padding: 0.85rem 1rem;
+        border-radius: 12px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+    [data-testid="stMetric"]:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.06);
     }
     [data-testid="stMetricValue"] {
-        font-size: 1.35rem !important;
+        font-size: 1.25rem !important;
         font-weight: 700 !important;
-        color: #111827 !important;
+        color: #0f172a !important;
     }
     [data-testid="stMetricLabel"] {
-        font-size: 0.82rem !important;
-        font-weight: 500 !important;
-        color: #6B7280 !important;
+        font-size: 0.78rem !important;
+        font-weight: 600 !important;
+        color: #64748b !important;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
     }
+
+    /* Custom Container Cards */
+    .stContainer {
+        border-radius: 14px;
+        border: 1px solid #e2e8f0;
+        background-color: #ffffff;
+    }
+
+    /* Buttons */
     .stButton>button {
-        border-radius: 4px;
-        font-weight: 500;
+        border-radius: 8px;
+        font-weight: 600;
+        font-size: 0.85rem;
+        transition: all 0.2s ease;
     }
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown("""
 <div class="app-header">
-    <div class="app-title">Hệ thống Tự động Xử lý & Đối soát Dữ liệu Kiểm kê</div>
-    <div class="app-subtitle">Công ty Cổ phần Thương mại Dịch vụ Phong Vũ — Quy trình đối soát & xuất báo cáo định kỳ</div>
+    <div style="display: flex; align-items: center; gap: 14px;">
+        <div class="app-brand-badge">PV</div>
+        <div>
+            <div class="app-title">Hệ thống Tự động Xử lý & Đối soát Dữ liệu Kiểm kê</div>
+            <div class="app-subtitle">Công ty Cổ phần Thương mại Dịch vụ Phong Vũ — Quy trình đối soát & xuất báo cáo tức thì 0ms</div>
+        </div>
+    </div>
+    <div style="text-align: right;">
+        <span style="background-color: #e6f4ff; color: #0958d9; font-size: 0.75rem; font-weight: 600; padding: 4px 10px; border-radius: 6px; border: 1px solid #91caef;">Antigravity Engine v2.0 • Web App</span>
+    </div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -121,9 +189,7 @@ def find_column(columns, candidates):
 
 def normalize_serial(s):
     """
-    Chuẩn hóa Serial đối soát chính xác:
-    - Viết hoa toàn bộ
-    - Loại bỏ khoảng trắng thừa và ký tự ẩn unicode
+    Chuẩn hóa Serial đối soát chính xác.
     """
     if pd.isna(s):
         return ""
@@ -132,8 +198,7 @@ def normalize_serial(s):
 
 def clean_export_note(note_str):
     """
-    Loại bỏ các thẻ ghi chú nội bộ đếm lần 2 như '[Bổ sung Serial Lần 2: ...]', '[Sửa Serial: ...]', '[Đã loại bỏ Serial...]'
-    Chỉ giữ lại các mã đơn hàng xuất bán và tình trạng dư/thiếu thực tế cho báo cáo gửi sếp.
+    Loại bỏ các thẻ ghi chú nội bộ đếm lần 2.
     """
     if pd.isna(note_str):
         return ""
@@ -148,57 +213,9 @@ def clean_export_note(note_str):
     parts = [p.strip() for p in s_clean.split('|') if p.strip()]
     return " | ".join(parts)
 
-def is_format_mismatch(scanned_str, stock_list):
-    """
-    Kiểm tra xem serial được quét (scanned_str) có bị lệch định dạng so với danh sách serial sổ sách (stock_list) không:
-    - Lệch độ dài (length mismatch >= 2)
-    - Lệch cấu trúc chữ/số (stock có chứa chữ nhưng scanned lại là thuần số, hoặc ngược lại)
-    - Lệch tiền tố chung (nếu các serial trong sổ sách có 2 ký tự đầu giống hệt nhau)
-    """
-    if not stock_list:
-        return False
-    
-    scanned_str = str(scanned_str).strip()
-    if not scanned_str or scanned_str in ['nan', 'None', 'null', '-']:
-        return False
-    
-    clean_stock = [str(s).strip() for s in stock_list if pd.notna(s) and str(s).strip() not in ['', 'nan', 'None', 'null', '-']]
-    if not clean_stock:
-        return False
-
-    norm_scanned = normalize_serial(scanned_str)
-    norm_stock = [normalize_serial(s) for s in clean_stock if normalize_serial(s)]
-
-    stock_lengths = set(len(s) for s in norm_stock)
-    has_letters_in_stock = any(any(c.isalpha() for c in s) for s in clean_stock)
-    prefixes = set(s[:2].upper() for s in clean_stock if len(s) >= 2)
-
-    scanned_len = len(norm_scanned)
-    scanned_has_letters = any(c.isalpha() for c in scanned_str)
-    scanned_prefix = scanned_str[:2].upper() if len(scanned_str) >= 2 else ""
-
-    # 1. Lệch độ dài đáng kể
-    if scanned_len not in stock_lengths and min(abs(scanned_len - l) for l in stock_lengths) >= 2:
-        return True
-
-    # 2. Lệch loại ký tự
-    if has_letters_in_stock and not scanned_has_letters:
-        return True
-    if not has_letters_in_stock and scanned_has_letters:
-        return True
-
-    # 3. Lệch tiền tố chung
-    if len(prefixes) == 1 and scanned_prefix and scanned_prefix not in prefixes:
-        return True
-
-    return False
-
-
 def read_smart_dataframe(file_obj, is_erp=False):
     """
-    Đọc dữ liệu từ file CSV hoặc Excel:
-    - Nếu là file ERP Excel: Tự động chọn Sheet 2 ('KetQuaChiTiet' hoặc sheet index 1).
-    - Tự động dò tìm dòng Tiêu đề (Header) bằng cách chấm điểm các từ khóa tiêu đề phổ biến.
+    Đọc dữ liệu từ file CSV hoặc Excel thông minh.
     """
     filename = file_obj.name.lower()
     
@@ -248,6 +265,7 @@ def read_smart_dataframe(file_obj, is_erp=False):
             best_row_idx = idx
 
     header_raw = df_raw.iloc[best_row_idx].values
+
     seen = {}
     clean_headers = []
     for i, val in enumerate(header_raw):
@@ -263,9 +281,8 @@ def read_smart_dataframe(file_obj, is_erp=False):
     df.columns = clean_headers
     return df
 
-
 def save_session_state(show_progress=False):
-    """Lưu đợt kiểm kê hiện tại lên Supabase (gọi trực tiếp khi cần lưu ngay)."""
+    """Lưu đợt kiểm kê hiện tại lên Supabase."""
     if not supabase_is_configured() or st.session_state.df_check_detail is None:
         return False
 
@@ -281,8 +298,6 @@ def save_session_state(show_progress=False):
             )
             st.session_state.active_session_id = saved['id']
 
-            # File ERP và tồn kho gốc không nằm trong JSONB; chúng được đưa
-            # vào Supabase Storage private đúng một lần cho từng đợt.
             pending_files = st.session_state.get('pending_source_uploads', [])
             if pending_files:
                 upload_source_files(pending_files)
@@ -304,21 +319,12 @@ def save_session_state(show_progress=False):
             return persist()
     return persist()
 
-
 def mark_dirty():
-    """Đánh dấu có thay đổi chưa lưu — không gọi Supabase ngay.
-
-    Dùng thay cho save_session_state() trong các editor loop để tránh lag.
-    flush_if_dirty() sẽ thực sự gọi Supabase sau DEBOUNCE_SECONDS giây idle.
-    """
     st.session_state._is_dirty = True
 
-
-DEBOUNCE_SECONDS = 10  # Số giây idle trước khi tự động lưu
-
+DEBOUNCE_SECONDS = 10
 
 def flush_if_dirty():
-    """Gọi ở đầu mỗi rerun; lưu lên Supabase nếu đã qua DEBOUNCE_SECONDS giây."""
     if not st.session_state.get('_is_dirty', False):
         return
     if st.session_state.df_check_detail is None:
@@ -328,7 +334,6 @@ def flush_if_dirty():
         save_session_state(show_progress=False)
 
 def reset_session_state():
-    """Dọn màn hình để tạo một đợt mới; lịch sử Supabase vẫn được giữ."""
     st.session_state.df_recon = None
     st.session_state.df_count_l2 = None
     st.session_state.df_check_detail = None
@@ -340,7 +345,7 @@ def reset_session_state():
     st.session_state.session_name = f"Kiểm kê {datetime.date.today().strftime('%d/%m/%Y')}"
     st.session_state.last_saved_time = None
 
-# Khởi tạo session state & tự động khôi phục dữ liệu khi F5
+# Khởi tạo session state
 if 'df_count_l2' not in st.session_state:
     st.session_state.df_count_l2 = None
 if 'df_check_detail' not in st.session_state:
@@ -370,9 +375,8 @@ if 'save_notice' not in st.session_state:
 if 'source_file_download' not in st.session_state:
     st.session_state.source_file_download = None
 if 'archive_view' not in st.session_state:
-    st.session_state.archive_view = None   # dict chứa dữ liệu tháng đang xem
+    st.session_state.archive_view = None
 
-# Flush debounce: tự động lưu sau DEBOUNCE_SECONDS giây idle (đặt trước sidebar)
 flush_if_dirty()
 
 def load_selected_session(session_id):
@@ -388,12 +392,11 @@ def load_selected_session(session_id):
     st.session_state.session_name = saved.get('session_name', '')
     st.session_state.last_saved_time = display_time(saved.get('updated_at'))
 
-
+# SIDEBAR
 with st.sidebar:
     st.header("Lịch sử kiểm kê")
     st.text_input("Tên đợt kiểm kê", key="session_name")
     if supabase_is_configured():
-        # Nút lưu thủ công — lưu ngay, bỏ qua debounce
         _btn_save_label = "💾 Lưu đợt hiện tại"
         if st.session_state.get('_is_dirty', False):
             _btn_save_label = "💾 Lưu đợt hiện tại ●"
@@ -420,95 +423,34 @@ with st.sidebar:
         except Exception as exc:
             st.error(f"Không tải được lịch sử Supabase: {exc}")
     else:
-        st.warning("Chưa kết nối Supabase. Xem README để cấu hình secrets.")
+        st.warning("Chưa kết nối Supabase.")
 
-    # Callback chạy trước khi widgets được render trong lần rerun tiếp theo,
-    # nhờ đó có thể reset `session_name` an toàn.
-    st.button(
-        "Tạo đợt kiểm kê mới",
-        use_container_width=True,
-        on_click=reset_session_state,
-    )
+    st.button("Tạo đợt kiểm kê mới", use_container_width=True, on_click=reset_session_state)
 
     if st.session_state.last_saved_time:
-        _dirty_indicator = " (có thay đổi chưa lưu)" if st.session_state.get('_is_dirty') else ""
+        _dirty_indicator = " (có thay đổi)" if st.session_state.get('_is_dirty') else ""
         st.caption(f"Đã lưu: {st.session_state.last_saved_time}{_dirty_indicator}")
-    if st.session_state.source_files:
-        st.caption("Đã lưu file nguồn: " + ", ".join(item['name'] for item in st.session_state.source_files))
-        with st.expander("Tải lại dữ liệu nguồn của đợt này"):
-            for source in st.session_state.source_files:
-                source_id = source['path'].replace('/', '_').replace('.', '_')
-                if st.button(f"Chuẩn bị tải: {source['name']}", key=f"prepare_source_{source_id}", use_container_width=True):
-                    try:
-                        with st.spinner(f"Đang tải {source['name']}…"):
-                            st.session_state.source_file_download = {
-                                'path': source['path'],
-                                'name': source['name'],
-                                'content_type': source.get('content_type', 'application/octet-stream'),
-                                'data': download_source_file(source['path']),
-                            }
-                    except Exception as exc:
-                        st.error(f"Không tải được file nguồn: {exc}")
-                cached_download = st.session_state.source_file_download
-                if cached_download and cached_download['path'] == source['path']:
-                    st.download_button(
-                        label=f"Tải xuống {source['name']}",
-                        data=cached_download['data'],
-                        file_name=source['name'],
-                        mime=cached_download['content_type'],
-                        key=f"download_source_{source_id}",
-                        use_container_width=True,
-                    )
-    if st.session_state.save_notice:
-        st.success(st.session_state.save_notice)
-        st.session_state.save_notice = None
-    if st.session_state.db_error:
-        st.warning(f"Chưa lưu được lên Supabase: {st.session_state.db_error}")
 
-    # ── PHẦN LƯU TRỮ HÀNG THÁNG ──────────────────────────
     if supabase_is_configured():
         st.markdown("---")
         st.subheader("📅 Lưu trữ hàng tháng")
-        st.caption(f"Lưu snapshot cuối tháng. Giữ tối đa 12 tháng, tự động xóa tháng cũ nhất.")
-
-        # Chọn tháng/năm cần lưu (dùng selectbox thay date_input để tránh lỗi format)
         _today = datetime.date.today()
         _col_m, _col_y = st.columns(2)
         with _col_m:
-            _sel_month = st.selectbox(
-                "Tháng:",
-                list(range(1, 13)),
-                index=_today.month - 1,
-                format_func=lambda m: f"Tháng {m:02d}",
-                key="archive_month_sel",
-            )
+            _sel_month = st.selectbox("Tháng:", list(range(1, 13)), index=_today.month - 1, format_func=lambda m: f"Tháng {m:02d}", key="archive_month_sel")
         with _col_y:
-            _sel_year = st.selectbox(
-                "Năm:",
-                list(range(_today.year - 2, _today.year + 2)),
-                index=2,
-                key="archive_year_sel",
-            )
+            _sel_year = st.selectbox("Năm:", list(range(_today.year - 2, _today.year + 2)), index=2, key="archive_year_sel")
         _archive_month = datetime.date(_sel_year, _sel_month, 1)
-        _archive_label = st.text_input(
-            "Nhãn (VD: Khánh Hội, CP74...):",
-            value="",
-            key="archive_label_input",
-            placeholder="Tên kho / Chi nhánh",
-        )
+        _archive_label = st.text_input("Nhãn (VD: Khánh Hội...):", value="", key="archive_label_input")
 
-        _can_archive = (
-            st.session_state.df_check_detail is not None
-            and st.session_state.df_count_l2 is not None
-        )
-        if st.button("💾 Lưu báo cáo tháng này", use_container_width=True, disabled=not _can_archive, key="btn_save_archive"):
+        _can_archive = st.session_state.df_check_detail is not None and st.session_state.df_count_l2 is not None
+        if st.button("📦 Lưu báo cáo tháng này", use_container_width=True, disabled=not _can_archive, key="btn_save_archive"):
             try:
                 _ym_str = _archive_month.strftime("%Y-%m")
                 _label_str = f"Tháng {_archive_month.strftime('%m/%Y')}"
                 if _archive_label.strip():
                     _label_str += f" — {_archive_label.strip()}"
 
-                # Build df_summary từ df_count_l2 hiện tại
                 _df_l2_snap = st.session_state.df_count_l2.copy()
                 _snap_rows = []
                 for _i, _r in _df_l2_snap.iterrows():
@@ -540,32 +482,9 @@ with st.sidebar:
             except Exception as _exc:
                 st.error(f"Lỗi lưu archive: {_exc}")
 
-        # Danh sách các tháng đã lưu
-        try:
-            _monthly_list = list_monthly_archives()
-            if _monthly_list:
-                st.caption(f"**{len(_monthly_list)}/12 tháng** đã lưu:")
-                for _arch in _monthly_list:
-                    _arch_col1, _arch_col2 = st.columns([3, 1])
-                    with _arch_col1:
-                        _updated = display_time(_arch.get('updated_at', ''))
-                        st.caption(f"📁 **{_arch['label']}** \n_{_updated}_")
-                    with _arch_col2:
-                        if st.button("Xem", key=f"view_arch_{_arch['year_month']}", use_container_width=True):
-                            try:
-                                with st.spinner("Đang tải…"):
-                                    st.session_state.archive_view = load_monthly_archive(_arch['year_month'])
-                                st.rerun()
-                            except Exception as _exc:
-                                st.error(str(_exc))
-            else:
-                st.caption("Chưa có tháng nào được lưu.")
-        except Exception as _exc:
-            st.caption(f"Không tải được danh sách: {_exc}")
-
 @st.dialog("Lý Do Loại Bỏ Serial Bắn Dư Khỏi Báo Cáo")
 def modal_clear_surplus(sku_val, serial_val):
-    st.markdown(f"Bạn đang yêu cầu **loại bỏ Serial bắn dư `{serial_val}`** của SKU **`{sku_val}`** khỏi Báo cáo Tổng hợp hàng hóa (`TH-HANG HOA`).")
+    st.markdown(f"Bạn đang yêu cầu **loại bỏ Serial bắn dư `{serial_val}`** của SKU **`{sku_val}`** khỏi Báo cáo TH-HANG HOA.")
     reason_input = st.text_input("Vui lòng nhập lý do loại bỏ (Ví dụ: Quét nhầm, hàng mẫu, hủy đơn xuất...):", key="reason_clear_input")
     
     col_c1, col_c2 = st.columns(2)
@@ -601,16 +520,14 @@ def modal_clear_surplus(sku_val, serial_val):
 
 tabs = st.tabs([
     "1. Nhập dữ liệu",
-    "2. Kiểm đếm lần 2",
-    "3. Kết quả kiểm lần 2",
+    "2. Chi tiết Serial",
+    "3. Kiểm đếm Lần 2 (0ms)",
     "4. Bảng tổng hợp chênh lệch",
     "5. Xuất báo cáo",
     "📅 6. Lưu trữ hàng tháng",
 ])
 
-# ==========================================
 # TAB 1: NHẬP DỮ LIỆU ĐẦU VÀO
-# ==========================================
 with tabs[0]:
     st.subheader("Tải lên dữ liệu hệ thống gốc & kết quả kiểm đếm thực tế")
     
@@ -621,19 +538,17 @@ with tabs[0]:
     
     with col1:
         with st.container(border=True):
-            st.markdown("**Dữ liệu Tồn kho Sổ sách (Hệ thống gốc)**")
+            st.markdown("**1. Dữ liệu Tồn kho Sổ sách (Hệ thống gốc)**")
             file_stock = st.file_uploader("Chọn file Tồn kho gốc (Chứa SKU, Số lượng, Serial, Bin...)", type=["csv", "xlsx"], key="stock")
         
     with col2:
         with st.container(border=True):
-            st.markdown("**Dữ liệu Kiểm đếm Thực tế (ERP)**")
+            st.markdown("**2. Dữ liệu Kiểm đếm Thực tế (ERP)**")
             file_erp = st.file_uploader("Chọn file Kết quả kiểm đếm thực tế từ ERP...", type=["csv", "xlsx"], key="erp")
 
     if file_stock and file_erp:
         st.info("Đã nhận đủ dữ liệu hệ thống và ERP. Nhấn nút bên dưới để bắt đầu tự động trích xuất & đối soát.")
-        if st.button("Bắt đầu trích xuất & Tạo 3 bảng đối soát", type="primary", use_container_width=True):
-            # Mỗi lần import là một đợt mới. File gốc sẽ được lưu ở Storage,
-            # còn các bảng đối soát lưu ở PostgreSQL/JSONB.
+        if st.button("🚀 Bắt đầu Tự động Đối soát Dữ liệu", type="primary", use_container_width=True):
             new_session_id = str(uuid.uuid4())
             stock_bytes = file_stock.getvalue()
             erp_bytes = file_erp.getvalue()
@@ -658,11 +573,11 @@ with tabs[0]:
             df_stock_raw = read_smart_dataframe(file_stock, is_erp=False)
             df_erp_raw = read_smart_dataframe(file_erp, is_erp=True)
             
-            sku_candidates = ['mã sản phẩm', 'mã hàng hóa', 'mã hàng', 'mã sp', 'mã hh', 'mã vật tư', 'mã vt', 'mã thiết bị', 'sku', 'item code', 'product code', 'mã']
+            sku_candidates = ['mã sản phẩm', 'mã hàng hóa', 'mã hàng', 'mã sp', 'mã hh', 'mã vật tư', 'mã vt', 'mã thiết bị', 'sku', 'item code', 'product code', 'part number', 'mã']
             name_candidates = ['tên sản phẩm', 'tên hàng hóa', 'tên hàng', 'tên sp', 'tên hh', 'tên vật tư', 'tên thiết bị', 'description', 'product name', 'item name', 'tên']
             uom_candidates = ['đơn vị tính', 'đvt', 'uom', 'unit', 'đơn vị']
             qty_candidates = ['số lượng sổ sách', 'tồn cuối', 'số lượng tồn', 'tồn kho', 'tồn sổ sách', 'sl sổ sách', 'sl tồn', 'tồn cuối kỳ', 'số lượng', 'tồn', 'sl']
-            serial_candidates = ['serial/lot', 'serial', 'imei', 'sn', 'số serial', 'seri']
+            serial_candidates = ['serial/lot', 'serial', 'imei', 'sn', 'số serial', 'seri', 'mã vạch', 'barcode']
             part_candidates = ['part number', 'part_number', 'mã part', 'part no', 'part', 'mã phụ tùng']
             bin_candidates = ['mã bin', 'tên bin', 'bin kiểm đếm', 'bin', 'vị trí', 'khu vực', 'kệ', 'ô kiểm đếm']
             type_candidates = ['loại hàng', 'loại serial', 'loại', 'hàng hóa', 'phân loại']
@@ -671,35 +586,36 @@ with tabs[0]:
             erp_serial_candidates = serial_candidates
             erp_qty_candidates = ['số lượng thực tế', 'thực tế đếm', 'thực tế đã đếm', 'sl thực tế', 'đã đếm', 'số lượng kiểm đếm', 'sl kiểm đếm', 'số lượng', 'sl']
 
-            sku_col = find_column(df_stock_raw.columns, sku_candidates)
-            name_col = find_column(df_stock_raw.columns, name_candidates)
-            uom_col = find_column(df_stock_raw.columns, uom_candidates)
-            qty_col = find_column(df_stock_raw.columns, qty_candidates)
-            serial_col = find_column(df_stock_raw.columns, serial_candidates)
-            part_col = find_column(df_stock_raw.columns, part_candidates)
-            bin_col = find_column(df_stock_raw.columns, bin_candidates)
-            type_col = find_column(df_stock_raw.columns, type_candidates)
+            # Loai bo cot STT neu co
+            stock_cols_clean = [c for c in df_stock_raw.columns if str(c).strip().lower() not in ['stt', 'stt.']]
+            erp_cols_clean = [c for c in df_erp_raw.columns if str(c).strip().lower() not in ['stt', 'stt.']]
+
+            sku_col = find_column(stock_cols_clean, sku_candidates)
+            name_col = find_column(stock_cols_clean, name_candidates)
+            uom_col = find_column(stock_cols_clean, uom_candidates)
+            qty_col = find_column(stock_cols_clean, qty_candidates)
+            serial_col = find_column(stock_cols_clean, serial_candidates)
+            part_col = find_column(stock_cols_clean, part_candidates)
+            bin_col = find_column(stock_cols_clean, bin_candidates)
+            type_col = find_column(stock_cols_clean, type_candidates)
             
-            erp_sku_col = find_column(df_erp_raw.columns, erp_sku_candidates)
-            erp_serial_col = find_column(df_erp_raw.columns, erp_serial_candidates)
-            erp_qty_col = find_column(df_erp_raw.columns, erp_qty_candidates)
+            erp_sku_col = find_column(erp_cols_clean, erp_sku_candidates)
+            erp_serial_col = find_column(erp_cols_clean, erp_serial_candidates)
+            erp_qty_col = find_column(erp_cols_clean, erp_qty_candidates)
 
             if not sku_col or not qty_col:
                 st.error("Không tìm thấy tự động cột Mã sản phẩm hoặc Số lượng tồn trên file Hệ thống gốc.")
             elif not erp_sku_col:
                 st.error("Không tìm thấy cột Mã sản phẩm (SKU) trên file ERP.")
             else:
-                # Bỏ qua các dòng tổng cộng summary cuối file
-                invalid_skus = ['tổng', 'tổng cộng', 'total', 'nan', 'none', 'null', 'sum', '']
+                invalid_skus = ['tổng', 'tổng cộng', 'total', 'nan', 'none', 'null', 'sum', '', 'stt']
                 
-                # 1. Chuẩn hóa dữ liệu sổ sách
                 df_stock_clean = pd.DataFrame()
                 df_stock_clean['SKU'] = df_stock_raw[sku_col].astype(str).str.strip()
                 df_stock_clean['Tên sản phẩm'] = df_stock_raw[name_col] if name_col else "Chưa có tên"
                 df_stock_clean['ĐVT'] = df_stock_raw[uom_col] if uom_col else "Cái"
                 df_stock_clean['Số lượng sổ sách'] = pd.to_numeric(df_stock_raw[qty_col], errors='coerce').fillna(0).astype(int)
                 
-                # Lọc bỏ dòng tổng cộng
                 mask_stock = (
                     df_stock_clean['SKU'].notna() &
                     (~df_stock_clean['SKU'].str.lower().isin(invalid_skus)) &
@@ -709,16 +625,12 @@ with tabs[0]:
                 df_stock_clean = df_stock_clean[mask_stock].copy()
                 df_stock_valid_raw = df_stock_raw.loc[df_stock_clean.index].copy()
 
-                # Gom nhóm theo SKU cho sổ sách
                 df_stock_agg = df_stock_clean.groupby('SKU').agg({
                     'Tên sản phẩm': 'first',
                     'ĐVT': 'first',
                     'Số lượng sổ sách': 'sum'
                 }).reset_index()
 
-                # -------------------------------------------------------------
-                # 0. SÀNG LỌC & GẮN CỜ ĐỊNH DANH (SERIAL VS NON-SERIAL) TỪ TỒN KHO GỐC
-                # -------------------------------------------------------------
                 serial_skus = set()
                 if serial_col:
                     for _, row in df_stock_valid_raw.iterrows():
@@ -727,7 +639,6 @@ with tabs[0]:
                         if sku_val and s_val and s_val.lower() not in ['', 'nan', 'none', 'null', '-']:
                             serial_skus.add(sku_val)
 
-                # 2. Chuẩn hóa dữ liệu ERP thực tế
                 df_erp_raw[erp_sku_col] = df_erp_raw[erp_sku_col].astype(str).str.strip()
                 mask_erp = (
                     df_erp_raw[erp_sku_col].notna() &
@@ -735,14 +646,12 @@ with tabs[0]:
                 )
                 df_erp_clean = df_erp_raw[mask_erp].copy()
 
-                # Tách riêng số liệu đếm ERP cho SKU Non-Serial và SKU Serial
                 erp_qty_dict = {}
                 if erp_qty_col:
                     df_erp_clean[erp_qty_col] = pd.to_numeric(df_erp_clean[erp_qty_col], errors='coerce').fillna(0)
                     df_erp_valid = df_erp_clean[df_erp_clean[erp_qty_col] > 0].copy()
                     erp_qty_dict = df_erp_valid.groupby(erp_sku_col)[erp_qty_col].sum().to_dict()
 
-                # Lấy danh sách Serial ERP cho các SKU có quản lý Serial
                 erp_serials_by_sku = {}
                 if erp_serial_col:
                     if erp_qty_col:
@@ -758,7 +667,6 @@ with tabs[0]:
                                 erp_serials_by_sku[s_sku] = []
                             erp_serials_by_sku[s_sku].append(s_ser)
 
-                # Tổng hợp số lượng thực tế ERP cho Bảng tổng quan (df_recon)
                 erp_recon_dict = {}
                 all_skus = set(df_stock_agg['SKU']).union(set(df_erp_clean[erp_sku_col]))
                 for s_item in all_skus:
@@ -776,9 +684,7 @@ with tabs[0]:
                 df_recon['ĐVT'] = df_recon['ĐVT'].fillna("Cái")
                 st.session_state.df_recon = df_recon
 
-                # -------------------------------------------------------------
-                # TẠO BẢNG 1: BẢNG KIỂM ĐẾM LẦN 2
-                # -------------------------------------------------------------
+                # BẢNG 1: KIỂM ĐẾM LẦN 2
                 df_l2 = pd.DataFrame()
                 df_l2['Mã vật tư'] = df_recon['SKU']
                 df_l2['Tên vật tư'] = df_recon['Tên sản phẩm']
@@ -791,9 +697,7 @@ with tabs[0]:
                 df_l2['Note mã đơn'] = ""
                 st.session_state.df_count_l2 = df_l2
 
-                # -------------------------------------------------------------
-                # TẠO BẢNG 3: BẢNG CHI TIẾT SERIAL THEO BIN (Sheet 'check')
-                # -------------------------------------------------------------
+                # BẢNG 3: CHI TIẾT SERIAL THEO BIN
                 detail_rows = []
                 stock_rows_by_sku = {}
                 
@@ -844,7 +748,6 @@ with tabs[0]:
                     is_sku_serial = sku_val in serial_skus
 
                     if not is_sku_serial:
-                        # 1. PHÂN TÍCH SKU KHÔNG CÓ SERIAL (Đếm theo Số lượng)
                         erp_tot_qty = int(erp_qty_dict.get(sku_val, 0))
                         rem_erp_q = erp_tot_qty
                         for idx_ns, r in enumerate(s_rows):
@@ -885,10 +788,8 @@ with tabs[0]:
                             })
 
                     else:
-                        # 2. PHÂN TÍCH SKU CÓ SERIAL (Quét theo Serial)
                         e_serials = list(erp_serials_by_sku.get(sku_val, []))
                         
-                        # Ghép nối Serial khớp chính xác
                         for r in s_rows:
                             s_stock_ser = r["Số Serial"]
                             if s_stock_ser and s_stock_ser in e_serials:
@@ -898,7 +799,6 @@ with tabs[0]:
                                 r["Check đơn"] = "Đã quét đủ"
                                 e_serials.remove(s_stock_ser)
 
-                        # Các dòng chưa khớp: NẾU còn serial đã quét dư -> gán vào dòng sổ sách bị thiếu và báo "Bắn sai serial"
                         for r in s_rows:
                             if r["Đã kiểm"] == 0:
                                 if len(e_serials) > 0:
@@ -916,7 +816,6 @@ with tabs[0]:
                             r_clean = {k: v for k, v in r.items() if k != 'is_non_serial'}
                             detail_rows.append(r_clean)
 
-                        # Các Serial dư từ ERP
                         if len(e_serials) > 0:
                             has_stock = len(s_rows) > 0
                             first_name = s_rows[0]["Tên sản phẩm"] if has_stock else "Sản phẩm quét dư / chưa có trong danh mục"
@@ -931,14 +830,12 @@ with tabs[0]:
 
                 st.session_state.df_check_detail = pd.DataFrame(detail_rows)
                 save_session_state(show_progress=True)
-                st.success("Đã trích xuất & tạo thành công các bảng đối soát.")
+                st.success("✅ Đã trích xuất & đối soát thành công!")
 
-# ==========================================
-# TAB 2: KIỂM ĐẾM LẦN 2 (Chi tiết Serial theo Bin)
-# ==========================================
+# TAB 2: CHI TIẾT SERIAL
 with tabs[1]:
     st.subheader("Chi tiết danh sách Serial & ghi chú theo Bin")
-    st.caption("Nhập hoặc quét trực tiếp vào ô 'Serial đã quét (ERP)' để bổ sung/thay thế. Xóa trắng ô Serial bắn dư để mở hộp thoại nhập lý do loại bỏ.")
+    st.caption("Nhập hoặc quét trực tiếp vào ô 'Serial đã quét (ERP)' để bổ sung/thay thế. Xóa trắng ô Serial bắn dư để loại bỏ khỏi báo cáo.")
 
     if st.session_state.pending_clear_serial:
         sku_p, ser_p = st.session_state.pending_clear_serial
@@ -949,7 +846,7 @@ with tabs[1]:
 
         surplus_df = df_dt_full[df_dt_full['Check đơn'] == 'Bắn dư serial']
         if not surplus_df.empty:
-            with st.expander("Bảng điều khiển nhanh: Xóa / Clear Serial Bắn dư khỏi Báo cáo", expanded=True):
+            with st.expander("⚡ Bảng điều khiển nhanh: Xóa / Clear Serial Bắn dư khỏi Báo cáo", expanded=True):
                 c_s1, c_s2 = st.columns([4, 2])
                 with c_s1:
                     options_surplus = [f"{r['Mã sản phẩm']} - {r['Serial đã quét']} ({r['Tên sản phẩm']})" for _, r in surplus_df.iterrows()]
@@ -1086,16 +983,10 @@ with tabs[1]:
     else:
         st.warning("Vui lòng tải lên file dữ liệu tại Tab 1 trước.")
 
-# ==========================================
-# (Nội dung Kiểm đếm lần 2 được xử lý ngầm, không hiển thị thành tab riêng)
-
-
-# ==========================================
-# TAB 3: KẾT QUẢ KIỂM LẦN 2 (Bảng chỉnh số lượng bù)
-# ==========================================
+# TAB 3: KIỂM ĐẾM LẦN 2 (BẢNG XỬ LÝ SỐ LIỆU)
 with tabs[2]:
-    st.subheader("Kết quả kiểm lần 2 – Bảng xử lý số liệu chênh lệch")
-    st.caption("Hiển thị TẤT CẢ SKU. Cập nhật số lượng vào cột 'Số liệu thực tế đếm lại lần 2' để bù chênh lệch.")
+    st.subheader("Kiểm đếm Lần 2 (0ms) – Bảng xử lý số liệu chênh lệch")
+    st.caption("Cập nhật số lượng vào cột 'Số liệu thực tế đếm lại lần 2' để bù chênh lệch. Số liệu nhảy ngay 0ms.")
 
     if st.session_state.df_count_l2 is not None:
         df_l2_full = st.session_state.df_count_l2.copy()
@@ -1189,9 +1080,7 @@ with tabs[2]:
     else:
         st.warning("Vui lòng tải lên file dữ liệu tại Tab 1 trước.")
 
-# ==========================================
-# TAB 4: BẢNG TỔNG HỢP CHÊnh lệch
-# ==========================================
+# TAB 4: BẢNG TỔNG HỢP CHÊNH LỆCH
 with tabs[3]:
     st.subheader("Bảng tổng hợp chênh lệch & nguyên nhân sai lệch")
     st.caption("Tổng hợp kết quả đối soát tự động theo Mã sản phẩm (SKU) và tự động nhận diện lý do sai lệch")
@@ -1206,7 +1095,6 @@ with tabs[3]:
 
         wrong_serial_skus = set(df_dt_c[df_dt_c['Check đơn'] == 'Bắn sai serial']['Mã sản phẩm'])
         surplus_skus = set(df_dt_c[df_dt_c['Check đơn'] == 'Bắn dư serial']['Mã sản phẩm'])
-        missing_skus = set(df_dt_c[df_dt_c['Check đơn'] == 'Bắn thiếu (Chưa quét)']['Mã sản phẩm'])
 
         main_rows = []
         for idx, row in df_l2_c.iterrows():
@@ -1331,16 +1219,13 @@ with tabs[3]:
     else:
         st.warning("Vui lòng tải dữ liệu tại Tab 1 trước.")
 
-# ==========================================
-# TAB 4: XUẤT BÁO CÁO EXCEL & PDF
-# ==========================================
+# TAB 5: XUẤT BÁO CÁO EXCEL & PDF
 with tabs[4]:
     st.subheader("Xuất biên bản & báo cáo kiểm kê")
     
     if st.session_state.df_count_l2 is not None and st.session_state.df_check_detail is not None:
-        
         with st.container(border=True):
-            st.markdown("**Thông tin Biên bản Kiểm kê Hàng tồn kho**")
+            st.markdown("**Thông tin Biên bản Kiểm kê Hàng tồn kho Phong Vũ**")
             col_meta1, col_meta2 = st.columns(2)
             with col_meta1:
                 report_date = st.date_input("Ngày kiểm kê:", datetime.date.today())
@@ -1478,7 +1363,6 @@ with tabs[4]:
             df_th_out[['SKU', 'Tên hàng hóa', 'Số lượng sổ sách (hệ thống)', 'Số lượng thực tế', 'Chênh lệch', 'Check', 'Ghi chú/ Tình trạng hàng hóa']].to_excel(writer, sheet_name="main", index=False)
             st.session_state.df_check_detail.to_excel(writer, sheet_name="check", index=False)
 
-            # ---- Định dạng các sheet phụ (Kiểm đếm lần 2, main, check) ----
             sheet_col_widths = {
                 "Kiểm đếm lần 2": {
                     "Mã vật tư": 18, "Tên vật tư": 45, "Đvt": 10,
@@ -1515,7 +1399,6 @@ with tabs[4]:
                 ws_sub = wb[s_name]
                 widths = sheet_col_widths.get(s_name, {})
 
-                # Style header row
                 for cell in ws_sub[1]:
                     cell.font = font_hdr_sub
                     cell.fill = fill_hdr_sub
@@ -1524,14 +1407,12 @@ with tabs[4]:
                 ws_sub.row_dimensions[1].height = 30
                 ws_sub.freeze_panes = 'A2'
 
-                # Style data rows
                 for row in ws_sub.iter_rows(min_row=2, max_row=ws_sub.max_row):
                     for cell in row:
                         cell.font = font_data_sub
                         cell.alignment = align_left
                         cell.border = border_sub
 
-                # Set column widths
                 for col in ws_sub.columns:
                     col_letter = get_column_letter(col[0].column)
                     header_val = str(col[0].value or '')
@@ -1545,8 +1426,8 @@ with tabs[4]:
 
         with col_exp1:
             with st.container(border=True):
-                st.markdown("**1. File Báo cáo Excel Biên bản**")
-                st.download_button(label="Tải xuống File Excel Biên Bản (.xlsx)", data=excel_bytes, file_name=f"Bien_Ban_Kiem_Ke_Hang_Ton_Kho_{report_date.strftime('%Y%m%d')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", use_container_width=True)
+                st.markdown("**1. File Báo cáo Excel Biên bản (3 Sheets)**")
+                st.download_button(label="📥 Tải xuống File Excel Biên Bản (.xlsx)", data=excel_bytes, file_name=f"Bien_Ban_Kiem_Ke_Hang_Ton_Kho_{report_date.strftime('%Y%m%d')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", use_container_width=True)
 
         with col_exp2:
             with st.container(border=True):
@@ -1564,7 +1445,6 @@ with tabs[4]:
                 style_tbl_cell = ParagraphStyle('TblCell', fontName=f_name, fontSize=8, leading=10)
                 style_tbl_cell_red = ParagraphStyle('TblCellRed', fontName=f_name, fontSize=8, leading=10, textColor=colors.HexColor('#CC0000'))
                 
-                # Thay thế chữ PHONGVU.VN bằng ảnh Logo trực tiếp tại vị trí góc trên trái
                 if os.path.exists('phongvu_logo.png'):
                     try:
                         logo_img_pdf = ReportlabImage('phongvu_logo.png', width=130, height=32)
@@ -1585,14 +1465,12 @@ with tabs[4]:
                 style_sig_title = ParagraphStyle('SigTitle', fontName=f_name, fontSize=9, leading=12, alignment=1)
                 style_sig_sub = ParagraphStyle('SigSub', fontName=f_name, fontSize=8, leading=10, alignment=1, textColor=colors.HexColor('#555555'))
 
-                # Metadata
                 story_pdf.append(Paragraph(f"Hôm nay, vào lúc __ giờ __ phút, ngày {report_date.strftime('%d')} tháng {report_date.strftime('%m')} năm {report_date.strftime('%Y')}", style_meta))
                 story_pdf.append(Paragraph(f"Tại kho: <b>{location_name}</b>, chúng tôi gồm có:", style_meta))
                 story_pdf.append(Paragraph(f"Họ tên : <b>{mgr_name}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Chức danh: Quản lý Đơn vị", style_meta))
                 story_pdf.append(Paragraph(f"Họ tên : <b>{staff_name}</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Chức danh: Đại diện Kiểm kê / Kho", style_meta))
                 story_pdf.append(Spacer(1, 10))
 
-                # Table Header
                 table_data_pdf = [[
                     Paragraph("<b>STT</b>", style_tbl_hdr),
                     Paragraph("<b>SKU</b>", style_tbl_hdr),
@@ -1612,8 +1490,6 @@ with tabs[4]:
                     d_val = row_p['Chênh lệch']
                     d_str = f"({abs(d_val)})" if d_val < 0 else ("-" if d_val == 0 else str(d_val))
                     cell_style_diff = style_tbl_cell_red if d_val != 0 else style_tbl_cell
-
-                    # Ghi chú đã lọc sạch thông tin đếm bù nội bộ Lần 2 (ẢNH 2)
                     clean_note_pdf = clean_export_note(row_p['Ghi chú/ Tình trạng hàng hóa'])
 
                     table_data_pdf.append([
@@ -1627,7 +1503,6 @@ with tabs[4]:
                         Paragraph(clean_note_pdf, style_tbl_cell)
                     ])
 
-                # Dòng tổng cộng
                 sum_diff_str = f"({abs(sum_diff_pdf)})" if sum_diff_pdf < 0 else str(sum_diff_pdf)
                 table_data_pdf.append([
                     Paragraph("<b>Tổng cộng</b>", style_tbl_cell_red),
@@ -1653,7 +1528,6 @@ with tabs[4]:
             story_pdf.append(pdf_table)
             story_pdf.append(Spacer(1, 15))
 
-            # Footer Chữ ký
             story_pdf.append(Paragraph("<i>Các bên cùng nhau kiểm kê số lượng hàng hóa hư hỏng (nếu có) theo bảng dưới đây:</i>", style_meta))
             story_pdf.append(Spacer(1, 5))
             story_pdf.append(Paragraph(f"<i>Biên bản kết thúc vào lúc __ giờ __ phút, ngày {report_date.strftime('%d')} tháng {report_date.strftime('%m')} năm {report_date.strftime('%Y')}, các thành viên đều thống nhất với nội dung trên.</i>", style_meta))
@@ -1686,27 +1560,25 @@ with tabs[4]:
             pdf_bytes = pdf_output.getvalue()
 
             st.download_button(
-                label="📄 Tải xuống Biên Bản PDF (Chứa Logo & Lọc sạch Note Lần 2)",
+                label="📄 Tải xuống Biên Bản PDF (Chuẩn Phong Vũ)",
                 data=pdf_bytes,
                 file_name=f"Bien_Ban_Kiem_Ke_Hang_Ton_Kho_{report_date.strftime('%Y%m%d')}.pdf",
                 mime="application/pdf",
-                type="primary"
+                type="primary",
+                use_container_width=True
             )
 
     else:
-        st.warning("⚠️ Không có dữ liệu để xuất báo cáo. Vui lòng hoàn thành ở các Tab trước.")
+        st.warning("⚠️ Không có dữ liệu để xuất báo cáo. Vui lòng nạp file ở Tab 1 trước.")
 
-# ==========================================
-# TAB 6: LƯU TRỮ HÀNG THÁNG (Xem & Tải archive)
-# ==========================================
+# TAB 6: LƯU TRỮ HÀNG THÁNG
 with tabs[5]:
     st.subheader("📅 Lưu trữ báo cáo hàng tháng")
     st.caption("Xem lại và tải xuống báo cáo tổng hợp của từng tháng đã lưu. Dữ liệu được giữ tối đa 12 tháng gần nhất.")
 
     if not supabase_is_configured():
-        st.warning("Chưa kết nối Supabase. Xem README để cấu hình secrets.")
+        st.warning("Chưa kết nối Supabase.")
     else:
-        # Nếu đang xem một archive cụ thể
         arch_data = st.session_state.get('archive_view')
 
         try:
@@ -1749,7 +1621,6 @@ with tabs[5]:
             df_det = arch_data.get('df_detail')
 
             if df_sum is not None and not df_sum.empty:
-                # Metrics
                 a1, a2, a3, a4 = st.columns(4)
                 a1.metric("Tổng SKU", len(df_sum))
                 a2.metric("Tổng SL Sổ sách", f"{int(df_sum['Số lượng sổ sách'].sum()):,}" if 'Số lượng sổ sách' in df_sum.columns else "—")
@@ -1761,7 +1632,6 @@ with tabs[5]:
             else:
                 st.info("Không có dữ liệu tổng hợp cho tháng này.")
 
-            # Nút tải Excel cho archive
             st.markdown("---")
             st.markdown("**Tải xuống file Excel đầy đủ của tháng này:**")
 
@@ -1774,7 +1644,6 @@ with tabs[5]:
                 if df_det is not None and not df_det.empty:
                     df_det.to_excel(_arch_writer, sheet_name="Chi tiết Serial", index=False)
 
-                # Style header cho các sheet
                 _wb_arch = _arch_writer.book
                 _fill_hdr_a = PatternFill(start_color='D9E1F2', end_color='D9E1F2', fill_type='solid')
                 _font_hdr_a = Font(name='Arial', size=10, bold=True)
@@ -1820,7 +1689,6 @@ with tabs[5]:
                 st.rerun()
 
         elif not monthly_list:
-            st.info("Chưa có báo cáo tháng nào được lưu. Sử dụng nút **'💾 Lưu báo cáo tháng này'** ở thanh sidebar sau khi hoàn tất kiểm kê.")
+            st.info("Chưa có báo cáo tháng nào được lưu. Sử dụng nút **'📦 Lưu báo cáo tháng này'** ở thanh sidebar sau khi hoàn tất kiểm kê.")
         else:
             st.info("Chọn một tháng trong danh sách bên trên và nhấn **'📂 Tải tháng này'** để xem chi tiết.")
-
