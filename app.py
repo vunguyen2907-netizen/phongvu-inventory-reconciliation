@@ -898,13 +898,20 @@ with tabs[0]:
                                 r["Check đơn"] = "Đã quét đủ"
                                 e_serials.remove(s_stock_ser)
 
-                        # Các dòng chưa khớp -> Bắn thiếu
+                        # Các dòng chưa khớp: NẾU còn serial đã quét dư -> gán vào dòng sổ sách bị thiếu và báo "Bắn sai serial"
                         for r in s_rows:
                             if r["Đã kiểm"] == 0:
-                                r["Serial đã quét"] = ""
-                                r["Đã kiểm"] = 0
-                                r["Dư/Thiếu"] = -1
-                                r["Check đơn"] = "Bắn thiếu (Chưa quét)"
+                                if len(e_serials) > 0:
+                                    wrong_ser = e_serials.pop(0)
+                                    r["Serial đã quét"] = wrong_ser
+                                    r["Đã kiểm"] = 1
+                                    r["Dư/Thiếu"] = 0
+                                    r["Check đơn"] = "Bắn sai serial"
+                                else:
+                                    r["Serial đã quét"] = ""
+                                    r["Đã kiểm"] = 0
+                                    r["Dư/Thiếu"] = -1
+                                    r["Check đơn"] = "Bắn thiếu (Chưa quét)"
 
                             r_clean = {k: v for k, v in r.items() if k != 'is_non_serial'}
                             detail_rows.append(r_clean)
@@ -1074,6 +1081,7 @@ with tabs[1]:
 
         if has_changes:
             mark_dirty()
+            st.rerun()
 
     else:
         st.warning("Vui lòng tải lên file dữ liệu tại Tab 1 trước.")
@@ -1177,6 +1185,7 @@ with tabs[2]:
                 st.session_state.df_count_l2.loc[mask, 'Note mã đơn'] = note_val
         if has_l2_changes:
             mark_dirty()
+            st.rerun()
     else:
         st.warning("Vui lòng tải lên file dữ liệu tại Tab 1 trước.")
 
