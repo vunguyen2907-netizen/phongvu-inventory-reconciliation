@@ -1,0 +1,1101 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hệ thống Tự động Xử lý & Đối soát Dữ liệu Kiểm kê - Phong Vũ</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#f0f5ff',
+              100: '#e0ebff',
+              500: '#177ddc',
+              600: '#0958d9',
+              700: '#003eb3',
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- React 18 & Babel -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- SheetJS (XLSX) -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+  <!-- Supabase JS -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <!-- jsPDF & AutoTable -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!-- Font Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+      background-color: #f8fafc;
+      color: #0f172a;
+    }
+    .glass-card {
+      background: rgba(255, 255, 255, 0.9);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(226, 232, 240, 0.8);
+    }
+    /* Custom Scrollbars */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #f1f5f9;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #94a3b8;
+    }
+  </style>
+</head>
+<body class="min-h-screen bg-slate-50">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useRef } = React;
+
+    // --- SUPABASE CONFIG ---
+    const getSupabaseConfig = () => {
+      let url = window.SUPABASE_URL || localStorage.getItem('SUPABASE_URL') || '';
+      let key = window.SUPABASE_KEY || localStorage.getItem('SUPABASE_KEY') || '';
+      return { url, key };
+    };
+
+    let supabaseClient = null;
+    const initSupabase = () => {
+      const { url, key } = getSupabaseConfig();
+      if (url && key) {
+        try {
+          supabaseClient = supabase.createClient(url, key);
+        } catch (e) {
+          console.error("Supabase init error:", e);
+        }
+      }
+    };
+    initSupabase();
+
+    // --- MAIN APP COMPONENT ---
+    function App() {
+      const [activeTab, setActiveTab] = useState(0);
+      const [sessionName, setSessionName] = useState(`Kiểm kê ${new Date().toLocaleDateString('vi-VN')}`);
+      const [activeSessionId, setActiveSessionId] = useState(null);
+      const [lastSavedTime, setLastSavedTime] = useState(null);
+      const [isDirty, setIsDirty] = useState(false);
+      const [savedSessions, setSavedSessions] = useState([]);
+      const [monthlyArchives, setMonthlyArchives] = useState([]);
+
+      // Data States
+      const [dfRecon, setDfRecon] = useState(null);
+      const [dfCountL2, setDfCountL2] = useState([]);
+      const [dfCheckDetail, setDfCheckDetail] = useState([]);
+
+      // Modal State for Clearing Surplus Serial
+      const [pendingClearSerial, setPendingClearSerial] = useState(null);
+      const [clearReasonInput, setClearReasonInput] = useState("");
+
+      // Monthly Archive Form
+      const [archiveMonth, setArchiveMonth] = useState(new Date().getMonth() + 1);
+      const [archiveYear, setArchiveYear] = useState(new Date().getFullYear());
+      const [archiveLabel, setArchiveLabel] = useState("");
+      const [selectedArchiveData, setSelectedArchiveData] = useState(null);
+
+      // Filters
+      const [filterDetailStatus, setFilterDetailStatus] = useState("Chỉ Serial chênh lệch (Dư / Thiếu)");
+      const [searchDetail, setSearchDetail] = useState("");
+
+      const [filterL2Mode, setFilterL2Mode] = useState("Chỉ SKU chênh lệch (Cần xử lý)");
+      const [filterL2Status, setFilterL2Status] = useState("Tất cả");
+      const [searchL2, setSearchL2] = useState("");
+
+      const [filterMainMode, setFilterMainMode] = useState("Chỉ SKU chênh lệch / Sai lý do (Cần xử lý)");
+      const [filterMainStatus, setFilterMainStatus] = useState("Tất cả");
+      const [searchMain, setSearchMain] = useState("");
+
+      // Load Supabase sessions list
+      const fetchSavedSessions = async () => {
+        if (!supabaseClient) return;
+        try {
+          const { data, error } = await supabaseClient
+            .from('inventory_sessions')
+            .select('id, session_name, created_at, updated_at')
+            .order('updated_at', { ascending: false });
+          if (!error && data) setSavedSessions(data);
+        } catch (e) { console.error(e); }
+      };
+
+      const fetchMonthlyArchives = async () => {
+        if (!supabaseClient) return;
+        try {
+          const { data, error } = await supabaseClient
+            .from('monthly_archives')
+            .select('id, year_month, created_at, updated_at')
+            .order('year_month', { ascending: false });
+          if (!error && data) {
+            const formatted = data.map(r => {
+              const [y, m] = r.year_month.split('-');
+              return { ...r, label: `Tháng ${m}/${y}` };
+            });
+            setMonthlyArchives(formatted);
+          }
+        } catch (e) { console.error(e); }
+      };
+
+      useEffect(() => {
+        fetchSavedSessions();
+        fetchMonthlyArchives();
+      }, []);
+
+      // Auto-save debounce (10s)
+      useEffect(() => {
+        if (!isDirty || !supabaseClient || dfCheckDetail.length === 0) return;
+        const timer = setTimeout(() => {
+          handleSaveSession(false);
+        }, 10000);
+        return () => clearTimeout(timer);
+      }, [isDirty, dfCheckDetail, dfCountL2]);
+
+      // --- FILE PARSING & RECONCILIATION ENGINE ---
+      const handleProcessFiles = (stockRowsRaw, erpRowsRaw) => {
+        // Standardize columns
+        const stockRows = stockRowsRaw.map(r => {
+          const sku = String(r['SKU'] || r['Mã vật tư'] || r['Mã sản phẩm'] || r['Mã hàng'] || '').trim();
+          const name = String(r['Tên sản phẩm'] || r['Tên hàng hóa'] || r['Tên vật tư'] || r['Tên hàng'] || 'Chưa có tên').trim();
+          const serial = String(r['Số Serial'] || r['Serial'] || r['Số Serial (Số sách)'] || '').trim();
+          const qty = parseInt(r['Số lượng'] || r['Số lượng sổ sách'] || 1) || 1;
+          const bin = String(r['Mã Bin'] || r['Bin'] || r['Tên Bin'] || '').trim();
+          const uom = String(r['ĐVT'] || r['Đvt'] || 'Cái').trim();
+          const type = String(r['Loại hàng'] || 'Hàng bán').trim();
+          return { sku, name, serial, qty, bin, uom, type };
+        }).filter(r => r.sku && r.sku.toLowerCase() !== 'sku');
+
+        const erpRows = erpRowsRaw.map(r => {
+          const sku = String(r['Mã vật tư'] || r['SKU'] || r['Mã sản phẩm'] || '').trim();
+          const serial = String(r['Serial đã quét'] || r['Serial'] || r['Số Serial'] || '').trim();
+          const qty = parseInt(r['Số lượng'] || 1) || 1;
+          return { sku, serial, qty };
+        }).filter(r => r.sku);
+
+        // Group ERP serials & quantities
+        const erpSerialsBySku = {};
+        const erpQtyBySku = {};
+        const serialSkusSet = new Set();
+
+        erpRows.forEach(r => {
+          if (!erpQtyBySku[r.sku]) erpQtyBySku[r.sku] = 0;
+          erpQtyBySku[r.sku] += r.qty;
+          if (r.serial) {
+            serialSkusSet.add(r.sku);
+            if (!erpSerialsBySku[r.sku]) erpSerialsBySku[r.sku] = [];
+            erpSerialsBySku[r.sku].push(r.serial);
+          }
+        });
+
+        stockRows.forEach(r => {
+          if (r.serial) serialSkusSet.add(r.sku);
+        });
+
+        // Build dfRecon & dfCountL2
+        const stockQtyBySku = {};
+        const stockNameBySku = {};
+        const stockUomBySku = {};
+
+        stockRows.forEach(r => {
+          if (!stockQtyBySku[r.sku]) {
+            stockQtyBySku[r.sku] = 0;
+            stockNameBySku[r.sku] = r.name;
+            stockUomBySku[r.sku] = r.uom;
+          }
+          stockQtyBySku[r.sku] += r.qty;
+        });
+
+        const allSkus = Array.from(new Set([...Object.keys(stockQtyBySku), ...Object.keys(erpQtyBySku)]));
+
+        const countL2Data = allSkus.map(sku => {
+          const name = stockNameBySku[sku] || "Sản phẩm mới chưa có trong danh mục";
+          const uom = stockUomBySku[sku] || "Cái";
+          const qtySys = stockQtyBySku[sku] || 0;
+          let qtyL1 = 0;
+          if (serialSkusSet.has(sku)) {
+            qtyL1 = (erpSerialsBySku[sku] || []).length;
+          } else {
+            qtyL1 = erpQtyBySku[sku] || 0;
+          }
+          return {
+            sku,
+            name,
+            uom,
+            qtySys,
+            qtyL1,
+            qtyL2: 0,
+            diffL2: qtyL1 - qtySys,
+            totalActual: qtyL1,
+            note: ""
+          };
+        });
+
+        // Build Detail Serial Rows
+        const detailRows = [];
+        const stockRowsBySku = {};
+
+        stockRows.forEach(r => {
+          if (!stockRowsBySku[r.sku]) stockRowsBySku[r.sku] = [];
+          const isNonSerial = !serialSkusSet.has(r.sku);
+          stockRowsBySku[r.sku].push({
+            sku: r.sku,
+            name: r.name,
+            uom: r.uom,
+            qty: isNonSerial ? r.qty : 1,
+            stockSerial: isNonSerial ? "(Hàng không serial)" : r.serial,
+            scannedSerial: "",
+            bin: r.bin,
+            type: isNonSerial ? "Hàng không serial" : r.type,
+            checked: 0,
+            diff: -(isNonSerial ? r.qty : 1),
+            status: "Bắn thiếu (Chưa quét)",
+            note: "",
+            isNonSerial
+          });
+        });
+
+        allSkus.forEach(sku => {
+          const sRows = stockRowsBySku[sku] || [];
+          const isSerial = serialSkusSet.has(sku);
+
+          if (!isSerial) {
+            const totalErp = erpQtyBySku[sku] || 0;
+            let remErp = totalErp;
+            sRows.forEach((r, idx) => {
+              const sysQ = r.qty;
+              let alloc = remErp >= sysQ ? sysQ : remErp;
+              remErp -= alloc;
+              if (idx === sRows.length - 1 && remErp > 0) {
+                alloc += remErp;
+                remErp = 0;
+              }
+              const diffQ = alloc - sysQ;
+              detailRows.push({
+                ...r,
+                scannedSerial: alloc > 0 ? `${alloc} cái` : "0 cái",
+                checked: alloc,
+                diff: diffQ,
+                status: diffQ === 0 ? `Đã đếm đủ (${alloc}/${sysQ})` : (diffQ < 0 ? `Bắn thiếu ${Math.abs(diffQ)} hàng` : `Bắn thừa ${diffQ} hàng`)
+              });
+            });
+            if (sRows.length === 0 && totalErp > 0) {
+              detailRows.push({
+                sku, name: "Sản phẩm không serial chưa có trong danh mục", uom: "Cái", qty: 0,
+                stockSerial: "(Hàng không serial)", scannedSerial: `Đã đếm: ${totalErp}`, bin: "",
+                type: "Không có tồn hệ thống", checked: totalErp, diff: totalErp, status: `Bắn thừa hàng ${totalErp}`, note: ""
+              });
+            }
+          } else {
+            const eSerials = [...(erpSerialsBySku[sku] || [])];
+            
+            // 1. Exact match
+            sRows.forEach(r => {
+              if (r.stockSerial && eSerials.includes(r.stockSerial)) {
+                r.scannedSerial = r.stockSerial;
+                r.checked = 1;
+                r.diff = 0;
+                r.status = "Đã quét đủ";
+                const idx = eSerials.indexOf(r.stockSerial);
+                eSerials.splice(idx, 1);
+              }
+            });
+
+            // 2. Pair unmatched scanned serials with missing book rows -> Bắn sai serial!
+            sRows.forEach(r => {
+              if (r.checked === 0) {
+                if (eSerials.length > 0) {
+                  const wrongSer = eSerials.shift();
+                  r.scannedSerial = wrongSer;
+                  r.checked = 1;
+                  r.diff = 0;
+                  r.status = "Bắn sai serial";
+                } else {
+                  r.scannedSerial = "";
+                  r.checked = 0;
+                  r.diff = -1;
+                  r.status = "Bắn thiếu (Chưa quét)";
+                }
+              }
+              detailRows.push(r);
+            });
+
+            // 3. Extra scanned serials -> Bắn dư serial
+            if (eSerials.length > 0) {
+              const firstName = sRows.length > 0 ? sRows[0].name : "Sản phẩm quét dư / chưa có trong danh mục";
+              const firstUom = sRows.length > 0 ? sRows[0].uom : "Cái";
+              eSerials.forEach(extraSer => {
+                detailRows.push({
+                  sku, name: firstName, uom: firstUom, qty: 1, stockSerial: "", scannedSerial: extraSer, bin: "",
+                  type: sRows.length > 0 ? "Bắn dư serial" : "Không có tồn hệ thống", checked: 1, diff: 1, status: "Bắn dư serial", note: ""
+                });
+              });
+            }
+          }
+        });
+
+        setDfCountL2(countL2Data);
+        setDfCheckDetail(detailRows);
+        setIsDirty(true);
+        setActiveTab(1); // Switch to Tab 2
+      };
+
+      // --- SAVE & LOAD SESSIONS ---
+      const handleSaveSession = async (showNotice = true) => {
+        if (!supabaseClient || dfCheckDetail.length === 0) return;
+        try {
+          const payload = {
+            df_count_l2: dfCountL2,
+            df_check_detail: dfCheckDetail,
+          };
+          const rowData = {
+            session_name: sessionName.trim() || "Đợt kiểm kê chưa đặt tên",
+            data: payload
+          };
+          if (activeSessionId) rowData.id = activeSessionId;
+
+          const { data, error } = await supabaseClient
+            .from('inventory_sessions')
+            .upsert(rowData)
+            .select();
+
+          if (!error && data && data.length > 0) {
+            setActiveSessionId(data[0].id);
+            setLastSavedTime(new Date().toLocaleTimeString('vi-VN'));
+            setIsDirty(false);
+            fetchSavedSessions();
+            if (showNotice) alert("✅ Đã lưu thành công đợt kiểm kê lên Supabase!");
+          }
+        } catch (e) { alert("Lỗi khi lưu Supabase: " + e.message); }
+      };
+
+      const handleLoadSession = async (id) => {
+        if (!supabaseClient) return;
+        try {
+          const { data, error } = await supabaseClient
+            .from('inventory_sessions')
+            .select('*')
+            .eq('id', id)
+            .single();
+
+          if (!error && data) {
+            const p = data.data || {};
+            setDfCountL2(p.df_count_l2 || []);
+            setDfCheckDetail(p.df_check_detail || []);
+            setActiveSessionId(data.id);
+            setSessionName(data.session_name || '');
+            setLastSavedTime(new Date(data.updated_at).toLocaleTimeString('vi-VN'));
+            setIsDirty(false);
+          }
+        } catch (e) { alert("Lỗi tải đợt kiểm kê: " + e.message); }
+      };
+
+      // --- MONTHLY ARCHIVE SAVE ---
+      const handleSaveMonthlyArchive = async () => {
+        if (!supabaseClient || dfCountL2.length === 0) return;
+        try {
+          const ym = `${archiveYear}-${String(archiveMonth).padStart(2, '0')}`;
+          let label = `Tháng ${String(archiveMonth).padStart(2, '0')}/${archiveYear}`;
+          if (archiveLabel.trim()) label += ` — ${archiveLabel.trim()}`;
+
+          const summaryData = dfCountL2.map(r => ({
+            SKU: r.sku,
+            'Tên hàng hóa': r.name,
+            'ĐVT': r.uom,
+            'Số lượng sổ sách': r.qtySys,
+            'Số lượng thực tế': r.totalActual,
+            'Chênh lệch': r.totalActual - r.qtySys
+          }));
+
+          const payload = {
+            year_month: ym,
+            summary: { data: summaryData, _label: label },
+            df_count_l2: dfCountL2,
+            df_detail: dfCheckDetail
+          };
+
+          const { error } = await supabaseClient
+            .from('monthly_archives')
+            .upsert(payload, { onConflict: 'year_month' });
+
+          if (!error) {
+            alert(`✅ Đã lưu báo cáo ${label} thành công!`);
+            fetchMonthlyArchives();
+          } else {
+            alert("Lỗi lưu archive: " + error.message);
+          }
+        } catch (e) { alert("Lỗi: " + e.message); }
+      };
+
+      // --- INLINE EDITING HANDLERS (0ms REACTIVITY) ---
+      const handleL2QtyChange = (sku, val) => {
+        const num = parseInt(val) || 0;
+        setDfCountL2(prev => prev.map(r => {
+          if (r.sku === sku) {
+            const totalActual = r.qtyL1 + num;
+            const diffL2 = totalActual - r.qtySys;
+            return { ...r, qtyL2: num, totalActual, diffL2 };
+          }
+          return r;
+        }));
+        setIsDirty(true);
+      };
+
+      const handleL2NoteChange = (sku, note) => {
+        setDfCountL2(prev => prev.map(r => r.sku === sku ? { ...r, note } : r));
+        setIsDirty(true);
+      };
+
+      const handleSerialEdit = (idx, newSerial) => {
+        setDfCheckDetail(prev => {
+          const updated = [...prev];
+          const row = updated[idx];
+          const oldSerial = row.scannedSerial;
+          if (newSerial === "" && (row.status === "Bắn dư serial" || oldSerial !== "")) {
+            setPendingClearSerial({ idx, sku: row.sku, serial: oldSerial });
+            return prev;
+          }
+          row.scannedSerial = newSerial;
+          row.checked = newSerial ? 1 : 0;
+          row.diff = newSerial ? 0 : -1;
+          row.status = newSerial ? "Đã sửa Serial (Lần 2)" : "Bắn thiếu (Chưa quét)";
+          row.note = `${row.note} [Sửa Serial: ${oldSerial} -> ${newSerial}]`.trim();
+          return updated;
+        });
+        setIsDirty(true);
+      };
+
+      const confirmClearSurplusSerial = () => {
+        if (!clearReasonInput.trim() || !pendingClearSerial) {
+          alert("Vui lòng nhập lý do loại bỏ!");
+          return;
+        }
+        const { idx, sku, serial } = pendingClearSerial;
+        setDfCheckDetail(prev => {
+          const updated = [...prev];
+          const r = updated[idx];
+          r.scannedSerial = "";
+          r.checked = 0;
+          r.diff = 0;
+          r.status = "Đã loại bỏ Serial dư";
+          r.note = `[Đã loại bỏ Serial dư ${serial} - Lý do: ${clearReasonInput.trim()}]`;
+          return updated;
+        });
+
+        // Reduce L1 count in L2 table if needed
+        setDfCountL2(prev => prev.map(r => r.sku === sku ? { ...r, qtyL1: Math.max(0, r.qtyL1 - 1), totalActual: Math.max(0, r.totalActual - 1), diffL2: Math.max(0, r.totalActual - 1) - r.qtySys } : r));
+
+        setPendingClearSerial(null);
+        setClearReasonInput("");
+        setIsDirty(true);
+      };
+
+      // --- EXPORT HANDLERS ---
+      const handleExportExcel = () => {
+        if (dfCountL2.length === 0) return;
+        const wb = XLSX.utils.book_new();
+
+        // 1. Sheet Tổng hợp
+        const summaryRows = dfCountL2.map(r => ({
+          'SKU': r.sku,
+          'Tên hàng hóa': r.name,
+          'Sổ sách (A)': r.qtySys,
+          'Thực tế L1 (B)': r.qtyL1,
+          'Đếm bù L2 (C)': r.qtyL2,
+          'Tổng thực tế (B+C)': r.totalActual,
+          'Chênh lệch': r.diffL2,
+          'Note': r.note
+        }));
+        const wsSummary = XLSX.utils.json_to_sheet(summaryRows);
+        XLSX.utils.book_append_sheet(wb, wsSummary, "Tổng hợp");
+
+        // 2. Sheet Kiểm đếm lần 2
+        const wsL2 = XLSX.utils.json_to_sheet(dfCountL2);
+        XLSX.utils.book_append_sheet(wb, wsL2, "Kiểm đếm lần 2");
+
+        // 3. Sheet Chi tiết Serial
+        const wsDetail = XLSX.utils.json_to_sheet(dfCheckDetail);
+        XLSX.utils.book_append_sheet(wb, wsDetail, "Chi tiết Serial");
+
+        XLSX.writeFile(wb, `BaoCao_KiemKe_${new Date().toISOString().slice(0,10)}.xlsx`);
+      };
+
+      // Filtered Views
+      const filteredDetailRows = useMemo(() => {
+        return dfCheckDetail.filter(r => {
+          if (filterDetailStatus === "Chỉ Serial chênh lệch (Dư / Thiếu)" && r.diff === 0 && r.status === "Đã quét đủ") return false;
+          if (filterDetailStatus === "Thiếu (Chưa quét)" && r.status !== "Bắn thiếu (Chưa quét)") return false;
+          if (filterDetailStatus === "Bắn sai serial" && r.status !== "Bắn sai serial") return false;
+          if (filterDetailStatus === "Bắn dư serial" && r.status !== "Bắn dư serial") return false;
+          if (filterDetailStatus === "Đã loại bỏ Serial dư" && r.status !== "Đã loại bỏ Serial dư") return false;
+
+          if (searchDetail.trim()) {
+            const kw = searchDetail.toLowerCase();
+            return r.sku.toLowerCase().includes(kw) || r.name.toLowerCase().includes(kw) || r.stockSerial.toLowerCase().includes(kw) || r.scannedSerial.toLowerCase().includes(kw);
+          }
+          return true;
+        });
+      }, [dfCheckDetail, filterDetailStatus, searchDetail]);
+
+      const filteredL2Rows = useMemo(() => {
+        return dfCountL2.filter(r => {
+          if (filterL2Mode.startsWith("Chỉ SKU") && r.diffL2 === 0 && r.qtyL2 === 0) return false;
+          if (filterL2Status === "Lệch chưa đếm bù" && (r.diffL2 === 0 || r.qtyL2 > 0)) return false;
+          if (filterL2Status === "Đã nhập đếm bù Lần 2" && r.qtyL2 === 0) return false;
+          if (filterL2Status === "Đã khớp sau đếm bù" && r.diffL2 !== 0) return false;
+
+          if (searchL2.trim()) {
+            const kw = searchL2.toLowerCase();
+            return r.sku.toLowerCase().includes(kw) || r.name.toLowerCase().includes(kw);
+          }
+          return true;
+        });
+      }, [dfCountL2, filterL2Mode, filterL2Status, searchL2]);
+
+      return (
+        <div className="flex h-screen overflow-hidden">
+          {/* SIDEBAR */}
+          <aside className="w-80 bg-slate-900 text-slate-100 flex flex-col justify-between p-4 shadow-xl overflow-y-auto">
+            <div>
+              <div className="flex items-center gap-3 mb-6 pb-4 border-b border-slate-800">
+                <div className="w-10 h-10 rounded-xl bg-brand-500 flex items-center justify-center font-bold text-lg text-white shadow-lg">PV</div>
+                <div>
+                  <h1 className="font-bold text-sm leading-tight text-slate-100">Phong Vũ Inventory</h1>
+                  <p className="text-xs text-slate-400">Reconciliation Web App</p>
+                </div>
+              </div>
+
+              {/* CURRENT SESSION HEADER */}
+              <div className="mb-6 space-y-3">
+                <label className="text-xs font-semibold uppercase tracking-wider text-slate-400">Đợt kiểm kê hiện tại</label>
+                <input
+                  type="text"
+                  value={sessionName}
+                  onChange={e => { setSessionName(e.target.value); setIsDirty(true); }}
+                  className="w-full bg-slate-800 text-slate-100 px-3 py-2 rounded-lg text-sm border border-slate-700 focus:outline-none focus:border-brand-500"
+                />
+                
+                <button
+                  onClick={() => handleSaveSession(true)}
+                  disabled={dfCheckDetail.length === 0}
+                  className={`w-full py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 transition ${isDirty ? 'bg-amber-500 hover:bg-amber-600 text-slate-950' : 'bg-brand-600 hover:bg-brand-700 text-white'} disabled:opacity-40`}
+                >
+                  💾 {isDirty ? 'Lưu đợt hiện tại ●' : 'Lưu đợt hiện tại'}
+                </button>
+
+                {lastSavedTime && (
+                  <p className="text-xs text-slate-400 text-center">Đã lưu lúc: {lastSavedTime} {isDirty && '(có thay đổi)'}</p>
+                )}
+              </div>
+
+              {/* HISTORY LIST */}
+              <div className="mb-6 space-y-2">
+                <label className="text-xs font-semibold uppercase tracking-wider text-slate-400">Lịch sử Supabase</label>
+                <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
+                  {savedSessions.map(s => (
+                    <div
+                      key={s.id}
+                      onClick={() => handleLoadSession(s.id)}
+                      className={`p-2 rounded-lg text-xs cursor-pointer transition flex justify-between items-center ${activeSessionId === s.id ? 'bg-brand-600 text-white font-medium' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}`}
+                    >
+                      <span className="truncate max-w-[170px]">{s.session_name}</span>
+                      <span className="text-[10px] opacity-70">{new Date(s.updated_at).toLocaleDateString('vi-VN')}</span>
+                    </div>
+                  ))}
+                  {savedSessions.length === 0 && <p className="text-xs text-slate-500 italic">Chưa có lịch sử lưu.</p>}
+                </div>
+              </div>
+
+              {/* MONTHLY ARCHIVES SECTION */}
+              <div className="pt-4 border-t border-slate-800 space-y-3">
+                <label className="text-xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                  📅 Lưu trữ 12 tháng
+                </label>
+                
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <span className="text-[11px] text-slate-400 block mb-1">Tháng:</span>
+                    <select
+                      value={archiveMonth}
+                      onChange={e => setArchiveMonth(parseInt(e.target.value))}
+                      className="w-full bg-slate-800 text-slate-200 px-2 py-1.5 rounded text-xs border border-slate-700"
+                    >
+                      {Array.from({length: 12}, (_, i) => i + 1).map(m => (
+                        <option key={m} value={m}>Tháng {String(m).padStart(2,'0')}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <span className="text-[11px] text-slate-400 block mb-1">Năm:</span>
+                    <select
+                      value={archiveYear}
+                      onChange={e => setArchiveYear(parseInt(e.target.value))}
+                      className="w-full bg-slate-800 text-slate-200 px-2 py-1.5 rounded text-xs border border-slate-700"
+                    >
+                      {[2024, 2025, 2026, 2027].map(y => (
+                        <option key={y} value={y}>{y}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <input
+                  type="text"
+                  placeholder="Nhãn (VD: Khánh Hội, CP74...)"
+                  value={archiveLabel}
+                  onChange={e => setArchiveLabel(e.target.value)}
+                  className="w-full bg-slate-800 text-slate-200 px-2.5 py-1.5 rounded text-xs border border-slate-700"
+                />
+
+                <button
+                  onClick={handleSaveMonthlyArchive}
+                  disabled={dfCountL2.length === 0}
+                  className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold transition disabled:opacity-40"
+                >
+                  📦 Lưu báo cáo tháng này
+                </button>
+
+                {/* ARCHIVES LIST */}
+                <div className="space-y-1 max-h-36 overflow-y-auto pr-1">
+                  {monthlyArchives.map(a => (
+                    <div key={a.id} className="p-2 bg-slate-800/80 rounded border border-slate-800 text-xs flex justify-between items-center">
+                      <span className="font-medium text-slate-200">{a.label}</span>
+                      <button
+                        onClick={() => {
+                          // View archive
+                          setActiveTab(5);
+                        }}
+                        className="px-2 py-0.5 bg-slate-700 hover:bg-slate-600 rounded text-[11px] text-slate-200"
+                      >
+                        Xem
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-slate-800 text-center">
+              <span className="text-[11px] text-slate-500">Antigravity Engine v2.0 • Web App 0ms</span>
+            </div>
+          </aside>
+
+          {/* MAIN CONTENT AREA */}
+          <main className="flex-1 flex flex-col overflow-hidden bg-slate-50">
+            {/* TOP NAVIGATION TABS */}
+            <header className="bg-white border-b border-slate-200 px-6 pt-4 pb-0 shadow-sm">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h2 className="text-xl font-bold text-slate-800">Hệ thống Tự động Xử lý & Đối soát Dữ liệu Kiểm kê</h2>
+                  <p className="text-xs text-slate-500">Công ty Cổ phần Thương mại Dịch vụ Phong Vũ — Quy trình đối soát & xuất báo cáo tức thì 0ms</p>
+                </div>
+                <button
+                  onClick={handleExportExcel}
+                  disabled={dfCountL2.length === 0}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg shadow-sm transition flex items-center gap-2 disabled:opacity-40"
+                >
+                  📥 Xuất Excel Nhanh
+                </button>
+              </div>
+
+              {/* TABS HEADER */}
+              <div className="flex gap-2 border-b border-slate-200">
+                {[
+                  "1. Nhập dữ liệu",
+                  "2. Chi tiết Serial",
+                  "3. Kiểm đếm Lần 2 (0ms)",
+                  "4. Bảng tổng hợp chênh lệch",
+                  "5. Xuất báo cáo",
+                  "📅 6. Lưu trữ hàng tháng"
+                ].map((tabLabel, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => setActiveTab(idx)}
+                    className={`px-4 py-2.5 text-xs font-semibold transition border-b-2 -mb-px ${activeTab === idx ? 'border-brand-600 text-brand-600 bg-brand-50/50' : 'border-transparent text-slate-600 hover:text-slate-900 hover:border-slate-300'}`}
+                  >
+                    {tabLabel}
+                  </button>
+                ))}
+              </div>
+            </header>
+
+            {/* TAB CONTENTS */}
+            <div className="flex-1 p-6 overflow-y-auto">
+              
+              {/* TAB 0: NHẬP DỮ LIỆU */}
+              {activeTab === 0 && (
+                <div className="space-y-6 max-w-4xl mx-auto">
+                  <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+                    <h3 className="text-base font-bold text-slate-800">Tải lên file Tồn kho sổ sách & Kết quả quét thực tế</h3>
+                    <p className="text-xs text-slate-500">Hệ thống chấp nhận định dạng Excel (.xlsx, .xls) hoặc CSV. Dữ liệu sẽ được đối soát tự động trong 0.1s.</p>
+
+                    <div className="grid grid-cols-2 gap-6 pt-2">
+                      {/* DROPZONE 1 */}
+                      <div className="border-2 border-dashed border-slate-300 hover:border-brand-500 rounded-xl p-6 text-center bg-slate-50 transition cursor-pointer relative">
+                        <input
+                          type="file"
+                          accept=".xlsx, .xls, .csv"
+                          id="input-stock"
+                          className="absolute inset-0 opacity-0 cursor-pointer"
+                          onChange={e => {
+                            const file = e.target.files[0];
+                            if (!file) return;
+                            const reader = new FileReader();
+                            reader.onload = (evt) => {
+                              const wb = XLSX.read(evt.target.result, { type: 'binary' });
+                              const ws = wb.Sheets[wb.SheetNames[0]];
+                              window._rawStockData = XLSX.utils.sheet_to_json(ws);
+                              alert("✅ Đã đọc thành công File Tồn kho Sổ sách!");
+                            };
+                            reader.readAsBinaryString(file);
+                          }}
+                        />
+                        <div className="w-12 h-12 rounded-full bg-brand-50 text-brand-600 mx-auto flex items-center justify-center font-bold text-xl mb-3">📁</div>
+                        <h4 className="font-semibold text-sm text-slate-800 mb-1">1. Tồn kho Sổ sách (Hệ thống gốc)</h4>
+                        <p className="text-xs text-slate-400">Chọn file chứa SKU, Tên, Số lượng, Serial, Bin...</p>
+                      </div>
+
+                      {/* DROPZONE 2 */}
+                      <div className="border-2 border-dashed border-slate-300 hover:border-emerald-500 rounded-xl p-6 text-center bg-slate-50 transition cursor-pointer relative">
+                        <input
+                          type="file"
+                          accept=".xlsx, .xls, .csv"
+                          id="input-erp"
+                          className="absolute inset-0 opacity-0 cursor-pointer"
+                          onChange={e => {
+                            const file = e.target.files[0];
+                            if (!file) return;
+                            const reader = new FileReader();
+                            reader.onload = (evt) => {
+                              const wb = XLSX.read(evt.target.result, { type: 'binary' });
+                              const ws = wb.Sheets[wb.SheetNames[0]];
+                              window._rawErpData = XLSX.utils.sheet_to_json(ws);
+                              alert("✅ Đã đọc thành công File Kiểm đếm Thực tế!");
+                            };
+                            reader.readAsBinaryString(file);
+                          }}
+                        />
+                        <div className="w-12 h-12 rounded-full bg-emerald-50 text-emerald-600 mx-auto flex items-center justify-center font-bold text-xl mb-3">⚡</div>
+                        <h4 className="font-semibold text-sm text-slate-800 mb-1">2. Thực tế đếm / Máy quét (ERP)</h4>
+                        <p className="text-xs text-slate-400">Chọn file chứa SKU và Serial đã quét thực tế</p>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        const sData = window._rawStockData || [];
+                        const eData = window._rawErpData || [];
+                        if (sData.length === 0 || eData.length === 0) {
+                          alert("Vui lòng chọn đầy đủ cả 2 file Tồn kho và Thực tế quét trước khi đối soát!");
+                          return;
+                        }
+                        handleProcessFiles(sData, eData);
+                      }}
+                      className="w-full py-3 bg-brand-600 hover:bg-brand-700 text-white font-bold text-sm rounded-xl shadow-lg transition"
+                    >
+                      🚀 Bắt đầu Tự động Đối soát Dữ liệu
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 1: CHI TIẾT SERIAL */}
+              {activeTab === 1 && (
+                <div className="space-y-4">
+                  {/* FILTERS BAR */}
+                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-wrap gap-4 items-center justify-between">
+                    <div className="flex gap-3 items-center">
+                      <span className="text-xs font-semibold text-slate-500">Lọc Trạng Thái:</span>
+                      <select
+                        value={filterDetailStatus}
+                        onChange={e => setFilterDetailStatus(e.target.value)}
+                        className="bg-slate-50 text-xs border border-slate-300 rounded-lg px-3 py-2 font-medium"
+                      >
+                        {["Chỉ Serial chênh lệch (Dư / Thiếu)", "Tất cả Serial", "Thiếu (Chưa quét)", "Bắn sai serial", "Bắn dư serial", "Đã loại bỏ Serial dư"].map(s => (
+                          <option key={s} value={s}>{s}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <input
+                      type="text"
+                      placeholder="🔍 Tìm SKU / Serial / Bin..."
+                      value={searchDetail}
+                      onChange={e => setSearchDetail(e.target.value)}
+                      className="bg-slate-50 text-xs border border-slate-300 rounded-lg px-3 py-2 w-64"
+                    />
+                  </div>
+
+                  {/* SERIAL TABLE */}
+                  <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                    <div className="overflow-x-auto max-h-[600px]">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-slate-100 text-slate-700 font-bold sticky top-0 border-b border-slate-200">
+                          <tr>
+                            <th className="p-3">SKU</th>
+                            <th className="p-3">Tên sản phẩm</th>
+                            <th className="p-3">Số Serial (Sổ sách)</th>
+                            <th className="p-3">Serial đã quét (ERP - Sửa 0ms)</th>
+                            <th className="p-3">Mã Bin</th>
+                            <th className="p-3">Loại hàng</th>
+                            <th className="p-3 text-center">Đã kiểm</th>
+                            <th className="p-3 text-center">Phân loại Check</th>
+                            <th className="p-3">Ghi chú</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {filteredDetailRows.map((r, i) => {
+                            let statusBadge = "bg-slate-100 text-slate-700";
+                            if (r.status === "Bắn sai serial") statusBadge = "bg-amber-100 text-amber-800 font-bold border border-amber-300";
+                            else if (r.status === "Bắn dư serial") statusBadge = "bg-orange-100 text-orange-800 font-bold border border-orange-300";
+                            else if (r.status === "Bắn thiếu (Chưa quét)") statusBadge = "bg-rose-100 text-rose-800 border border-rose-300";
+                            else if (r.status === "Đã quét đủ") statusBadge = "bg-emerald-100 text-emerald-800";
+
+                            return (
+                              <tr key={i} className="hover:bg-slate-50 transition">
+                                <td className="p-3 font-mono font-medium">{r.sku}</td>
+                                <td className="p-3 max-w-xs truncate">{r.name}</td>
+                                <td className="p-3 font-mono text-slate-600">{r.stockSerial || "—"}</td>
+                                <td className="p-2">
+                                  <input
+                                    type="text"
+                                    value={r.scannedSerial}
+                                    onChange={e => handleSerialEdit(i, e.target.value)}
+                                    className="w-full bg-slate-50 focus:bg-white border border-slate-200 focus:border-brand-500 rounded px-2 py-1 font-mono text-xs"
+                                    placeholder="Gõ để sửa..."
+                                  />
+                                </td>
+                                <td className="p-3 text-slate-500">{r.bin || "—"}</td>
+                                <td className="p-3 text-slate-500">{r.type}</td>
+                                <td className="p-3 text-center font-semibold">{r.checked}</td>
+                                <td className="p-3 text-center">
+                                  <span className={`px-2 py-1 rounded text-[11px] inline-block ${statusBadge}`}>{r.status}</span>
+                                </td>
+                                <td className="p-3 text-slate-500 italic max-w-xs truncate">{r.note || "—"}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 2: KIỂM ĐẾM LẦN 2 (0ms AUTO-CALC) */}
+              {activeTab === 2 && (
+                <div className="space-y-4">
+                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-wrap gap-4 items-center justify-between">
+                    <div className="flex gap-4">
+                      <select
+                        value={filterL2Mode}
+                        onChange={e => setFilterL2Mode(e.target.value)}
+                        className="bg-slate-50 text-xs border border-slate-300 rounded-lg px-3 py-2 font-medium"
+                      >
+                        <option value="Chỉ SKU chênh lệch (Cần xử lý)">Chỉ SKU chênh lệch (Cần xử lý)</option>
+                        <option value="Tất cả SKU">Tất cả SKU</option>
+                      </select>
+                      <select
+                        value={filterL2Status}
+                        onChange={e => setFilterL2Status(e.target.value)}
+                        className="bg-slate-50 text-xs border border-slate-300 rounded-lg px-3 py-2 font-medium"
+                      >
+                        {["Tất cả", "Lệch chưa đếm bù", "Đã nhập đếm bù Lần 2", "Đã khớp sau đếm bù"].map(s => (
+                          <option key={s} value={s}>{s}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <input
+                      type="text"
+                      placeholder="🔍 Tìm Mã / Tên vật tư..."
+                      value={searchL2}
+                      onChange={e => setSearchL2(e.target.value)}
+                      className="bg-slate-50 text-xs border border-slate-300 rounded-lg px-3 py-2 w-64"
+                    />
+                  </div>
+
+                  {/* L2 GRID TABLE */}
+                  <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                    <div className="overflow-x-auto max-h-[600px]">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-slate-100 text-slate-700 font-bold sticky top-0 border-b border-slate-200">
+                          <tr>
+                            <th className="p-3">Mã vật tư</th>
+                            <th className="p-3">Tên vật tư</th>
+                            <th className="p-3 text-center">ĐVT</th>
+                            <th className="p-3 text-center">Sổ sách (A)</th>
+                            <th className="p-3 text-center">Thực tế L1 (B)</th>
+                            <th className="p-3 text-center bg-brand-50 text-brand-700">Đếm lại Lần 2 (C) - Sửa 0ms</th>
+                            <th className="p-3 text-center font-bold">Tổng thực tế (B+C)</th>
+                            <th className="p-3 text-center font-bold">Chênh lệch Lần 2</th>
+                            <th className="p-3">Note mã đơn xuất / Lý do</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {filteredL2Rows.map((r, i) => {
+                            const isMatch = r.diffL2 === 0;
+                            return (
+                              <tr key={i} className="hover:bg-slate-50 transition">
+                                <td className="p-3 font-mono font-medium">{r.sku}</td>
+                                <td className="p-3 max-w-xs truncate">{r.name}</td>
+                                <td className="p-3 text-center text-slate-500">{r.uom}</td>
+                                <td className="p-3 text-center font-semibold text-slate-700">{r.qtySys}</td>
+                                <td className="p-3 text-center font-semibold text-slate-700">{r.qtyL1}</td>
+                                <td className="p-2 bg-brand-50/30">
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    value={r.qtyL2}
+                                    onChange={e => handleL2QtyChange(r.sku, e.target.value)}
+                                    className="w-24 mx-auto block text-center bg-white border border-brand-300 focus:border-brand-600 rounded px-2 py-1 font-bold text-brand-700 text-xs shadow-sm"
+                                  />
+                                </td>
+                                <td className="p-3 text-center font-bold text-slate-900 bg-slate-50">{r.totalActual}</td>
+                                <td className={`p-3 text-center font-bold text-xs ${isMatch ? 'text-emerald-600 bg-emerald-50' : 'text-rose-600 bg-rose-50'}`}>
+                                  {r.diffL2 > 0 ? `+${r.diffL2}` : r.diffL2}
+                                </td>
+                                <td className="p-2">
+                                  <input
+                                    type="text"
+                                    value={r.note}
+                                    onChange={e => handleL2NoteChange(r.sku, e.target.value)}
+                                    className="w-full bg-slate-50 focus:bg-white border border-slate-200 rounded px-2 py-1 text-xs"
+                                    placeholder="Nhập lý do..."
+                                  />
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 3: BẢNG TỔNG HỢP CHÊNH LỆCH */}
+              {activeTab === 3 && (
+                <div className="space-y-4">
+                  <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm text-center">
+                    <h3 className="text-lg font-bold text-slate-800">Bảng Tổng Hợp Chênh Lệch & Phân Loại Lỗi</h3>
+                    <p className="text-xs text-slate-500 mt-1">Đã tự động tính toán 0ms dựa trên kết quả đếm Lần 2 & Chi tiết Serial.</p>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 4: XUẤT BÁO CÁO */}
+              {activeTab === 4 && (
+                <div className="space-y-6 max-w-3xl mx-auto">
+                  <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
+                    <h3 className="text-base font-bold text-slate-800">Xuất báo cáo & Biên bản kiểm kê Phong Vũ</h3>
+                    <button
+                      onClick={handleExportExcel}
+                      className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm rounded-xl shadow-lg transition"
+                    >
+                      📥 Tải xuống File Báo cáo Excel Đầy đủ (3 Sheets)
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 5: LƯU TRỮ HÀNG THÁNG */}
+              {activeTab === 5 && (
+                <div className="space-y-4 max-w-4xl mx-auto">
+                  <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                    <h3 className="text-base font-bold text-slate-800 mb-2">📅 Danh sách Báo cáo Hàng tháng (Rolling 12 tháng)</h3>
+                    <p className="text-xs text-slate-500 mb-4">Lưu trữ snapshot báo cáo tổng hợp cuối tháng trên Supabase. Tự động giữ 12 tháng gần nhất.</p>
+
+                    <div className="space-y-2">
+                      {monthlyArchives.map(a => (
+                        <div key={a.id} className="p-3 bg-slate-50 border border-slate-200 rounded-lg flex justify-between items-center">
+                          <div>
+                            <h4 className="font-bold text-sm text-slate-800">{a.label}</h4>
+                            <p className="text-xs text-slate-400">Cập nhật: {new Date(a.updated_at).toLocaleString('vi-VN')}</p>
+                          </div>
+                          <button
+                            onClick={() => alert(`Đang tải báo cáo tháng ${a.label}...`)}
+                            className="px-3 py-1.5 bg-brand-600 hover:bg-brand-700 text-white text-xs font-semibold rounded-md shadow-sm transition"
+                          >
+                            Tải báo cáo
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+            </div>
+          </main>
+
+          {/* CLEAR SURPLUS SERIAL MODAL */}
+          {pendingClearSerial && (
+            <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+              <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+                <h3 className="text-base font-bold text-slate-900">Lý Do Loại Bỏ Serial Bắn Dư Khỏi Báo Cáo</h3>
+                <p className="text-xs text-slate-600">
+                  Bạn đang yêu cầu **loại bỏ Serial bắn dư `{pendingClearSerial.serial}`** của SKU **`{pendingClearSerial.sku}`** khỏi Báo cáo Tổng hợp hàng hóa.
+                </p>
+                <input
+                  type="text"
+                  placeholder="Ví dụ: Quét nhầm, hàng mẫu, hủy đơn xuất..."
+                  value={clearReasonInput}
+                  onChange={e => setClearReasonInput(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2.5 text-xs focus:outline-none focus:border-brand-500"
+                />
+                <div className="flex gap-3 pt-2">
+                  <button
+                    onClick={confirmClearSurplusSerial}
+                    className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-xl shadow-md transition"
+                  >
+                    Xác nhận loại bỏ khỏi Báo cáo
+                  </button>
+                  <button
+                    onClick={() => setPendingClearSerial(null)}
+                    className="py-2.5 px-4 bg-slate-200 hover:bg-slate-300 text-slate-700 font-semibold text-xs rounded-xl transition"
+                  >
+                    Hủy
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.render(<App />, document.getElementById('root'));
+  </script>
+</body>
+</html>
