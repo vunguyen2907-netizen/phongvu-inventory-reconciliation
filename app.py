@@ -4,13 +4,16 @@ import io
 import datetime
 import os
 import re
+import uuid
 from supabase_store import (
     dataframe_from_payload,
     display_time,
+    download_source_file,
     is_configured as supabase_is_configured,
     list_inventory_sessions,
     load_inventory_session,
     save_inventory_session,
+    upload_source_files,
 )
 
 import openpyxl
@@ -258,23 +261,43 @@ def read_smart_dataframe(file_obj, is_erp=False):
     return df
 
 
-def save_session_state():
+def save_session_state(show_progress=False):
     """Tự động lưu đợt kiểm kê hiện tại lên Supabase nếu đã cấu hình."""
     if not supabase_is_configured() or st.session_state.df_check_detail is None:
-        return
-    try:
-        saved = save_inventory_session(
-            st.session_state.get('active_session_id'),
-            st.session_state.get('session_name', ''),
-            st.session_state.get('df_recon'),
-            st.session_state.get('df_count_l2'),
-            st.session_state.get('df_check_detail'),
-        )
-        st.session_state.active_session_id = saved['id']
-        st.session_state.last_saved_time = display_time(saved.get('updated_at'))
-        st.session_state.db_error = None
-    except Exception as exc:
-        st.session_state.db_error = str(exc)
+        return False
+
+    def persist():
+        try:
+            saved = save_inventory_session(
+                st.session_state.get('active_session_id'),
+                st.session_state.get('session_name', ''),
+                st.session_state.get('df_recon'),
+                st.session_state.get('df_count_l2'),
+                st.session_state.get('df_check_detail'),
+                st.session_state.get('source_files'),
+            )
+            st.session_state.active_session_id = saved['id']
+
+            # File ERP và tồn kho gốc không nằm trong JSONB; chúng được đưa
+            # vào Supabase Storage private đúng một lần cho từng đợt.
+            pending_files = st.session_state.get('pending_source_uploads', [])
+            if pending_files:
+                upload_source_files(pending_files)
+                st.session_state.pending_source_uploads = []
+
+            list_inventory_sessions.clear()
+            st.session_state.last_saved_time = display_time(saved.get('updated_at'))
+            st.session_state.db_error = None
+            st.session_state.save_notice = "Đã lưu dữ liệu kiểm kê lên cloud."
+            return True
+        except Exception as exc:
+            st.session_state.db_error = str(exc)
+            return False
+
+    if show_progress:
+        with st.spinner("Đang lưu và đồng bộ dữ liệu lên cloud…"):
+            return persist()
+    return persist()
 
 def reset_session_state():
     """Dọn màn hình để tạo một đợt mới; lịch sử Supabase vẫn được giữ."""
@@ -282,6 +305,9 @@ def reset_session_state():
     st.session_state.df_count_l2 = None
     st.session_state.df_check_detail = None
     st.session_state.pending_clear_serial = None
+    st.session_state.source_files = []
+    st.session_state.pending_source_uploads = []
+    st.session_state.source_file_download = None
     st.session_state.active_session_id = None
     st.session_state.session_name = f"Kiểm kê {datetime.date.today().strftime('%d/%m/%Y')}"
     st.session_state.last_saved_time = None
@@ -303,6 +329,14 @@ if 'last_saved_time' not in st.session_state:
     st.session_state.last_saved_time = None
 if 'db_error' not in st.session_state:
     st.session_state.db_error = None
+if 'source_files' not in st.session_state:
+    st.session_state.source_files = []
+if 'pending_source_uploads' not in st.session_state:
+    st.session_state.pending_source_uploads = []
+if 'save_notice' not in st.session_state:
+    st.session_state.save_notice = None
+if 'source_file_download' not in st.session_state:
+    st.session_state.source_file_download = None
 
 def load_selected_session(session_id):
     saved = load_inventory_session(session_id)
@@ -310,6 +344,9 @@ def load_selected_session(session_id):
     st.session_state.df_recon = dataframe_from_payload(payload.get('df_recon'))
     st.session_state.df_count_l2 = dataframe_from_payload(payload.get('df_count_l2'))
     st.session_state.df_check_detail = dataframe_from_payload(payload.get('df_check_detail'))
+    st.session_state.source_files = payload.get('source_files', [])
+    st.session_state.pending_source_uploads = []
+    st.session_state.source_file_download = None
     st.session_state.active_session_id = saved['id']
     st.session_state.session_name = saved.get('session_name', '')
     st.session_state.last_saved_time = display_time(saved.get('updated_at'))
@@ -320,7 +357,7 @@ with st.sidebar:
     st.text_input("Tên đợt kiểm kê", key="session_name")
     if supabase_is_configured():
         if st.button("Lưu đợt hiện tại", use_container_width=True, disabled=st.session_state.df_check_detail is None):
-            save_session_state()
+            save_session_state(show_progress=True)
             st.rerun()
         try:
             saved_sessions = list_inventory_sessions()
@@ -350,6 +387,35 @@ with st.sidebar:
 
     if st.session_state.last_saved_time:
         st.caption(f"Đã lưu: {st.session_state.last_saved_time}")
+    if st.session_state.source_files:
+        st.caption("Đã lưu file nguồn: " + ", ".join(item['name'] for item in st.session_state.source_files))
+        with st.expander("Tải lại dữ liệu nguồn của đợt này"):
+            for source in st.session_state.source_files:
+                source_id = source['path'].replace('/', '_').replace('.', '_')
+                if st.button(f"Chuẩn bị tải: {source['name']}", key=f"prepare_source_{source_id}", use_container_width=True):
+                    try:
+                        with st.spinner(f"Đang tải {source['name']}…"):
+                            st.session_state.source_file_download = {
+                                'path': source['path'],
+                                'name': source['name'],
+                                'content_type': source.get('content_type', 'application/octet-stream'),
+                                'data': download_source_file(source['path']),
+                            }
+                    except Exception as exc:
+                        st.error(f"Không tải được file nguồn: {exc}")
+                cached_download = st.session_state.source_file_download
+                if cached_download and cached_download['path'] == source['path']:
+                    st.download_button(
+                        label=f"Tải xuống {source['name']}",
+                        data=cached_download['data'],
+                        file_name=source['name'],
+                        mime=cached_download['content_type'],
+                        key=f"download_source_{source_id}",
+                        use_container_width=True,
+                    )
+    if st.session_state.save_notice:
+        st.success(st.session_state.save_notice)
+        st.session_state.save_notice = None
     if st.session_state.db_error:
         st.warning(f"Chưa lưu được lên Supabase: {st.session_state.db_error}")
 
@@ -381,7 +447,7 @@ def modal_clear_surplus(sku_val, serial_val):
                     st.session_state.df_count_l2.loc[l2_mask, 'Số liệu thực tế đã đếm lần 1'] -= 1
 
                 st.session_state.pending_clear_serial = None
-                save_session_state()
+                save_session_state(show_progress=True)
                 st.success(f"Đã loại bỏ Serial {serial_val}!")
                 st.rerun()
     with col_c2:
@@ -421,6 +487,28 @@ with tabs[0]:
     if file_stock and file_erp:
         st.info("Đã nhận đủ dữ liệu hệ thống và ERP. Nhấn nút bên dưới để bắt đầu tự động trích xuất & đối soát.")
         if st.button("Bắt đầu trích xuất & Tạo 3 bảng đối soát", type="primary", use_container_width=True):
+            # Mỗi lần import là một đợt mới. File gốc sẽ được lưu ở Storage,
+            # còn các bảng đối soát lưu ở PostgreSQL/JSONB.
+            new_session_id = str(uuid.uuid4())
+            stock_bytes = file_stock.getvalue()
+            erp_bytes = file_erp.getvalue()
+            def source_record(file_kind, uploaded_file, content):
+                extension = os.path.splitext(uploaded_file.name)[1].lower()
+                return {
+                    'kind': file_kind,
+                    'name': uploaded_file.name,
+                    'path': f"{new_session_id}/{file_kind}{extension}",
+                    'content_type': uploaded_file.type or 'application/octet-stream',
+                    'size': len(content),
+                }
+            stock_source = source_record('ton-kho-goc', file_stock, stock_bytes)
+            erp_source = source_record('kiem-dem-erp', file_erp, erp_bytes)
+            st.session_state.active_session_id = new_session_id
+            st.session_state.source_files = [stock_source, erp_source]
+            st.session_state.pending_source_uploads = [
+                {**stock_source, 'content': stock_bytes},
+                {**erp_source, 'content': erp_bytes},
+            ]
             
             df_stock_raw = read_smart_dataframe(file_stock, is_erp=False)
             df_erp_raw = read_smart_dataframe(file_erp, is_erp=True)
@@ -690,7 +778,7 @@ with tabs[0]:
                                 })
 
                 st.session_state.df_check_detail = pd.DataFrame(detail_rows)
-                save_session_state()
+                save_session_state(show_progress=True)
                 st.success("Đã trích xuất & tạo thành công các bảng đối soát.")
 
 # ==========================================
@@ -840,7 +928,7 @@ with tabs[1]:
                     st.session_state.df_check_detail.loc[mask, 'Note đơn hàng'] = user_note
 
         if has_changes:
-            save_session_state()
+            save_session_state(show_progress=True)
 
     else:
         st.warning("Vui lòng tải lên file dữ liệu tại Tab 1 trước.")
@@ -943,7 +1031,7 @@ with tabs[2]:
                 st.session_state.df_count_l2.loc[mask, 'Kết quả xử lý sau khi đếm lại lần 2'] = st.session_state.df_count_l2.loc[mask, 'Số liệu thực tế đã đếm lần 1'] + l2_val
                 st.session_state.df_count_l2.loc[mask, 'Note mã đơn'] = note_val
         if has_l2_changes:
-            save_session_state()
+            save_session_state(show_progress=True)
     else:
         st.warning("Vui lòng tải lên file dữ liệu tại Tab 1 trước.")
 

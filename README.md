@@ -25,6 +25,6 @@ Lấy `SUPABASE_URL` và `service_role key` ở Supabase **Project Settings > AP
 
 ## Lịch sử và bảo mật
 
-Mỗi đợt kiểm kê được lưu trong bảng `inventory_sessions` dưới dạng JSONB; sidebar cho phép tạo, lưu và mở lại các đợt đã có.
+Mỗi đợt kiểm kê được lưu trong bảng `inventory_sessions` dưới dạng JSONB; sidebar cho phép tạo, lưu và mở lại các đợt đã có. Hai file dữ liệu nguồn (tồn kho và ERP) của từng đợt cũng được lưu một lần vào bucket private `inventory-source-files` trên Supabase Storage.
 
 Phiên bản hiện tại chưa có đăng nhập người dùng. Vì vậy chỉ chia sẻ URL app cho người được phép; nếu cần phân quyền theo nhân viên/chi nhánh, bước tiếp theo là thêm Supabase Auth và cột `owner_id` với RLS policy.
