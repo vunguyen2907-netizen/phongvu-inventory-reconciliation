@@ -70,11 +70,11 @@
     const { useState, useEffect, useMemo } = React;
 
     // --- SMART EXCEL HEADER & COLUMN MATCHING ---
-    const skuCandidates = ['mã sản phẩm', 'mã hàng hóa', 'mã hàng', 'mã sp', 'mã hh', 'mã vật tư', 'mã vt', 'mã thiết bị', 'sku', 'item code', 'product code', 'mã'];
+    const skuCandidates = ['mã sản phẩm', 'mã hàng hóa', 'mã hàng', 'mã sp', 'mã hh', 'mã vật tư', 'mã vt', 'mã thiết bị', 'sku', 'item code', 'product code', 'mã', 'part number', 'part_number', 'mã part'];
     const nameCandidates = ['tên sản phẩm', 'tên hàng hóa', 'tên hàng', 'tên sp', 'tên hh', 'tên vật tư', 'tên thiết bị', 'description', 'product name', 'item name', 'tên'];
     const uomCandidates = ['đơn vị tính', 'đvt', 'uom', 'unit', 'đơn vị'];
-    const qtyCandidates = ['số lượng sổ sách', 'tồn cuối', 'số lượng tồn', 'tồn kho', 'tồn sổ sách', 'sl sổ sách', 'sl tồn', 'tồn cuối kỳ', 'số lượng', 'tồn', 'sl'];
-    const serialCandidates = ['serial/lot', 'serial', 'imei', 'sn', 'số serial', 'seri', 'mã vạch'];
+    const qtyCandidates = ['số lượng sổ sách', 'tồn cuối', 'số lượng tồn', 'tồn kho', 'tồn sổ sách', 'sl sổ sách', 'sl tồn', 'tồn cuối kỳ', 'số lượng', 'tồn', 'sl', 'thực tế đếm', 'thực tế đã đếm', 'sl thực tế', 'đã đếm'];
+    const serialCandidates = ['serial/lot', 'serial đã quét', 'serial đã kiểm', 'số serial', 'serial', 'imei', 'sn', 'seri', 'mã vạch', 'barcode', 'qr', 'mã serial', 'quét', 'chốt', 'series', 'seri no', 'serial no'];
     const partCandidates = ['part number', 'part_number', 'mã part', 'part no', 'part', 'mã phụ tùng'];
     const binCandidates = ['mã bin', 'tên bin', 'bin kiểm đếm', 'bin', 'vị trí', 'khu vực', 'kệ', 'ô kiểm đếm'];
     const typeCandidates = ['loại hàng', 'loại serial', 'loại', 'hàng hóa', 'phân loại'];
@@ -99,20 +99,36 @@
       const rows2d = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
       if (!rows2d || rows2d.length === 0) return [];
       
-      const headerKeywords = ['mã', 'sku', 'product', 'item', 'tên', 'serial', 'tồn', 'số lượng', 'sl'];
-      let headerRowIdx = 0;
+      const headerKeywords = ['mã', 'sku', 'product', 'item', 'tên', 'serial', 'tồn', 'số lượng', 'sl', 'bin', 'đvt'];
+      let headerRowIdx = -1;
       
-      for (let i = 0; i < Math.min(15, rows2d.length); i++) {
-        const rowStr = rows2d[i].map(c => String(c).toLowerCase()).join(" ");
-        if (headerKeywords.some(kw => rowStr.includes(kw))) {
-          headerRowIdx = i;
-          break;
+      // Header row MUST have at least 3 non-empty cells across columns
+      for (let i = 0; i < Math.min(20, rows2d.length); i++) {
+        const rowCells = rows2d[i].map(c => String(c).trim()).filter(c => c !== "");
+        if (rowCells.length >= 3) {
+          const rowStr = rowCells.map(c => c.toLowerCase()).join(" ");
+          if (headerKeywords.some(kw => rowStr.includes(kw))) {
+            headerRowIdx = i;
+            break;
+          }
         }
       }
 
+      if (headerRowIdx === -1) {
+        for (let i = 0; i < Math.min(20, rows2d.length); i++) {
+          const rowCells = rows2d[i].map(c => String(c).trim()).filter(c => c !== "");
+          if (rowCells.length >= 3) {
+            headerRowIdx = i;
+            break;
+          }
+        }
+      }
+
+      if (headerRowIdx === -1) headerRowIdx = 0;
+
       const headers = rows2d[headerRowIdx].map(c => String(c).trim());
       const dataRows = [];
-      const invalidSkus = ['tổng', 'tổng cộng', 'total', 'nan', 'none', 'null', 'sum', ''];
+      const invalidSkus = ['tổng', 'tổng cộng', 'total', 'nan', 'none', 'null', 'sum', '', 'stt'];
 
       for (let i = headerRowIdx + 1; i < rows2d.length; i++) {
         const r = rows2d[i];
@@ -129,6 +145,18 @@
       }
       
       return dataRows;
+    }
+
+    function readWorkbookSmart(binaryData) {
+      const wb = XLSX.read(binaryData, { type: 'binary' });
+      for (const sheetName of wb.SheetNames) {
+        const ws = wb.Sheets[sheetName];
+        const rows = parseSmartSheet(ws);
+        if (rows.length > 0) {
+          return rows;
+        }
+      }
+      return [];
     }
 
     // --- SUPABASE CONFIG ---
@@ -831,9 +859,7 @@
                             setRawStockFileName(file.name);
                             const reader = new FileReader();
                             reader.onload = (evt) => {
-                              const wb = XLSX.read(evt.target.result, { type: 'binary' });
-                              const ws = wb.Sheets[wb.SheetNames[0]];
-                              const parsedRows = parseSmartSheet(ws);
+                              const parsedRows = readWorkbookSmart(evt.target.result);
                               setRawStockData(parsedRows);
                             };
                             reader.readAsBinaryString(file);
@@ -866,9 +892,7 @@
                             setRawErpFileName(file.name);
                             const reader = new FileReader();
                             reader.onload = (evt) => {
-                              const wb = XLSX.read(evt.target.result, { type: 'binary' });
-                              const ws = wb.Sheets[wb.SheetNames[0]];
-                              const parsedRows = parseSmartSheet(ws);
+                              const parsedRows = readWorkbookSmart(evt.target.result);
                               setRawErpData(parsedRows);
                             };
                             reader.readAsBinaryString(file);
