@@ -1379,6 +1379,7 @@
           if (filterDetailStatus === "Thiếu (Chưa quét)" && r.status !== "Bắn thiếu (Chưa quét)") return false;
           if (filterDetailStatus === "Bắn sai serial" && r.status !== "Bắn sai serial") return false;
           if (filterDetailStatus === "Bắn dư serial" && !String(r.status || "").includes("Bắn dư")) return false;
+          if (filterDetailStatus === "Đã quét đủ" && r.status !== "Đã quét đủ") return false;
           if (filterDetailStatus === "Đã loại bỏ Serial dư" && r.status !== "Đã loại bỏ Serial dư") return false;
 
           if (searchDetail.trim()) {
@@ -1733,7 +1734,7 @@
                         onChange={e => setFilterDetailStatus(e.target.value)}
                         className="bg-slate-50 text-xs border border-slate-300 rounded-lg px-3 py-2 font-medium"
                       >
-                        {["Chỉ Serial chênh lệch (Dư / Thiếu)", "Tất cả Serial", "Thiếu (Chưa quét)", "Bắn sai serial", "Bắn dư serial", "Đã loại bỏ Serial dư"].map(s => (
+                        {["Chỉ Serial chênh lệch (Dư / Thiếu)", "Tất cả Serial", "Thiếu (Chưa quét)", "Bắn sai serial", "Bắn dư serial", "Đã quét đủ", "Đã loại bỏ Serial dư"].map(s => (
                           <option key={s} value={s}>{s}</option>
                         ))}
                       </select>
