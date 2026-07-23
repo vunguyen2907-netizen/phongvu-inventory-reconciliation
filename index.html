@@ -157,6 +157,35 @@
       return [baseNote, audits.at(-1)].filter(Boolean).join(" ");
     }
 
+    function normalizeDetailRows(rows) {
+      return (rows || []).map((row, index) => ({
+        ...row,
+        l2Added: Boolean(row.l2Added)
+          || /\[Sửa Serial:\s*trống\s*[→-]/i.test(String(row.note || "")),
+        note: compactSerialAudit(row.note),
+        rowId: row.rowId || `${row.sku}::${index}`
+      }));
+    }
+
+    function syncCountsWithDetail(countRows, detailRows) {
+      const l2BySku = {};
+      const hasL2Tracking = new Set();
+      detailRows.forEach(row => {
+        if (row.l2Added) {
+          hasL2Tracking.add(row.sku);
+          if (row.checked > 0 && row.status !== "Đã loại bỏ Serial dư") {
+            l2BySku[row.sku] = (l2BySku[row.sku] || 0) + 1;
+          }
+        }
+      });
+      return (countRows || []).map(row => {
+        if (!hasL2Tracking.has(row.sku)) return row;
+        const qtyL2 = l2BySku[row.sku] || 0;
+        const totalActual = row.qtyL1 + qtyL2;
+        return { ...row, qtyL2, totalActual, diffL2: totalActual - row.qtySys };
+      });
+    }
+
     function SortableHeader({ label, column, sortConfig, onSort, className = "" }) {
       const active = sortConfig.key === column;
       return (
@@ -282,7 +311,8 @@
     // --- SUPABASE CONFIG ---
     const getSupabaseConfig = () => {
       let url = window.SUPABASE_URL || localStorage.getItem('SUPABASE_URL') || '';
-      let key = window.SUPABASE_KEY || localStorage.getItem('SUPABASE_KEY') || '';
+      // Chỉ nhận publishable/anon key ở trình duyệt; không đọc service-role key cũ.
+      let key = window.SUPABASE_KEY || localStorage.getItem('SUPABASE_PUBLISHABLE_KEY') || '';
       return { url, key };
     };
 
@@ -397,6 +427,12 @@
         }, 10000);
         return () => clearTimeout(timer);
       }, [isDirty, dfCheckDetail, dfCountL2]);
+
+      // Serial được bổ sung tại tab Chi tiết là số đếm Lần 2 của SKU tương ứng.
+      useEffect(() => {
+        if (dfCheckDetail.length === 0) return;
+        setDfCountL2(prev => syncCountsWithDetail(prev, dfCheckDetail));
+      }, [dfCheckDetail]);
 
       // --- RECONCILIATION ALGORITHM ---
       const handleProcessFiles = (stockRowsRaw, erpRowsRaw) => {
@@ -645,12 +681,9 @@
           if (error) throw error;
           if (!error && data) {
             const p = data.data || {};
-            setDfCountL2(p.df_count_l2 || []);
-            setDfCheckDetail((p.df_check_detail || []).map((row, index) => ({
-              ...row,
-              note: compactSerialAudit(row.note),
-              rowId: row.rowId || `${row.sku}::${index}`
-            })));
+            const loadedDetails = normalizeDetailRows(p.df_check_detail);
+            setDfCountL2(syncCountsWithDetail(p.df_count_l2 || [], loadedDetails));
+            setDfCheckDetail(loadedDetails);
             setActiveSessionId(data.id);
             setSessionName(data.session_name || '');
             setLastSavedTime(new Date(data.updated_at).toLocaleTimeString('vi-VN'));
@@ -717,12 +750,9 @@
             .single();
           if (error) throw error;
           if (!data) return;
-          setDfCountL2(data.df_count_l2 || []);
-          setDfCheckDetail((data.df_detail || []).map((row, index) => ({
-            ...row,
-            note: compactSerialAudit(row.note),
-            rowId: row.rowId || `${row.sku}::${index}`
-          })));
+          const loadedDetails = normalizeDetailRows(data.df_detail);
+          setDfCountL2(syncCountsWithDetail(data.df_count_l2 || [], loadedDetails));
+          setDfCheckDetail(loadedDetails);
           setSessionName(`Archive ${data.label || yearMonth}`);
           setActiveSessionId(null);
           setIsDirty(false);
@@ -759,9 +789,15 @@
           const row = updated[idx];
           const oldSerial = row.scannedSerial;
           if (newSerial === "" && (row.status.includes("Bắn dư") || oldSerial !== "")) {
-            setPendingClearSerial({ rowId, sku: row.sku, serial: oldSerial });
+            setPendingClearSerial({
+              rowId,
+              sku: row.sku,
+              serial: oldSerial,
+              l2Added: Boolean(row.l2Added)
+            });
             return prev;
           }
+          if (!oldSerial && newSerial) row.l2Added = true;
           row.scannedSerial = newSerial;
           row.checked = newSerial ? 1 : 0;
           row.diff = newSerial ? 0 : -1;
@@ -785,7 +821,7 @@
           alert("Vui lòng nhập lý do loại bỏ!");
           return;
         }
-        const { rowId, sku, serial } = pendingClearSerial;
+        const { rowId, sku, serial, l2Added } = pendingClearSerial;
         setDfCheckDetail(prev => {
           const updated = prev.map(row => ({ ...row }));
           const idx = updated.findIndex(row => row.rowId === rowId);
@@ -798,8 +834,14 @@
           r.note = `[Đã loại bỏ Serial dư ${serial} - Lý do: ${clearReasonInput.trim()}]`;
           return updated;
         });
-
-        setDfCountL2(prev => prev.map(r => r.sku === sku ? { ...r, qtyL1: Math.max(0, r.qtyL1 - 1), totalActual: Math.max(0, r.totalActual - 1), diffL2: Math.max(0, r.totalActual - 1) - r.qtySys } : r));
+        if (!l2Added) {
+          setDfCountL2(countRows => countRows.map(row => row.sku === sku ? {
+            ...row,
+            qtyL1: Math.max(0, row.qtyL1 - 1),
+            totalActual: Math.max(0, row.totalActual - 1),
+            diffL2: Math.max(0, row.totalActual - 1) - row.qtySys
+          } : row));
+        }
 
         setPendingClearSerial(null);
         setClearReasonInput("");
@@ -1100,7 +1142,7 @@
                 )}
                 {!supabaseClient && (
                   <p className="text-[11px] text-amber-300 bg-amber-950/40 border border-amber-800 rounded-lg p-2">
-                    Chưa cấu hình Supabase phía trình duyệt. Đối soát và xuất file vẫn hoạt động; chức năng lưu cloud đang tắt.
+                    Chưa có SUPABASE_PUBLISHABLE_KEY trong Streamlit Secrets. Đối soát và xuất file vẫn hoạt động; lưu cloud đang tắt.
                   </p>
                 )}
               </div>

@@ -19,9 +19,12 @@
 ```toml
 SUPABASE_URL = "https://<project-ref>.supabase.co"
 SUPABASE_KEY = "<service_role_key>"
+SUPABASE_PUBLISHABLE_KEY = "<sb_publishable_...>"
 ```
 
-Lấy `SUPABASE_URL` và `service_role key` ở Supabase **Project Settings > API**. Không đưa key này vào GitHub hoặc trình duyệt.
+Lấy các khóa ở Supabase **Project Settings > API**. `SUPABASE_KEY` chỉ dùng phía
+server; `SUPABASE_PUBLISHABLE_KEY` là khóa public dành cho giao diện trình duyệt.
+Không đưa secret/service-role key vào GitHub hoặc trình duyệt.
 
 > Lưu ý: `index.html` chạy phía trình duyệt. Không chép `service_role key` vào
 > `localStorage` hoặc `window.SUPABASE_KEY`. Nếu muốn SPA lưu trực tiếp, cần dùng
