@@ -30,8 +30,8 @@
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-  <!-- SheetJS (XLSX) -->
-  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <!-- SheetJS-compatible build with XLSX cell styling support -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.1.0/dist/xlsx.min.js"></script>
 
   <!-- Pako: đọc các session DataFrame zlib/base64 do backend Python cũ lưu -->
   <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
@@ -160,6 +160,12 @@
       return [baseNote, audits.at(-1)].filter(Boolean).join(" ");
     }
 
+    function serialsMatch(stockSerial, scannedSerial) {
+      const expected = normalizedText(stockSerial);
+      const actual = normalizedText(scannedSerial);
+      return Boolean(expected && actual && expected === actual);
+    }
+
     async function decodeStoredRows(value) {
       if (!value) return [];
       if (Array.isArray(value)) return value;
@@ -273,8 +279,13 @@
     function normalizeDetailRows(rows) {
       return (Array.isArray(rows) ? rows : []).map((sourceRow, index) => {
         const row = adaptLegacyDetailRow(sourceRow);
+        const isResolvedL2 = row.status === "Đã sửa Serial (Lần 2)"
+          && serialsMatch(row.stockSerial, row.scannedSerial);
         return {
           ...row,
+          status: isResolvedL2 ? "Đã quét đủ" : row.status,
+          diff: isResolvedL2 ? 0 : row.diff,
+          checked: isResolvedL2 ? 1 : row.checked,
           l2Added: Boolean(row.l2Added)
             || /\[Sửa Serial:\s*trống\s*[→-]/i.test(String(row.note || "")),
           note: compactSerialAudit(row.note),
@@ -955,7 +966,10 @@
           row.scannedSerial = newSerial;
           row.checked = newSerial ? 1 : 0;
           row.diff = newSerial ? 0 : -1;
-          row.status = newSerial ? "Đã sửa Serial (Lần 2)" : "Bắn thiếu (Chưa quét)";
+          if (!newSerial) row.status = "Bắn thiếu (Chưa quét)";
+          else if (serialsMatch(row.stockSerial, newSerial)) row.status = "Đã quét đủ";
+          else if (!String(row.stockSerial || "").trim()) row.status = "Bắn dư serial";
+          else row.status = "Bắn sai serial";
           return updated;
         });
         setIsDirty(true);
@@ -1009,18 +1023,152 @@
         if (dfCountL2.length === 0) return;
         const wb = XLSX.utils.book_new();
 
-        const summaryRows = dfMainRows.map((r, i) => ({
-          'STT': i + 1,
-          'SKU': r.sku,
-          'Tên hàng hóa': r.name,
-          'Đơn vị tính': r.uom,
-          'Số lượng sổ sách (hệ thống)': r.qtySys,
-          'Số lượng thực tế': r.totalActual,
-          'Chênh lệch': r.diff,
-          'Check': r.chkStatus,
-          'Ghi chú/ Tình trạng hàng hóa': r.note
+        const border = {
+          top: { style: "thin", color: { rgb: "808080" } },
+          bottom: { style: "thin", color: { rgb: "808080" } },
+          left: { style: "thin", color: { rgb: "808080" } },
+          right: { style: "thin", color: { rgb: "808080" } }
+        };
+        const styleTable = (ws, {
+          headerRow = 0,
+          dataStart = 1,
+          dataEnd,
+          totalRow = null,
+          widths,
+          centerColumns = [],
+          numericColumns = [],
+          wrapColumns = []
+        }) => {
+          const range = XLSX.utils.decode_range(ws["!ref"]);
+          ws["!cols"] = widths.map(wch => ({ wch }));
+          ws["!rows"] = ws["!rows"] || [];
+          ws["!rows"][headerRow] = { hpt: 28 };
+          ws["!autofilter"] = {
+            ref: XLSX.utils.encode_range({
+              s: { r: headerRow, c: 0 },
+              e: { r: Math.max(headerRow, dataEnd), c: range.e.c }
+            })
+          };
+
+          for (let c = 0; c <= range.e.c; c += 1) {
+            const headerCell = ws[XLSX.utils.encode_cell({ r: headerRow, c })];
+            if (headerCell) {
+              headerCell.s = {
+                font: { bold: true, color: { rgb: "1F2937" }, sz: 11 },
+                fill: { patternType: "solid", fgColor: { rgb: "D9E1F2" } },
+                alignment: { horizontal: "center", vertical: "center", wrapText: true },
+                border
+              };
+            }
+          }
+
+          for (let r = dataStart; r <= dataEnd; r += 1) {
+            ws["!rows"][r] = { hpt: 30 };
+            for (let c = 0; c <= range.e.c; c += 1) {
+              const cell = ws[XLSX.utils.encode_cell({ r, c })];
+              if (!cell) continue;
+              cell.s = {
+                font: { sz: 10, color: { rgb: "111827" } },
+                alignment: {
+                  horizontal: numericColumns.includes(c) ? "right" : (centerColumns.includes(c) ? "center" : "left"),
+                  vertical: "center",
+                  wrapText: wrapColumns.includes(c)
+                },
+                border
+              };
+              if (numericColumns.includes(c)) cell.z = c === 6 ? '0;[Red](0);-' : '0';
+            }
+          }
+
+          if (totalRow !== null) {
+            ws["!rows"][totalRow] = { hpt: 28 };
+            for (let c = 0; c <= range.e.c; c += 1) {
+              const cell = ws[XLSX.utils.encode_cell({ r: totalRow, c })];
+              if (!cell) continue;
+              cell.s = {
+                font: { bold: true, color: { rgb: "C00000" }, sz: 10 },
+                fill: { patternType: "solid", fgColor: { rgb: "FFF2CC" } },
+                alignment: {
+                  horizontal: numericColumns.includes(c) ? "right" : "left",
+                  vertical: "center",
+                  wrapText: true
+                },
+                border
+              };
+              if (numericColumns.includes(c)) cell.z = c === 6 ? '0;[Red](0);-' : '0';
+            }
+          }
+        };
+
+        const summaryHeaderRow = 9;
+        const summaryTableRows = dfMainRows.map((r, i) => [
+          i + 1,
+          r.sku,
+          r.name,
+          r.uom,
+          r.qtySys,
+          r.totalActual,
+          r.diff,
+          r.note || ""
+        ]);
+        const totalSys = dfMainRows.reduce((sum, row) => sum + row.qtySys, 0);
+        const totalActual = dfMainRows.reduce((sum, row) => sum + row.totalActual, 0);
+        const totalDiff = dfMainRows.reduce((sum, row) => sum + row.diff, 0);
+        const summaryData = [
+          ["PHONGVU.VN"],
+          ["CÔNG TY CỔ PHẦN THƯƠNG MẠI DỊCH VỤ PHONG VŨ"],
+          ["BIÊN BẢN KIỂM KÊ HÀNG TỒN KHO"],
+          [`NGÀY ${reportDate.split('-').reverse().join('.')}`],
+          [],
+          [`Tại kho: ${locationName}`],
+          [`Quản lý Đơn vị: ${mgrName}`],
+          [`Đại diện Kiểm kê / Kho: ${staffName}`],
+          [],
+          ["STT", "SKU", "Tên hàng hóa", "ĐVT", "Sổ sách", "Thực tế", "Chênh lệch", "Ghi chú / Tình trạng"],
+          ...summaryTableRows,
+          ["Tổng cộng", "", "", "", totalSys, totalActual, totalDiff, ""]
+        ];
+        const wsSummary = XLSX.utils.aoa_to_sheet(summaryData);
+        const summaryDataStart = summaryHeaderRow + 1;
+        const summaryDataEnd = summaryDataStart + summaryTableRows.length - 1;
+        const summaryTotalRow = summaryDataEnd + 1;
+        wsSummary["!merges"] = [0, 1, 2, 3, 5, 6, 7].map(r => ({
+          s: { r, c: 0 }, e: { r, c: 7 }
         }));
-        const wsSummary = XLSX.utils.json_to_sheet(summaryRows);
+        wsSummary["!merges"].push({
+          s: { r: summaryTotalRow, c: 0 }, e: { r: summaryTotalRow, c: 3 }
+        });
+        [
+          { row: 0, size: 14, color: "003399", bold: true },
+          { row: 1, size: 10, color: "555555", bold: false },
+          { row: 2, size: 16, color: "1F2937", bold: true },
+          { row: 3, size: 11, color: "C00000", bold: true }
+        ].forEach(item => {
+          const cell = wsSummary[XLSX.utils.encode_cell({ r: item.row, c: 0 })];
+          cell.s = {
+            font: { bold: item.bold, color: { rgb: item.color }, sz: item.size },
+            alignment: { horizontal: item.row >= 2 ? "center" : "left", vertical: "center" }
+          };
+          wsSummary["!rows"] = wsSummary["!rows"] || [];
+          wsSummary["!rows"][item.row] = { hpt: item.row === 2 ? 26 : 20 };
+        });
+        [5, 6, 7].forEach(r => {
+          const cell = wsSummary[XLSX.utils.encode_cell({ r, c: 0 })];
+          cell.s = {
+            font: { sz: 10, color: { rgb: "374151" } },
+            alignment: { horizontal: "left", vertical: "center", wrapText: true }
+          };
+        });
+        styleTable(wsSummary, {
+          headerRow: summaryHeaderRow,
+          dataStart: summaryDataStart,
+          dataEnd: summaryDataEnd,
+          totalRow: summaryTotalRow,
+          widths: [7, 16, 52, 11, 13, 13, 13, 38],
+          centerColumns: [0, 3],
+          numericColumns: [4, 5, 6],
+          wrapColumns: [2, 7]
+        });
         XLSX.utils.book_append_sheet(wb, wsSummary, "TH-HANG HOA");
 
         const l2Rows = dfCountL2.map(r => ({
@@ -1035,6 +1183,15 @@
           'Note mã đơn': r.note
         }));
         const wsL2 = XLSX.utils.json_to_sheet(l2Rows);
+        styleTable(wsL2, {
+          headerRow: 0,
+          dataStart: 1,
+          dataEnd: l2Rows.length,
+          widths: [16, 48, 10, 18, 18, 18, 18, 22, 36],
+          centerColumns: [2],
+          numericColumns: [3, 4, 5, 6, 7],
+          wrapColumns: [1, 8]
+        });
         XLSX.utils.book_append_sheet(wb, wsL2, "Kiểm đếm lần 2");
 
         const checkRows = dfCheckDetail.map(r => ({
@@ -1054,6 +1211,15 @@
           'Note đơn hàng': r.note
         }));
         const wsDetail = XLSX.utils.json_to_sheet(checkRows);
+        styleTable(wsDetail, {
+          headerRow: 0,
+          dataStart: 1,
+          dataEnd: checkRows.length,
+          widths: [16, 46, 18, 10, 12, 25, 25, 16, 16, 20, 12, 12, 24, 42],
+          centerColumns: [3, 8, 9, 12],
+          numericColumns: [4, 10, 11],
+          wrapColumns: [1, 12, 13]
+        });
         XLSX.utils.book_append_sheet(wb, wsDetail, "check");
 
         XLSX.writeFile(wb, `Bien_Ban_Kiem_Ke_Hang_Ton_Kho_${reportDate.replace(/-/g, '')}.xlsx`);
@@ -1170,7 +1336,9 @@
 
         const detailNotesBySku = {};
         dfCheckDetail.forEach(r => {
-          if (r.note) {
+          // Serial đã khớp ở lần 2 vẫn giữ audit tại sheet chi tiết,
+          // nhưng không còn là vấn đề cần đưa vào báo cáo tổng hợp.
+          if (r.note && r.status !== "Đã quét đủ") {
             if (!detailNotesBySku[r.sku]) detailNotesBySku[r.sku] = [];
             if (!detailNotesBySku[r.sku].includes(r.note)) detailNotesBySku[r.sku].push(r.note);
           }
