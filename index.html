@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Hệ thống Tự động Xử lý & Đối soát Dữ liệu Kiểm kê - Phong Vũ (Web App 0ms)</title>
+  <title>Hệ thống Tự động Xử lý & Đối soát Dữ liệu Kiểm kê - Phong Vũ</title>
   
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -101,49 +101,76 @@
       return defaultVal;
     }
 
+    // --- PYTHON-EQUIVALENT MAXIMUM SCORE HEADER DETECTOR ---
     function parseSmartSheet(ws) {
       const rows2d = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
       if (!rows2d || rows2d.length === 0) return [];
       
-      const headerKeywords = ['mã', 'sku', 'product', 'item', 'tên', 'serial', 'tồn', 'số lượng', 'sl', 'bin', 'đvt'];
-      let headerRowIdx = -1;
+      const headerKeywords = ['mã', 'sku', 'tên', 'tồn', 'số lượng', 'sl', 'serial', 'chênh lệch', 'đvt', 'hàng hóa', 'sản phẩm', 'stt', 'đơn vị', 'part', 'bin'];
+      let bestRowIdx = 0;
+      let maxScore = -1;
       
-      for (let i = 0; i < Math.min(25, rows2d.length); i++) {
+      for (let i = 0; i < Math.min(30, rows2d.length); i++) {
         const rowCells = rows2d[i].map(c => String(c).trim()).filter(c => c !== "");
-        if (rowCells.length >= 3) {
-          const rowStr = rowCells.map(c => c.toLowerCase()).join(" ");
-          if (headerKeywords.some(kw => rowStr.includes(kw))) {
-            headerRowIdx = i;
-            break;
+        const rowCellsLower = rowCells.map(c => c.toLowerCase());
+        const distinctCells = new Set(rowCellsLower);
+        
+        if (distinctCells.size < 3) continue;
+        
+        let score = 0;
+        distinctCells.forEach(cell => {
+          if (headerKeywords.some(kw => cell.includes(kw))) {
+            score++;
           }
+        });
+        
+        if (score > maxScore) {
+          maxScore = score;
+          bestRowIdx = i;
         }
       }
 
-      if (headerRowIdx === -1) {
-        for (let i = 0; i < Math.min(25, rows2d.length); i++) {
-          const rowCells = rows2d[i].map(c => String(c).trim()).filter(c => c !== "");
-          if (rowCells.length >= 3) {
-            headerRowIdx = i;
-            break;
-          }
+      const headersRaw = rows2d[bestRowIdx].map(c => String(c).trim());
+      const seen = {};
+      const cleanHeaders = [];
+      
+      headersRaw.forEach((h, i) => {
+        const base = h || `Unnamed_${i}`;
+        if (seen[base] !== undefined) {
+          seen[base]++;
+          cleanHeaders.push(`${base}_${seen[base]}`);
+        } else {
+          seen[base] = 0;
+          cleanHeaders.push(base);
         }
-      }
+      });
 
-      if (headerRowIdx === -1) headerRowIdx = 0;
-
-      const headers = rows2d[headerRowIdx].map(c => String(c).trim());
       const dataRows = [];
       const invalidSkus = ['tổng', 'tổng cộng', 'total', 'nan', 'none', 'null', 'sum', '', 'stt', 'stt.'];
 
-      for (let i = headerRowIdx + 1; i < rows2d.length; i++) {
+      for (let i = bestRowIdx + 1; i < rows2d.length; i++) {
         const r = rows2d[i];
         if (!r || r.every(cell => String(cell).trim() === "")) continue;
         const obj = {};
-        headers.forEach((h, colIdx) => {
+        cleanHeaders.forEach((h, colIdx) => {
           if (h) obj[h] = r[colIdx] !== undefined ? r[colIdx] : "";
         });
         
-        const skuVal = findVal(obj, skuCandidates);
+        let skuVal = findVal(obj, skuCandidates);
+        
+        // Fallback: search first available header if findVal missed
+        if (!skuVal) {
+          for (const h of cleanHeaders) {
+            const hLower = h.toLowerCase();
+            if (hLower === 'stt' || hLower === 'stt.' || hLower === 'no') continue;
+            const val = String(obj[h] || '').trim();
+            if (val && !invalidSkus.includes(val.toLowerCase())) {
+              skuVal = val;
+              break;
+            }
+          }
+        }
+
         if (skuVal && !invalidSkus.includes(skuVal.toLowerCase())) {
           dataRows.push(obj);
         }
@@ -273,7 +300,7 @@
         return () => clearTimeout(timer);
       }, [isDirty, dfCheckDetail, dfCountL2]);
 
-      // --- RECONCILIATION ALGORITHM (PANDAS EQUIVALENT IN JS) ---
+      // --- RECONCILIATION ALGORITHM ---
       const handleProcessFiles = (stockRowsRaw, erpRowsRaw) => {
         if (!stockRowsRaw || stockRowsRaw.length === 0 || !erpRowsRaw || erpRowsRaw.length === 0) {
           alert("Vui lòng tải lên cả 2 file trước khi bấm đối soát!");
@@ -416,7 +443,6 @@
           } else {
             const eSerials = [...(erpSerialsBySku[sku] || [])];
             
-            // 1. Exact match
             sRows.forEach(r => {
               if (r.stockSerial && eSerials.includes(r.stockSerial)) {
                 r.scannedSerial = r.stockSerial;
@@ -428,7 +454,6 @@
               }
             });
 
-            // 2. Unmatched serials paired -> Bắn sai serial!
             sRows.forEach(r => {
               if (r.checked === 0) {
                 if (eSerials.length > 0) {
@@ -447,7 +472,6 @@
               detailRows.push(r);
             });
 
-            // 3. Extra serials -> Bắn dư serial
             if (eSerials.length > 0) {
               const firstName = sRows.length > 0 ? sRows[0].name : "Sản phẩm quét dư / chưa có trong danh mục";
               const firstUom = sRows.length > 0 ? sRows[0].uom : "Cái";
@@ -464,7 +488,7 @@
         setDfCountL2(countL2Data);
         setDfCheckDetail(detailRows);
         setIsDirty(true);
-        setActiveTab(1); // Jump to Tab 2
+        setActiveTab(1);
       };
 
       // --- SAVE & LOAD SESSIONS ---
@@ -552,7 +576,7 @@
         } catch (e) { alert("Lỗi: " + e.message); }
       };
 
-      // --- INLINE EDITING HANDLERS (0ms REALTIME) ---
+      // --- INLINE EDITING HANDLERS ---
       const handleL2QtyChange = (sku, val) => {
         const num = parseInt(val) || 0;
         setDfCountL2(prev => prev.map(r => {
@@ -619,7 +643,6 @@
         if (dfCountL2.length === 0) return;
         const wb = XLSX.utils.book_new();
 
-        // 1. TH-HANG HOA
         const summaryRows = dfMainRows.map((r, i) => ({
           'STT': i + 1,
           'SKU': r.sku,
@@ -634,7 +657,6 @@
         const wsSummary = XLSX.utils.json_to_sheet(summaryRows);
         XLSX.utils.book_append_sheet(wb, wsSummary, "TH-HANG HOA");
 
-        // 2. Kiểm đếm lần 2
         const l2Rows = dfCountL2.map(r => ({
           'Mã vật tư': r.sku,
           'Tên vật tư': r.name,
@@ -649,7 +671,6 @@
         const wsL2 = XLSX.utils.json_to_sheet(l2Rows);
         XLSX.utils.book_append_sheet(wb, wsL2, "Kiểm đếm lần 2");
 
-        // 3. check (Chi tiết Serial)
         const checkRows = dfCheckDetail.map(r => ({
           'Mã sản phẩm': r.sku,
           'Tên sản phẩm': r.name,
@@ -875,7 +896,7 @@
                 <div className="w-10 h-10 rounded-xl bg-brand-500 flex items-center justify-center font-bold text-lg text-white shadow-lg">PV</div>
                 <div>
                   <h1 className="font-bold text-sm leading-tight text-slate-100">Phong Vũ Inventory</h1>
-                  <p className="text-xs text-slate-400">Reconciliation Web App (0ms)</p>
+                  <p className="text-xs text-slate-400">Reconciliation Web App</p>
                 </div>
               </div>
 
@@ -972,7 +993,7 @@
             </div>
 
             <div className="pt-4 border-t border-slate-800 text-center">
-              <span className="text-[11px] text-slate-500">Antigravity Web App v2.0 • 0ms</span>
+              <span className="text-[11px] text-slate-500">Antigravity Web App v2.0</span>
             </div>
           </aside>
 
@@ -983,7 +1004,7 @@
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <h2 className="text-xl font-bold text-slate-800">Hệ thống Tự động Xử lý & Đối soát Dữ liệu Kiểm kê</h2>
-                  <p className="text-xs text-slate-500">Công ty Cổ phần Thương mại Dịch vụ Phong Vũ — Web App đối soát tức thì 0ms trong bộ nhớ RAM</p>
+                  <p className="text-xs text-slate-500">Công ty Cổ phần Thương mại Dịch vụ Phong Vũ</p>
                 </div>
                 <div className="flex gap-2">
                   <button
@@ -1008,7 +1029,7 @@
                 {[
                   "1. Nhập dữ liệu",
                   "2. Chi tiết Serial",
-                  "3. Kiểm đếm Lần 2 (0ms)",
+                  "3. Kiểm đếm Lần 2",
                   "4. Bảng tổng hợp chênh lệch",
                   "5. Xuất báo cáo",
                   "📅 6. Lưu trữ hàng tháng"
@@ -1033,7 +1054,7 @@
                   <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-6">
                     <div>
                       <h3 className="text-base font-bold text-slate-800">Tải lên file Tồn kho sổ sách & Kết quả quét thực tế</h3>
-                      <p className="text-xs text-slate-500">Dữ liệu được nạp trực tiếp vào RAM trình duyệt và đối soát tức thì trong 0.1 giây.</p>
+                      <p className="text-xs text-slate-500">Hệ thống chấp nhận định dạng Excel (.xlsx, .xls) hoặc CSV.</p>
                     </div>
 
                     <div className="grid grid-cols-2 gap-6">
@@ -1109,7 +1130,7 @@
                       disabled={rawStockData.length === 0 || rawErpData.length === 0}
                       className={`w-full py-3.5 font-bold text-sm rounded-xl shadow-lg transition flex items-center justify-center gap-2 ${rawStockData.length > 0 && rawErpData.length > 0 ? 'bg-brand-600 hover:bg-brand-700 text-white shadow-brand-500/20 animate-pulse' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}
                     >
-                      🚀 Bắt đầu Tự động Đối soát Dữ liệu (0ms)
+                      🚀 Bắt đầu Tự động Đối soát Dữ liệu
                     </button>
 
                     {/* PREVIEW TABLE */}
@@ -1247,7 +1268,7 @@
                 </div>
               )}
 
-              {/* TAB 2: KIỂM ĐẾM LẦN 2 (0ms AUTO-CALC) */}
+              {/* TAB 2: KIỂM ĐẾM LẦN 2 */}
               {activeTab === 2 && (
                 <div className="space-y-4">
                   <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-wrap gap-4 items-center justify-between">
@@ -1291,7 +1312,7 @@
                             <th className="p-3 text-center">ĐVT</th>
                             <th className="p-3 text-center">Sổ sách (A)</th>
                             <th className="p-3 text-center">Thực tế L1 (B)</th>
-                            <th className="p-3 text-center bg-brand-50 text-brand-700">Đếm lại Lần 2 (C) - Sửa 0ms</th>
+                            <th className="p-3 text-center bg-brand-50 text-brand-700">Đếm lại Lần 2 (C)</th>
                             <th className="p-3 text-center font-bold">Tổng thực tế (B+C)</th>
                             <th className="p-3 text-center font-bold">Chênh lệch Lần 2</th>
                             <th className="p-3">Note mã đơn xuất / Lý do</th>
