@@ -186,14 +186,62 @@
     }
     window.InventoryCompat = { decodeStoredRows };
 
+    function adaptLegacyDetailRow(row) {
+      if (row && row.sku !== undefined) return row;
+      const stockSerial = findVal(row, ['số serial'], "");
+      const type = findVal(row, ['loại hàng'], "Hàng bán");
+      const isNonSerial = stockSerial.includes("Hàng không serial") || type === "Hàng không serial";
+      return {
+        sku: normalizeSku(findVal(row, skuCandidates)),
+        name: findVal(row, nameCandidates, "Chưa có tên"),
+        part: findVal(row, partCandidates, ""),
+        uom: findVal(row, uomCandidates, "Cái"),
+        qty: parseQuantity(findVal(row, ['số lượng'], isNonSerial ? "0" : "1"), isNonSerial ? 0 : 1),
+        stockSerial,
+        scannedSerial: findVal(row, ['serial đã quét'], ""),
+        bin: findVal(row, binCandidates, ""),
+        type,
+        checked: parseQuantity(findVal(row, ['đã kiểm'], "0"), 0),
+        diff: parseQuantity(findVal(row, ['dư/thiếu'], "0"), 0),
+        status: findVal(row, ['check đơn'], "Chưa phân loại"),
+        note: findVal(row, ['note đơn hàng'], ""),
+        isNonSerial
+      };
+    }
+
+    function adaptLegacyCountRow(row) {
+      if (row && row.sku !== undefined) return row;
+      const qtySys = parseQuantity(findVal(row, ['số lượng sổ sách (hệ thống)'], "0"), 0);
+      const qtyL1 = parseQuantity(findVal(row, ['số liệu thực tế đã đếm lần 1'], "0"), 0);
+      const qtyL2 = parseQuantity(findVal(row, ['số liệu thực tế đếm lại lần 2'], "0"), 0);
+      const totalActual = parseQuantity(
+        findVal(row, ['kết quả xử lý sau khi đếm lại lần 2'], String(qtyL1 + qtyL2)),
+        qtyL1 + qtyL2
+      );
+      return {
+        sku: normalizeSku(findVal(row, ['mã vật tư', ...skuCandidates])),
+        name: findVal(row, ['tên vật tư', ...nameCandidates], "Chưa có tên"),
+        uom: findVal(row, ['đvt', ...uomCandidates], "Cái"),
+        qtySys,
+        qtyL1,
+        qtyL2,
+        totalActual,
+        diffL2: totalActual - qtySys,
+        note: findVal(row, ['note mã đơn'], "")
+      };
+    }
+
     function normalizeDetailRows(rows) {
-      return (Array.isArray(rows) ? rows : []).map((row, index) => ({
-        ...row,
-        l2Added: Boolean(row.l2Added)
-          || /\[Sửa Serial:\s*trống\s*[→-]/i.test(String(row.note || "")),
-        note: compactSerialAudit(row.note),
-        rowId: row.rowId || `${row.sku}::${index}`
-      }));
+      return (Array.isArray(rows) ? rows : []).map((sourceRow, index) => {
+        const row = adaptLegacyDetailRow(sourceRow);
+        return {
+          ...row,
+          l2Added: Boolean(row.l2Added)
+            || /\[Sửa Serial:\s*trống\s*[→-]/i.test(String(row.note || "")),
+          note: compactSerialAudit(row.note),
+          rowId: row.rowId || `${row.sku}::${index}`
+        };
+      });
     }
 
     function syncCountsWithDetail(countRows, detailRows) {
@@ -739,7 +787,7 @@
               decodeStoredRows(p.df_check_detail)
             ]);
             const loadedDetails = normalizeDetailRows(detailRows);
-            setDfCountL2(syncCountsWithDetail(countRows, loadedDetails));
+            setDfCountL2(syncCountsWithDetail(countRows.map(adaptLegacyCountRow), loadedDetails));
             setDfCheckDetail(loadedDetails);
             setActiveSessionId(data.id);
             setSessionName(data.session_name || '');
@@ -816,7 +864,7 @@
             decodeStoredRows(data.df_detail)
           ]);
           const loadedDetails = normalizeDetailRows(detailRows);
-          setDfCountL2(syncCountsWithDetail(countRows, loadedDetails));
+          setDfCountL2(syncCountsWithDetail(countRows.map(adaptLegacyCountRow), loadedDetails));
           setDfCheckDetail(loadedDetails);
           setSessionName(`Archive ${data.label || yearMonth}`);
           setActiveSessionId(null);
