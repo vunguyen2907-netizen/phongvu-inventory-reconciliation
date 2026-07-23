@@ -78,7 +78,7 @@
     const nameCandidates = ['tên sản phẩm', 'tên hàng hóa', 'tên hàng', 'tên sp', 'tên hh', 'tên vật tư', 'tên thiết bị', 'description', 'product name', 'item name', 'tên'];
     const uomCandidates = ['đơn vị tính', 'đvt', 'uom', 'unit', 'đơn vị'];
     const qtyCandidates = ['số lượng sổ sách', 'tồn cuối', 'số lượng tồn', 'tồn kho', 'tồn sổ sách', 'sl sổ sách', 'sl tồn', 'tồn cuối kỳ', 'số lượng', 'tồn', 'sl', 'thực tế đếm', 'thực tế đã đếm', 'sl thực tế', 'đã đếm'];
-    const serialCandidates = ['serial/lot', 'serial đã quét', 'serial đã kiểm', 'số serial', 'serial', 'imei', 'sn', 'seri', 'mã vạch', 'barcode', 'qr', 'mã serial', 'quét', 'chốt', 'series'];
+    const serialCandidates = ['serial/lot', 'serial đã quét', 'serial đã kiểm', 'số serial', 'serial', 'imei', 'sn', 'seri', 'mã vạch', 'barcode', 'qr', 'mã serial', 'quét', 'chốt', 'series', 'seri no', 'serial no'];
     const partCandidates = ['part number', 'part_number', 'mã part', 'part no', 'part', 'mã phụ tùng'];
     const binCandidates = ['mã bin', 'tên bin', 'bin kiểm đếm', 'bin', 'vị trí', 'khu vực', 'kệ', 'ô kiểm đếm'];
     const typeCandidates = ['loại hàng', 'loại serial', 'loại', 'hàng hóa', 'phân loại'];
@@ -158,7 +158,6 @@
         
         let skuVal = findVal(obj, skuCandidates);
         
-        // Fallback: search first available header if findVal missed
         if (!skuVal) {
           for (const h of cleanHeaders) {
             const hLower = h.toLowerCase();
@@ -179,9 +178,23 @@
       return dataRows;
     }
 
-    function readWorkbookSmart(arrayBuffer) {
+    function readWorkbookSmart(arrayBuffer, isErp = false) {
       const data = new Uint8Array(arrayBuffer);
       const wb = XLSX.read(data, { type: 'array' });
+      
+      if (isErp) {
+        // Target Sheet 2 'KetQuaChiTiet' or Sheet Index 1 for ERP files
+        const targetSheetName = wb.SheetNames.find(s => {
+          const sLower = s.toLowerCase();
+          return sLower.includes('ketquachitiet') || sLower.includes('chitiet') || sLower.includes('detail');
+        }) || (wb.SheetNames.length > 1 ? wb.SheetNames[1] : wb.SheetNames[0]);
+        
+        if (targetSheetName && wb.Sheets[targetSheetName]) {
+          const rows = parseSmartSheet(wb.Sheets[targetSheetName]);
+          if (rows.length > 0) return rows;
+        }
+      }
+
       for (const sheetName of wb.SheetNames) {
         const ws = wb.Sheets[sheetName];
         const rows = parseSmartSheet(ws);
@@ -1071,7 +1084,7 @@
                             setRawStockFileName(file.name);
                             const reader = new FileReader();
                             reader.onload = (evt) => {
-                              const parsedRows = readWorkbookSmart(evt.target.result);
+                              const parsedRows = readWorkbookSmart(evt.target.result, false);
                               setRawStockData(parsedRows);
                             };
                             reader.readAsArrayBuffer(file);
@@ -1091,7 +1104,7 @@
                         )}
                       </div>
 
-                      {/* DROPZONE 2 */}
+                      {/* DROPZONE 2 (ERP FILE: target Sheet 2 KetQuaChiTiet) */}
                       <div className={`border-2 border-dashed rounded-xl p-6 text-center transition cursor-pointer relative ${rawErpFileName ? 'border-emerald-500 bg-emerald-50/40' : 'border-slate-300 hover:border-emerald-500 bg-slate-50'}`}>
                         <input
                           type="file"
@@ -1104,7 +1117,7 @@
                             setRawErpFileName(file.name);
                             const reader = new FileReader();
                             reader.onload = (evt) => {
-                              const parsedRows = readWorkbookSmart(evt.target.result);
+                              const parsedRows = readWorkbookSmart(evt.target.result, true);
                               setRawErpData(parsedRows);
                             };
                             reader.readAsArrayBuffer(file);
