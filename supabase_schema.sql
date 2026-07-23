@@ -30,6 +30,14 @@ for each row execute procedure public.set_updated_at_column();
 
 alter table public.inventory_sessions enable row level security;
 
+drop policy if exists inventory_sessions_authenticated_all on public.inventory_sessions;
+create policy inventory_sessions_authenticated_all
+on public.inventory_sessions
+for all
+to authenticated
+using (true)
+with check (true);
+
 -- ============================================================
 -- BẢNG 2: monthly_archives — lưu trữ báo cáo tổng hợp hàng tháng
 --          Rolling 12 tháng, tự động xóa tháng cũ khi > 12
@@ -57,5 +65,13 @@ for each row execute procedure public.set_updated_at_column();
 
 alter table public.monthly_archives enable row level security;
 
--- App Streamlit gọi Supabase từ server bằng SUPABASE_KEY (service_role).
--- Không tạo policy public để tránh dữ liệu kiểm kê bị truy cập trực tiếp qua API.
+drop policy if exists monthly_archives_authenticated_all on public.monthly_archives;
+create policy monthly_archives_authenticated_all
+on public.monthly_archives
+for all
+to authenticated
+using (true)
+with check (true);
+
+-- SPA đăng nhập anonymous qua Supabase Auth và chỉ role authenticated được thao tác.
+-- Bật Anonymous Sign-Ins trong Authentication > Providers > Anonymous.

@@ -317,15 +317,31 @@
     };
 
     let supabaseClient = null;
+    let supabaseReady = Promise.resolve(null);
     const initSupabase = () => {
       const { url, key } = getSupabaseConfig();
       if (url && key) {
         try {
           supabaseClient = supabase.createClient(url, key);
+          supabaseReady = (async () => {
+            const { data } = await supabaseClient.auth.getSession();
+            if (!data?.session) {
+              const { error } = await supabaseClient.auth.signInAnonymously();
+              if (error) throw error;
+            }
+            return supabaseClient;
+          })().catch(error => {
+            console.error("Supabase anonymous auth error:", error);
+            return null;
+          });
         } catch (e) { console.error("Supabase init error:", e); }
       }
     };
     initSupabase();
+
+    async function getReadySupabaseClient() {
+      return supabaseReady;
+    }
 
     // --- MAIN REACT SPA COMPONENT ---
     function App() {
@@ -389,7 +405,9 @@
       const fetchSavedSessions = async () => {
         if (!supabaseClient) return;
         try {
-          const { data, error } = await supabaseClient
+          const client = await getReadySupabaseClient();
+          if (!client) return;
+          const { data, error } = await client
             .from('inventory_sessions')
             .select('id, session_name, created_at, updated_at')
             .order('updated_at', { ascending: false });
@@ -400,7 +418,9 @@
       const fetchMonthlyArchives = async () => {
         if (!supabaseClient) return;
         try {
-          const { data, error } = await supabaseClient
+          const client = await getReadySupabaseClient();
+          if (!client) return;
+          const { data, error } = await client
             .from('monthly_archives')
             .select('id, year_month, created_at, updated_at')
             .order('year_month', { ascending: false });
@@ -643,6 +663,8 @@
       const handleSaveSession = async (showNotice = true) => {
         if (!supabaseClient || dfCheckDetail.length === 0) return;
         try {
+          const client = await getReadySupabaseClient();
+          if (!client) throw new Error("Không thể xác thực Supabase.");
           const payload = {
             df_count_l2: dfCountL2,
             df_check_detail: dfCheckDetail,
@@ -653,7 +675,7 @@
           };
           if (activeSessionId) rowData.id = activeSessionId;
 
-          const { data, error } = await supabaseClient
+          const { data, error } = await client
             .from('inventory_sessions')
             .upsert(rowData)
             .select();
@@ -672,7 +694,9 @@
       const handleLoadSession = async (id) => {
         if (!supabaseClient) return;
         try {
-          const { data, error } = await supabaseClient
+          const client = await getReadySupabaseClient();
+          if (!client) throw new Error("Không thể xác thực Supabase.");
+          const { data, error } = await client
             .from('inventory_sessions')
             .select('*')
             .eq('id', id)
@@ -696,6 +720,8 @@
       const handleSaveMonthlyArchive = async () => {
         if (!supabaseClient || dfCountL2.length === 0) return;
         try {
+          const client = await getReadySupabaseClient();
+          if (!client) throw new Error("Không thể xác thực Supabase.");
           const ym = `${archiveYear}-${String(archiveMonth).padStart(2, '0')}`;
           let label = `Tháng ${String(archiveMonth).padStart(2, '0')}/${archiveYear}`;
           if (archiveLabel.trim()) label += ` — ${archiveLabel.trim()}`;
@@ -717,18 +743,18 @@
             df_detail: dfCheckDetail
           };
 
-          const { error } = await supabaseClient
+          const { error } = await client
             .from('monthly_archives')
             .upsert(payload, { onConflict: 'year_month' });
 
           if (!error) {
-            const { data: archives } = await supabaseClient
+            const { data: archives } = await client
               .from('monthly_archives')
               .select('id, year_month')
               .order('year_month', { ascending: false });
             if (archives && archives.length > 12) {
               const oldIds = archives.slice(12).map(row => row.id);
-              const { error: pruneError } = await supabaseClient
+              const { error: pruneError } = await client
                 .from('monthly_archives')
                 .delete()
                 .in('id', oldIds);
@@ -743,7 +769,9 @@
       const handleLoadMonthlyArchive = async (yearMonth) => {
         if (!supabaseClient) return;
         try {
-          const { data, error } = await supabaseClient
+          const client = await getReadySupabaseClient();
+          if (!client) throw new Error("Không thể xác thực Supabase.");
+          const { data, error } = await client
             .from('monthly_archives')
             .select('*')
             .eq('year_month', yearMonth)
