@@ -551,12 +551,12 @@
           if (!client) return;
           const { data, error } = await client
             .from('monthly_archives')
-            .select('id, year_month, label, created_at, updated_at')
+            .select('id, year_month, session_name, created_at, updated_at')
             .order('year_month', { ascending: false });
           if (!error && data) {
             const formatted = data.map(r => {
               const [y, m] = r.year_month.split('-');
-              return { ...r, label: r.label || `Tháng ${m}/${y}` };
+              return { ...r, label: r.session_name || `Tháng ${m}/${y}` };
             });
             setMonthlyArchives(formatted);
           }
@@ -870,7 +870,7 @@
 
           const payload = {
             year_month: ym,
-            label,
+            session_name: label,
             // Bảng production cũ chỉ có cột summary. Đóng gói toàn bộ snapshot
             // vào JSONB này để tương thích mà không phụ thuộc schema cache.
             summary: {
@@ -927,7 +927,7 @@
           const loadedDetails = normalizeDetailRows(detailRows);
           setDfCountL2(syncCountsWithDetail(countRows.map(adaptLegacyCountRow), loadedDetails));
           setDfCheckDetail(loadedDetails);
-          setSessionName(`Archive ${data.label || summaryPayload._label || yearMonth}`);
+          setSessionName(`Archive ${data.session_name || data.label || summaryPayload._label || yearMonth}`);
           setActiveSessionId(null);
           setIsDirty(false);
           setActiveTab(3);
