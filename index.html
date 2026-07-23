@@ -551,12 +551,12 @@
           if (!client) return;
           const { data, error } = await client
             .from('monthly_archives')
-            .select('id, year_month, created_at, updated_at')
+            .select('id, year_month, label, created_at, updated_at')
             .order('year_month', { ascending: false });
           if (!error && data) {
             const formatted = data.map(r => {
               const [y, m] = r.year_month.split('-');
-              return { ...r, label: `Tháng ${m}/${y}` };
+              return { ...r, label: r.label || `Tháng ${m}/${y}` };
             });
             setMonthlyArchives(formatted);
           }
@@ -871,9 +871,15 @@
           const payload = {
             year_month: ym,
             label,
-            summary: { data: summaryData, _label: label },
-            df_count_l2: dfCountL2,
-            df_detail: dfCheckDetail
+            // Bảng production cũ chỉ có cột summary. Đóng gói toàn bộ snapshot
+            // vào JSONB này để tương thích mà không phụ thuộc schema cache.
+            summary: {
+              data: summaryData,
+              _label: label,
+              _archive_version: 2,
+              df_count_l2: dfCountL2,
+              df_detail: dfCheckDetail
+            }
           };
 
           const { error } = await client
@@ -911,14 +917,17 @@
             .single();
           if (error) throw error;
           if (!data) return;
+          const summaryPayload = data.summary && typeof data.summary === "object"
+            ? data.summary
+            : {};
           const [countRows, detailRows] = await Promise.all([
-            decodeStoredRows(data.df_count_l2),
-            decodeStoredRows(data.df_detail)
+            decodeStoredRows(data.df_count_l2 ?? summaryPayload.df_count_l2),
+            decodeStoredRows(data.df_detail ?? summaryPayload.df_detail)
           ]);
           const loadedDetails = normalizeDetailRows(detailRows);
           setDfCountL2(syncCountsWithDetail(countRows.map(adaptLegacyCountRow), loadedDetails));
           setDfCheckDetail(loadedDetails);
-          setSessionName(`Archive ${data.label || yearMonth}`);
+          setSessionName(`Archive ${data.label || summaryPayload._label || yearMonth}`);
           setActiveSessionId(null);
           setIsDirty(false);
           setActiveTab(3);
