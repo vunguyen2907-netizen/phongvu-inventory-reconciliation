@@ -1,0 +1,5 @@
+sku,sl,serial,bin
+S1,1,A,BIN-01
+S1,1,C,BIN-02
+S1,1,A,BIN-03
+S2,8.5,,BIN-02

@@ -80,7 +80,11 @@ def _decompress_df(value: Any) -> Optional[pd.DataFrame]:
     if isinstance(value, dict):
         # Định dạng cũ: {"columns": [...], "data": [...]}
         try:
-            return pd.DataFrame(value["data"], columns=value["columns"])
+            if isinstance(value.get("columns"), list):
+                return pd.DataFrame(value["data"], columns=value["columns"])
+            if isinstance(value.get("data"), list):
+                return pd.DataFrame(value["data"])
+            return None
         except Exception:
             return None
     if isinstance(value, str):
@@ -102,7 +106,16 @@ def dataframe_to_payload(df: Optional[pd.DataFrame]) -> Optional[Dict[str, Any]]
 
 def dataframe_from_payload(payload: Any) -> Optional[pd.DataFrame]:
     """Parse payload — hỗ trợ cả dict cũ lẫn base64 string mới."""
-    return _decompress_df(payload)
+    parsed = _decompress_df(payload)
+    if parsed is not None:
+        return parsed
+    # Payload do SPA cũ lưu: {"data": [{...}, {...}]}.
+    if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+        try:
+            return pd.DataFrame(payload["data"])
+        except Exception:
+            return None
+    return None
 
 
 # ──────────────────────────────────────────────
@@ -137,6 +150,7 @@ def save_inventory_session(
         response = client.table("inventory_sessions").insert(row).execute()
     if not response.data:
         raise RuntimeError("Supabase không trả về dữ liệu sau khi lưu.")
+    list_inventory_sessions.clear()
     return response.data[0]
 
 
@@ -168,7 +182,16 @@ def load_inventory_session(session_id: str) -> Dict[str, Any]:
 
 def _safe_storage_path(path: str) -> str:
     """Chỉ giữ tên file an toàn cho object path của Supabase Storage."""
-    return re.sub(r"[^A-Za-z0-9._/-]", "_", path)
+    parts = []
+    for part in str(path).replace("\\", "/").split("/"):
+        if part in {"", ".", ".."}:
+            continue
+        cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", part)
+        if cleaned:
+            parts.append(cleaned)
+    if not parts:
+        raise ValueError("Đường dẫn file nguồn không hợp lệ.")
+    return "/".join(parts)
 
 
 def _ensure_source_bucket(client: Any) -> None:
@@ -217,6 +240,8 @@ def save_monthly_archive(
     df_count_l2: Optional[pd.DataFrame],
 ) -> Dict[str, Any]:
     """Upsert báo cáo tháng và tự động prune nếu vượt quá MAX_MONTHLY_ARCHIVES."""
+    if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", year_month):
+        raise ValueError("year_month phải có định dạng YYYY-MM.")
     client = get_client()
 
     # Lưu label vào trong summary JSONB để tránh phụ thuộc vào cột label riêng
@@ -238,6 +263,7 @@ def save_monthly_archive(
 
     row = {
         "year_month": year_month,
+        "label": label.strip() or year_month,
         "summary": summary_with_meta,
         "df_recon": _compress_df(df_recon),
         "df_detail": _compress_df(df_detail),
@@ -276,7 +302,7 @@ def list_monthly_archives() -> List[Dict[str, Any]]:
     response = (
         get_client()
         .table("monthly_archives")
-        .select("id, year_month, created_at, updated_at")
+        .select("id, year_month, label, created_at, updated_at")
         .order("year_month", desc=True)
         .execute()
     )
@@ -310,7 +336,7 @@ def load_monthly_archive(year_month: str) -> Dict[str, Any]:
 
     # Lấy label: ưu tiên từ cột label, rồi từ summary._label, rồi tự tạo
     label = rec.get("label", "") or ""
-    df_sum = _decompress_df(rec.get("summary"))
+    df_sum = dataframe_from_payload(rec.get("summary"))
     if not label and df_sum is None:
         # Thử đọc label từ summary raw (chưa decompress)
         pass

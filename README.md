@@ -23,6 +23,11 @@ SUPABASE_KEY = "<service_role_key>"
 
 Lấy `SUPABASE_URL` và `service_role key` ở Supabase **Project Settings > API**. Không đưa key này vào GitHub hoặc trình duyệt.
 
+> Lưu ý: `index.html` chạy phía trình duyệt. Không chép `service_role key` vào
+> `localStorage` hoặc `window.SUPABASE_KEY`. Nếu muốn SPA lưu trực tiếp, cần dùng
+> Supabase Auth + RLS và chỉ cấp anon key; nếu chưa có Auth, giữ thao tác Supabase
+> ở lớp Python `supabase_store.py`.
+
 ## Lịch sử và bảo mật
 
 Mỗi đợt kiểm kê được lưu trong bảng `inventory_sessions` dưới dạng JSONB; sidebar cho phép tạo, lưu và mở lại các đợt đã có. Hai file dữ liệu nguồn (tồn kho và ERP) của từng đợt cũng được lưu một lần vào bucket private `inventory-source-files` trên Supabase Storage.

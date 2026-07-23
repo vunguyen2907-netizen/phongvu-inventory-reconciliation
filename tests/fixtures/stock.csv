@@ -1,0 +1,4 @@
+sku,product name,uom,sl,serial,bin
+S1,Serial product,Each,1,A,BIN-01
+S1,Serial product,Each,1,B,BIN-01
+S2,Non-serial product,Each,10.5,,BIN-02

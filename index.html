@@ -83,20 +83,54 @@
     const binCandidates = ['bin kiểm đếm', 'mã bin', 'tên bin', 'bin', 'vị trí', 'khu vực', 'kệ', 'ô kiểm đếm'];
     const typeCandidates = ['loại hàng', 'loại serial', 'loại', 'hàng hóa', 'phân loại'];
 
+    function normalizedText(value) {
+      return String(value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+    }
+
+    function normalizeSku(value) {
+      const text = String(value ?? "").trim();
+      return text.endsWith(".0") && /^\d+\.0$/.test(text) ? text.slice(0, -2) : text;
+    }
+
+    function parseQuantity(value, defaultVal = 0) {
+      if (typeof value === "number") return Number.isFinite(value) ? value : defaultVal;
+      let text = String(value ?? "").trim().replace(/\s/g, "");
+      if (!text) return defaultVal;
+      if (text.includes(",") && text.includes(".")) {
+        text = text.lastIndexOf(",") > text.lastIndexOf(".")
+          ? text.replace(/\./g, "").replace(",", ".")
+          : text.replace(/,/g, "");
+      } else if (text.includes(",")) {
+        text = text.replace(",", ".");
+      }
+      const number = Number(text);
+      return Number.isFinite(number) ? number : defaultVal;
+    }
+
     function findVal(row, candidates, defaultVal = "", excludeList = []) {
       if (!row) return defaultVal;
       const keys = Object.keys(row);
+      const eligibleKeys = keys.filter(key => {
+        const cleanKey = normalizedText(key);
+        return !['stt', 'stt.', 'no', 'no.'].includes(cleanKey)
+          && !excludeList.some(ex => cleanKey.includes(normalizedText(ex)));
+      });
+      // Ưu tiên khớp chính xác để tránh lấy nhầm các cột có tên gần giống.
       for (const cand of candidates) {
-        for (const key of keys) {
-          const cleanKey = String(key).trim().toLowerCase();
-          if (cleanKey === 'stt' || cleanKey === 'stt.' || cleanKey === 'no' || cleanKey === 'no.') continue;
-          if (excludeList.some(ex => cleanKey.includes(ex))) continue;
-          
-          if (cleanKey.includes(cand)) {
+        for (const key of eligibleKeys) {
+          if (normalizedText(key) === normalizedText(cand)) {
             const val = row[key];
             if (val !== undefined && val !== null && String(val).trim() !== "") {
               return String(val).trim();
             }
+          }
+        }
+      }
+      for (const cand of candidates) {
+        for (const key of eligibleKeys) {
+          if (normalizedText(key).includes(normalizedText(cand))) {
+            const val = row[key];
+            if (val !== undefined && val !== null && String(val).trim() !== "") return String(val).trim();
           }
         }
       }
@@ -322,10 +356,10 @@
         }
 
         const stockRows = stockRowsRaw.map(r => {
-          const sku = findVal(r, skuCandidates);
+          const sku = normalizeSku(findVal(r, skuCandidates));
           const name = findVal(r, nameCandidates, "Chưa có tên");
           const serial = findVal(r, serialCandidates, "", ['loại serial', 'loại hàng']);
-          const qty = parseInt(findVal(r, qtyCandidates, "1")) || 1;
+          const qty = parseQuantity(findVal(r, qtyCandidates, "1"), 1);
           const bin = findVal(r, binCandidates);
           const uom = findVal(r, uomCandidates, "Cái");
           const type = findVal(r, typeCandidates, "Hàng bán");
@@ -334,11 +368,11 @@
 
         // FILTER ERP ROWS: ONLY INCLUDE ROWS WHERE "Số lượng kiểm đếm" > 0!
         const erpRows = erpRowsRaw.map(r => {
-          const sku = findVal(r, skuCandidates);
+          const sku = normalizeSku(findVal(r, skuCandidates));
           const serial = findVal(r, serialCandidates, "", ['loại serial', 'loại hàng']);
           const bin = findVal(r, binCandidates);
           const qtyValStr = findVal(r, qtyCandidates, "1");
-          const qty = parseFloat(qtyValStr) || 0;
+          const qty = parseQuantity(qtyValStr, 0);
           return { sku, serial, bin, qty };
         }).filter(r => r.sku && r.qty > 0); // EXCLUDE UNSCANNED PLACEHOLDERS WHERE QTY IS 0.00!
 
@@ -514,7 +548,7 @@
         });
 
         setDfCountL2(countL2Data);
-        setDfCheckDetail(detailRows);
+        setDfCheckDetail(detailRows.map((row, index) => ({ ...row, rowId: `${row.sku}::${index}` })));
         setIsDirty(true);
         setActiveTab(1);
       };
@@ -538,6 +572,7 @@
             .upsert(rowData)
             .select();
 
+          if (error) throw error;
           if (!error && data && data.length > 0) {
             setActiveSessionId(data[0].id);
             setLastSavedTime(new Date().toLocaleTimeString('vi-VN'));
@@ -557,10 +592,14 @@
             .eq('id', id)
             .single();
 
+          if (error) throw error;
           if (!error && data) {
             const p = data.data || {};
             setDfCountL2(p.df_count_l2 || []);
-            setDfCheckDetail(p.df_check_detail || []);
+            setDfCheckDetail((p.df_check_detail || []).map((row, index) => ({
+              ...row,
+              rowId: row.rowId || `${row.sku}::${index}`
+            })));
             setActiveSessionId(data.id);
             setSessionName(data.session_name || '');
             setLastSavedTime(new Date(data.updated_at).toLocaleTimeString('vi-VN'));
@@ -588,6 +627,7 @@
 
           const payload = {
             year_month: ym,
+            label,
             summary: { data: summaryData, _label: label },
             df_count_l2: dfCountL2,
             df_detail: dfCheckDetail
@@ -598,15 +638,51 @@
             .upsert(payload, { onConflict: 'year_month' });
 
           if (!error) {
+            const { data: archives } = await supabaseClient
+              .from('monthly_archives')
+              .select('id, year_month')
+              .order('year_month', { ascending: false });
+            if (archives && archives.length > 12) {
+              const oldIds = archives.slice(12).map(row => row.id);
+              const { error: pruneError } = await supabaseClient
+                .from('monthly_archives')
+                .delete()
+                .in('id', oldIds);
+              if (pruneError) console.error("Không thể xóa archive cũ:", pruneError);
+            }
             alert(`✅ Đã lưu báo cáo ${label} thành công!`);
             fetchMonthlyArchives();
           } else { alert("Lỗi lưu archive: " + error.message); }
         } catch (e) { alert("Lỗi: " + e.message); }
       };
 
+      const handleLoadMonthlyArchive = async (yearMonth) => {
+        if (!supabaseClient) return;
+        try {
+          const { data, error } = await supabaseClient
+            .from('monthly_archives')
+            .select('*')
+            .eq('year_month', yearMonth)
+            .single();
+          if (error) throw error;
+          if (!data) return;
+          setDfCountL2(data.df_count_l2 || []);
+          setDfCheckDetail((data.df_detail || []).map((row, index) => ({
+            ...row,
+            rowId: row.rowId || `${row.sku}::${index}`
+          })));
+          setSessionName(`Archive ${data.label || yearMonth}`);
+          setActiveSessionId(null);
+          setIsDirty(false);
+          setActiveTab(3);
+        } catch (e) {
+          alert("Lỗi tải báo cáo tháng: " + e.message);
+        }
+      };
+
       // --- INLINE EDITING HANDLERS ---
       const handleL2QtyChange = (sku, val) => {
-        const num = parseInt(val) || 0;
+        const num = Math.max(0, parseQuantity(val, 0));
         setDfCountL2(prev => prev.map(r => {
           if (r.sku === sku) {
             const totalActual = r.qtyL1 + num;
@@ -623,13 +699,15 @@
         setIsDirty(true);
       };
 
-      const handleSerialEdit = (idx, newSerial) => {
+      const handleSerialEdit = (rowId, newSerial) => {
         setDfCheckDetail(prev => {
-          const updated = [...prev];
+          const updated = prev.map(row => ({ ...row }));
+          const idx = updated.findIndex(row => row.rowId === rowId);
+          if (idx < 0) return prev;
           const row = updated[idx];
           const oldSerial = row.scannedSerial;
           if (newSerial === "" && (row.status.includes("Bắn dư") || oldSerial !== "")) {
-            setPendingClearSerial({ idx, sku: row.sku, serial: oldSerial });
+            setPendingClearSerial({ rowId, sku: row.sku, serial: oldSerial });
             return prev;
           }
           row.scannedSerial = newSerial;
@@ -647,9 +725,11 @@
           alert("Vui lòng nhập lý do loại bỏ!");
           return;
         }
-        const { idx, sku, serial } = pendingClearSerial;
+        const { rowId, sku, serial } = pendingClearSerial;
         setDfCheckDetail(prev => {
-          const updated = [...prev];
+          const updated = prev.map(row => ({ ...row }));
+          const idx = updated.findIndex(row => row.rowId === rowId);
+          if (idx < 0) return prev;
           const r = updated[idx];
           r.scannedSerial = "";
           r.checked = 0;
@@ -940,7 +1020,7 @@
                 
                 <button
                   onClick={() => handleSaveSession(true)}
-                  disabled={dfCheckDetail.length === 0}
+                  disabled={!supabaseClient || dfCheckDetail.length === 0}
                   className={`w-full py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 transition ${isDirty ? 'bg-amber-500 hover:bg-amber-600 text-slate-950' : 'bg-brand-600 hover:bg-brand-700 text-white'} disabled:opacity-40`}
                 >
                   💾 {isDirty ? 'Lưu đợt hiện tại ●' : 'Lưu đợt hiện tại'}
@@ -948,6 +1028,11 @@
 
                 {lastSavedTime && (
                   <p className="text-xs text-slate-400 text-center">Đã lưu lúc: {lastSavedTime} {isDirty && '(có thay đổi)'}</p>
+                )}
+                {!supabaseClient && (
+                  <p className="text-[11px] text-amber-300 bg-amber-950/40 border border-amber-800 rounded-lg p-2">
+                    Chưa cấu hình Supabase phía trình duyệt. Đối soát và xuất file vẫn hoạt động; chức năng lưu cloud đang tắt.
+                  </p>
                 )}
               </div>
 
@@ -1010,9 +1095,9 @@
                   className="w-full bg-slate-800 text-slate-200 px-2.5 py-1.5 rounded text-xs border border-slate-700"
                 />
 
-                <button
-                  onClick={handleSaveMonthlyArchive}
-                  disabled={dfCountL2.length === 0}
+                  <button
+                    onClick={handleSaveMonthlyArchive}
+                    disabled={!supabaseClient || dfCountL2.length === 0}
                   className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold transition disabled:opacity-40"
                 >
                   📦 Lưu báo cáo tháng này
@@ -1271,13 +1356,17 @@
                                 <td className="p-3 max-w-xs truncate">{r.name}</td>
                                 <td className="p-3 font-mono text-slate-700 font-medium">{r.stockSerial || "—"}</td>
                                 <td className="p-2">
-                                  <input
-                                    type="text"
-                                    value={r.scannedSerial}
-                                    onChange={e => handleSerialEdit(i, e.target.value)}
-                                    className="w-full bg-slate-50 focus:bg-white border border-slate-200 focus:border-brand-500 rounded px-2 py-1 font-mono text-xs"
-                                    placeholder="Gõ để sửa..."
-                                  />
+                                  {r.isNonSerial ? (
+                                    <span className="font-mono text-slate-600">{r.scannedSerial}</span>
+                                  ) : (
+                                    <input
+                                      type="text"
+                                      value={r.scannedSerial}
+                                      onChange={e => handleSerialEdit(r.rowId, e.target.value)}
+                                      className="w-full bg-slate-50 focus:bg-white border border-slate-200 focus:border-brand-500 rounded px-2 py-1 font-mono text-xs"
+                                      placeholder="Gõ để sửa..."
+                                    />
+                                  )}
                                 </td>
                                 <td className="p-3 font-mono text-slate-700">{r.bin || "—"}</td>
                                 <td className="p-3 text-slate-500">{r.type}</td>
@@ -1545,7 +1634,7 @@
                             <p className="text-slate-400">Cập nhật: {new Date(a.updated_at).toLocaleString('vi-VN')}</p>
                           </div>
                           <button
-                            onClick={() => alert(`Đang tải báo cáo tháng ${a.label}...`)}
+                            onClick={() => handleLoadMonthlyArchive(a.year_month)}
                             className="px-3 py-1.5 bg-brand-600 hover:bg-brand-700 text-white font-semibold rounded shadow-sm"
                           >
                             Tải báo cáo
