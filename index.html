@@ -187,7 +187,29 @@
     window.InventoryCompat = { decodeStoredRows };
 
     function adaptLegacyDetailRow(row) {
-      if (row && row.sku !== undefined) return row;
+      if (row && row.sku !== undefined) {
+        const stockSerial = String(row.stockSerial ?? "");
+        const type = String(row.type ?? "Hàng bán");
+        return {
+          ...row,
+          sku: normalizeSku(row.sku),
+          name: String(row.name ?? "Chưa có tên"),
+          part: String(row.part ?? ""),
+          uom: String(row.uom ?? "Cái"),
+          qty: parseQuantity(row.qty, 0),
+          stockSerial,
+          scannedSerial: String(row.scannedSerial ?? ""),
+          bin: String(row.bin ?? ""),
+          type,
+          checked: parseQuantity(row.checked, 0),
+          diff: parseQuantity(row.diff, 0),
+          status: String(row.status ?? "Chưa phân loại"),
+          note: String(row.note ?? ""),
+          isNonSerial: Boolean(row.isNonSerial)
+            || stockSerial.includes("Hàng không serial")
+            || type === "Hàng không serial"
+        };
+      }
       const stockSerial = findVal(row, ['số serial'], "");
       const type = findVal(row, ['loại hàng'], "Hàng bán");
       const isNonSerial = stockSerial.includes("Hàng không serial") || type === "Hàng không serial";
@@ -210,7 +232,24 @@
     }
 
     function adaptLegacyCountRow(row) {
-      if (row && row.sku !== undefined) return row;
+      if (row && row.sku !== undefined) {
+        const qtySys = parseQuantity(row.qtySys, 0);
+        const qtyL1 = parseQuantity(row.qtyL1, 0);
+        const qtyL2 = parseQuantity(row.qtyL2, 0);
+        const totalActual = parseQuantity(row.totalActual, qtyL1 + qtyL2);
+        return {
+          ...row,
+          sku: normalizeSku(row.sku),
+          name: String(row.name ?? "Chưa có tên"),
+          uom: String(row.uom ?? "Cái"),
+          qtySys,
+          qtyL1,
+          qtyL2,
+          totalActual,
+          diffL2: parseQuantity(row.diffL2, totalActual - qtySys),
+          note: String(row.note ?? "")
+        };
+      }
       const qtySys = parseQuantity(findVal(row, ['số lượng sổ sách (hệ thống)'], "0"), 0);
       const qtyL1 = parseQuantity(findVal(row, ['số liệu thực tế đã đếm lần 1'], "0"), 0);
       const qtyL2 = parseQuantity(findVal(row, ['số liệu thực tế đếm lại lần 2'], "0"), 0);
@@ -901,7 +940,7 @@
           if (idx < 0) return prev;
           const row = updated[idx];
           const oldSerial = row.scannedSerial;
-          if (newSerial === "" && (row.status.includes("Bắn dư") || oldSerial !== "")) {
+          if (newSerial === "" && (String(row.status || "").includes("Bắn dư") || oldSerial !== "")) {
             setPendingClearSerial({
               rowId,
               sku: row.sku,
@@ -1123,7 +1162,7 @@
         if (dfCountL2.length === 0 || dfCheckDetail.length === 0) return [];
 
         const wrongSerialSkus = new Set(dfCheckDetail.filter(r => r.status === 'Bắn sai serial').map(r => r.sku));
-        const surplusSkus = new Set(dfCheckDetail.filter(r => r.status.includes('Bắn dư')).map(r => r.sku));
+        const surplusSkus = new Set(dfCheckDetail.filter(r => String(r.status || "").includes('Bắn dư')).map(r => r.sku));
 
         const detailNotesBySku = {};
         dfCheckDetail.forEach(r => {
@@ -1167,7 +1206,7 @@
           if (filterDetailStatus === "Chỉ Serial chênh lệch (Dư / Thiếu)" && r.diff === 0 && r.status === "Đã quét đủ") return false;
           if (filterDetailStatus === "Thiếu (Chưa quét)" && r.status !== "Bắn thiếu (Chưa quét)") return false;
           if (filterDetailStatus === "Bắn sai serial" && r.status !== "Bắn sai serial") return false;
-          if (filterDetailStatus === "Bắn dư serial" && !r.status.includes("Bắn dư")) return false;
+          if (filterDetailStatus === "Bắn dư serial" && !String(r.status || "").includes("Bắn dư")) return false;
           if (filterDetailStatus === "Đã loại bỏ Serial dư" && r.status !== "Đã loại bỏ Serial dư") return false;
 
           if (searchDetail.trim()) {
@@ -1553,7 +1592,7 @@
                     </div>
                     <div className="bg-amber-50/50 p-3 rounded-xl border border-amber-200 shadow-sm">
                       <p className="text-[11px] font-bold text-amber-700 uppercase">Serial Dư / Sai Mã</p>
-                      <p className="text-lg font-extrabold text-amber-800">{filteredDetailRows.filter(r => r.status.includes("Bắn sai") || r.status.includes("Bắn dư")).length}</p>
+                      <p className="text-lg font-extrabold text-amber-800">{filteredDetailRows.filter(r => String(r.status || "").includes("Bắn sai") || String(r.status || "").includes("Bắn dư")).length}</p>
                     </div>
                   </div>
 
@@ -1585,7 +1624,7 @@
                           {filteredDetailRows.map((r, i) => {
                             let statusBadge = "bg-slate-100 text-slate-700";
                             if (r.status === "Bắn sai serial") statusBadge = "bg-amber-100 text-amber-800 font-bold border border-amber-300";
-                            else if (r.status.includes("Bắn dư")) statusBadge = "bg-orange-100 text-orange-800 font-bold border border-orange-300";
+                            else if (String(r.status || "").includes("Bắn dư")) statusBadge = "bg-orange-100 text-orange-800 font-bold border border-orange-300";
                             else if (r.status === "Bắn thiếu (Chưa quét)") statusBadge = "bg-rose-100 text-rose-800 border border-rose-300";
                             else if (r.status === "Đã quét đủ") statusBadge = "bg-emerald-100 text-emerald-800";
 
