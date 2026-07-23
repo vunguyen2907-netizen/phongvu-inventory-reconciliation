@@ -137,6 +137,45 @@
       return defaultVal;
     }
 
+    function sortRows(rows, sortConfig) {
+      if (!sortConfig.key) return rows;
+      const direction = sortConfig.direction === "asc" ? 1 : -1;
+      return [...rows].sort((a, b) => {
+        const av = a[sortConfig.key];
+        const bv = b[sortConfig.key];
+        if (typeof av === "number" && typeof bv === "number") return (av - bv) * direction;
+        return String(av ?? "").localeCompare(String(bv ?? ""), "vi", {
+          numeric: true,
+          sensitivity: "base"
+        }) * direction;
+      });
+    }
+
+    function compactSerialAudit(note) {
+      const audits = String(note || "").match(/\[Sửa Serial:[^\]]*\]/g) || [];
+      const baseNote = String(note || "").replace(/\s*\[Sửa Serial:[^\]]*\]/g, "").trim();
+      return [baseNote, audits.at(-1)].filter(Boolean).join(" ");
+    }
+
+    function SortableHeader({ label, column, sortConfig, onSort, className = "" }) {
+      const active = sortConfig.key === column;
+      return (
+        <th className={`p-3 select-none ${className}`}>
+          <button
+            type="button"
+            onClick={() => onSort(column)}
+            className="w-full flex items-center gap-1 hover:text-brand-600 transition text-left"
+            title={`Sắp xếp theo ${label}`}
+          >
+            <span>{label}</span>
+            <span className={`text-[10px] ${active ? "text-brand-600" : "text-slate-300"}`}>
+              {active ? (sortConfig.direction === "asc" ? "▲" : "▼") : "⇅"}
+            </span>
+          </button>
+        </th>
+      );
+    }
+
     // --- PYTHON-EQUIVALENT MAXIMUM SCORE HEADER DETECTOR ---
     function parseSmartSheet(ws) {
       const rows2d = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
@@ -261,6 +300,7 @@
     // --- MAIN REACT SPA COMPONENT ---
     function App() {
       const [activeTab, setActiveTab] = useState(0);
+      const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
       const [sessionName, setSessionName] = useState(`Kiểm kê ${new Date().toLocaleDateString('vi-VN')}`);
       const [activeSessionId, setActiveSessionId] = useState(null);
       const [lastSavedTime, setLastSavedTime] = useState(null);
@@ -304,6 +344,16 @@
       const [filterMainMode, setFilterMainMode] = useState("Chỉ SKU chênh lệch / Sai lý do (Cần xử lý)");
       const [filterMainStatus, setFilterMainStatus] = useState("Tất cả");
       const [searchMain, setSearchMain] = useState("");
+      const [sortDetail, setSortDetail] = useState({ key: null, direction: "asc" });
+      const [sortL2, setSortL2] = useState({ key: null, direction: "asc" });
+      const [sortMain, setSortMain] = useState({ key: null, direction: "asc" });
+
+      const toggleSort = (setter) => (key) => {
+        setter(prev => ({
+          key,
+          direction: prev.key === key && prev.direction === "asc" ? "desc" : "asc"
+        }));
+      };
 
       // Supabase fetch
       const fetchSavedSessions = async () => {
@@ -598,6 +648,7 @@
             setDfCountL2(p.df_count_l2 || []);
             setDfCheckDetail((p.df_check_detail || []).map((row, index) => ({
               ...row,
+              note: compactSerialAudit(row.note),
               rowId: row.rowId || `${row.sku}::${index}`
             })));
             setActiveSessionId(data.id);
@@ -669,6 +720,7 @@
           setDfCountL2(data.df_count_l2 || []);
           setDfCheckDetail((data.df_detail || []).map((row, index) => ({
             ...row,
+            note: compactSerialAudit(row.note),
             rowId: row.rowId || `${row.sku}::${index}`
           })));
           setSessionName(`Archive ${data.label || yearMonth}`);
@@ -714,10 +766,18 @@
           row.checked = newSerial ? 1 : 0;
           row.diff = newSerial ? 0 : -1;
           row.status = newSerial ? "Đã sửa Serial (Lần 2)" : "Bắn thiếu (Chưa quét)";
-          row.note = `${row.note} [Sửa Serial: ${oldSerial} -> ${newSerial}]`.trim();
           return updated;
         });
         setIsDirty(true);
+      };
+
+      const handleSerialEditCommit = (rowId, originalSerial) => {
+        setDfCheckDetail(prev => prev.map(row => {
+          if (row.rowId !== rowId || row.scannedSerial === originalSerial) return row;
+          const audit = `[Sửa Serial: ${originalSerial || "trống"} → ${row.scannedSerial || "trống"}]`;
+          const baseNote = String(row.note || "").replace(/\s*\[Sửa Serial:[^\]]*\]/g, "").trim();
+          return { ...row, note: [baseNote, audit].filter(Boolean).join(" ") };
+        }));
       };
 
       const confirmClearSurplusSerial = () => {
@@ -948,7 +1008,7 @@
 
       // Filtered Views
       const filteredDetailRows = useMemo(() => {
-        return dfCheckDetail.filter(r => {
+        const rows = dfCheckDetail.filter(r => {
           if (filterDetailStatus === "Chỉ Serial chênh lệch (Dư / Thiếu)" && r.diff === 0 && r.status === "Đã quét đủ") return false;
           if (filterDetailStatus === "Thiếu (Chưa quét)" && r.status !== "Bắn thiếu (Chưa quét)") return false;
           if (filterDetailStatus === "Bắn sai serial" && r.status !== "Bắn sai serial") return false;
@@ -961,10 +1021,11 @@
           }
           return true;
         });
-      }, [dfCheckDetail, filterDetailStatus, searchDetail]);
+        return sortRows(rows, sortDetail);
+      }, [dfCheckDetail, filterDetailStatus, searchDetail, sortDetail]);
 
       const filteredL2Rows = useMemo(() => {
-        return dfCountL2.filter(r => {
+        const rows = dfCountL2.filter(r => {
           if (filterL2Mode.startsWith("Chỉ SKU") && r.diffL2 === 0 && r.qtyL2 === 0) return false;
           if (filterL2Status === "Lệch chưa đếm bù" && (r.diffL2 === 0 || r.qtyL2 > 0)) return false;
           if (filterL2Status === "Đã nhập đếm bù Lần 2" && r.qtyL2 === 0) return false;
@@ -976,10 +1037,11 @@
           }
           return true;
         });
-      }, [dfCountL2, filterL2Mode, filterL2Status, searchL2]);
+        return sortRows(rows, sortL2);
+      }, [dfCountL2, filterL2Mode, filterL2Status, searchL2, sortL2]);
 
       const filteredMainRows = useMemo(() => {
-        return dfMainRows.filter(r => {
+        const rows = dfMainRows.filter(r => {
           if (filterMainMode.startsWith("Chỉ SKU") && r.chkStatus === "Khớp hoàn toàn") return false;
           if (filterMainStatus === "Bắn sai serial" && r.chkStatus !== "Bắn sai serial") return false;
           if (filterMainStatus === "Bắn dư serial" && !r.chkStatus.includes("Bắn dư")) return false;
@@ -993,12 +1055,13 @@
           }
           return true;
         });
-      }, [dfMainRows, filterMainMode, filterMainStatus, searchMain]);
+        return sortRows(rows, sortMain);
+      }, [dfMainRows, filterMainMode, filterMainStatus, searchMain, sortMain]);
 
       return (
         <div className="flex h-screen overflow-hidden">
           {/* SIDEBAR */}
-          <aside className="w-80 bg-slate-900 text-slate-100 flex flex-col justify-between p-4 shadow-xl overflow-y-auto">
+          {!sidebarCollapsed && <aside className="w-80 shrink-0 bg-slate-900 text-slate-100 flex flex-col justify-between p-4 shadow-xl overflow-y-auto">
             <div>
               <div className="flex items-center gap-3 mb-6 pb-4 border-b border-slate-800">
                 <div className="w-10 h-10 rounded-xl bg-brand-500 flex items-center justify-center font-bold text-lg text-white shadow-lg">PV</div>
@@ -1006,6 +1069,12 @@
                   <h1 className="font-bold text-sm leading-tight text-slate-100">Phong Vũ Inventory</h1>
                   <p className="text-xs text-slate-400">Reconciliation Web App</p>
                 </div>
+                <button
+                  onClick={() => setSidebarCollapsed(true)}
+                  className="ml-auto w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300"
+                  title="Ẩn thanh bên"
+                  aria-label="Ẩn thanh bên"
+                >‹</button>
               </div>
 
               {/* CURRENT SESSION HEADER */}
@@ -1108,10 +1177,18 @@
             <div className="pt-4 border-t border-slate-800 text-center">
               <span className="text-[11px] text-slate-500">Antigravity Web App v2.0</span>
             </div>
-          </aside>
+          </aside>}
 
           {/* MAIN CONTENT AREA */}
-          <main className="flex-1 flex flex-col overflow-hidden bg-slate-50">
+          <main className="flex-1 min-w-0 flex flex-col overflow-hidden bg-slate-50 relative">
+            {sidebarCollapsed && (
+              <button
+                onClick={() => setSidebarCollapsed(false)}
+                className="absolute left-3 top-3 z-30 w-9 h-9 rounded-lg bg-slate-900 hover:bg-slate-800 text-white shadow-lg"
+                title="Hiện thanh bên"
+                aria-label="Hiện thanh bên"
+              >☰</button>
+            )}
             {/* TOP NAVIGATION TABS */}
             <header className="bg-white border-b border-slate-200 px-6 pt-4 pb-0 shadow-sm">
               <div className="flex items-center justify-between mb-4">
@@ -1328,18 +1405,25 @@
                   {/* SERIAL TABLE */}
                   <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
                     <div className="overflow-x-auto max-h-[550px]">
-                      <table className="w-full text-left text-xs">
+                      <table className="w-full min-w-[1500px] table-fixed text-left text-xs">
+                        <colgroup>
+                          <col className="w-[110px]" /><col className="w-[260px]" />
+                          <col className="w-[230px]" /><col className="w-[190px]" />
+                          <col className="w-[150px]" /><col className="w-[120px]" />
+                          <col className="w-[90px]" /><col className="w-[170px]" />
+                          <col className="w-[280px]" />
+                        </colgroup>
                         <thead className="bg-slate-100 text-slate-700 font-bold sticky top-0 border-b border-slate-200">
                           <tr>
-                            <th className="p-3">SKU</th>
-                            <th className="p-3">Tên sản phẩm</th>
-                            <th className="p-3">Số Serial (Sổ sách)</th>
-                            <th className="p-3">Serial đã quét (ERP - Sửa 0ms)</th>
-                            <th className="p-3">Mã Bin</th>
-                            <th className="p-3">Loại hàng</th>
-                            <th className="p-3 text-center">Đã kiểm</th>
-                            <th className="p-3 text-center">Phân loại Check</th>
-                            <th className="p-3">Ghi chú</th>
+                            <SortableHeader label="SKU" column="sku" sortConfig={sortDetail} onSort={toggleSort(setSortDetail)} />
+                            <SortableHeader label="Tên sản phẩm" column="name" sortConfig={sortDetail} onSort={toggleSort(setSortDetail)} />
+                            <SortableHeader label="Serial sổ sách" column="stockSerial" sortConfig={sortDetail} onSort={toggleSort(setSortDetail)} />
+                            <SortableHeader label="Serial đã quét / chỉnh sửa" column="scannedSerial" sortConfig={sortDetail} onSort={toggleSort(setSortDetail)} />
+                            <SortableHeader label="Mã Bin" column="bin" sortConfig={sortDetail} onSort={toggleSort(setSortDetail)} />
+                            <SortableHeader label="Loại hàng" column="type" sortConfig={sortDetail} onSort={toggleSort(setSortDetail)} />
+                            <SortableHeader label="Đã kiểm" column="checked" sortConfig={sortDetail} onSort={toggleSort(setSortDetail)} className="text-center" />
+                            <SortableHeader label="Phân loại Check" column="status" sortConfig={sortDetail} onSort={toggleSort(setSortDetail)} />
+                            <SortableHeader label="Ghi chú" column="note" sortConfig={sortDetail} onSort={toggleSort(setSortDetail)} />
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
@@ -1351,7 +1435,7 @@
                             else if (r.status === "Đã quét đủ") statusBadge = "bg-emerald-100 text-emerald-800";
 
                             return (
-                              <tr key={i} className="hover:bg-slate-50 transition">
+                              <tr key={r.rowId} className="hover:bg-slate-50 transition">
                                 <td className="p-3 font-mono font-medium">{r.sku}</td>
                                 <td className="p-3 max-w-xs truncate">{r.name}</td>
                                 <td className="p-3 font-mono text-slate-700 font-medium">{r.stockSerial || "—"}</td>
@@ -1362,7 +1446,9 @@
                                     <input
                                       type="text"
                                       value={r.scannedSerial}
+                                      onFocus={e => { e.currentTarget.dataset.original = r.scannedSerial; }}
                                       onChange={e => handleSerialEdit(r.rowId, e.target.value)}
+                                      onBlur={e => handleSerialEditCommit(r.rowId, e.currentTarget.dataset.original || "")}
                                       className="w-full bg-slate-50 focus:bg-white border border-slate-200 focus:border-brand-500 rounded px-2 py-1 font-mono text-xs"
                                       placeholder="Gõ để sửa..."
                                     />
@@ -1374,7 +1460,9 @@
                                 <td className="p-3 text-center">
                                   <span className={`px-2 py-1 rounded text-[11px] inline-block ${statusBadge}`}>{r.status}</span>
                                 </td>
-                                <td className="p-3 text-slate-500 italic max-w-xs truncate">{r.note || "—"}</td>
+                                <td className="p-3 text-slate-500 italic">
+                                  <div className="line-clamp-2 break-words" title={r.note || ""}>{r.note || "—"}</div>
+                                </td>
                               </tr>
                             );
                           })}
@@ -1418,21 +1506,40 @@
                     />
                   </div>
 
+                  <div className="grid grid-cols-4 gap-4">
+                    <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm">
+                      <p className="text-[11px] font-bold text-slate-400 uppercase">Tổng SKU</p>
+                      <p className="text-lg font-extrabold">{dfCountL2.length}</p>
+                    </div>
+                    <div className="bg-rose-50 p-3 rounded-xl border border-rose-200 shadow-sm">
+                      <p className="text-[11px] font-bold text-rose-600 uppercase">Còn chênh lệch</p>
+                      <p className="text-lg font-extrabold text-rose-700">{dfCountL2.filter(r => r.diffL2 !== 0).length}</p>
+                    </div>
+                    <div className="bg-brand-50 p-3 rounded-xl border border-blue-200 shadow-sm">
+                      <p className="text-[11px] font-bold text-brand-600 uppercase">Đã nhập lần 2</p>
+                      <p className="text-lg font-extrabold text-brand-700">{dfCountL2.filter(r => r.qtyL2 > 0).length}</p>
+                    </div>
+                    <div className="bg-emerald-50 p-3 rounded-xl border border-emerald-200 shadow-sm">
+                      <p className="text-[11px] font-bold text-emerald-600 uppercase">Đã khớp</p>
+                      <p className="text-lg font-extrabold text-emerald-700">{dfCountL2.filter(r => r.diffL2 === 0).length}</p>
+                    </div>
+                  </div>
+
                   {/* L2 GRID TABLE */}
                   <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
                     <div className="overflow-x-auto max-h-[550px]">
                       <table className="w-full text-left text-xs">
                         <thead className="bg-slate-100 text-slate-700 font-bold sticky top-0 border-b border-slate-200">
                           <tr>
-                            <th className="p-3">Mã vật tư</th>
-                            <th className="p-3">Tên vật tư</th>
-                            <th className="p-3 text-center">ĐVT</th>
-                            <th className="p-3 text-center">Sổ sách (A)</th>
-                            <th className="p-3 text-center">Thực tế L1 (B)</th>
-                            <th className="p-3 text-center bg-brand-50 text-brand-700">Đếm lại Lần 2 (C)</th>
-                            <th className="p-3 text-center font-bold">Tổng thực tế (B+C)</th>
-                            <th className="p-3 text-center font-bold">Chênh lệch Lần 2</th>
-                            <th className="p-3">Note mã đơn xuất / Lý do</th>
+                            <SortableHeader label="Mã vật tư" column="sku" sortConfig={sortL2} onSort={toggleSort(setSortL2)} />
+                            <SortableHeader label="Tên vật tư" column="name" sortConfig={sortL2} onSort={toggleSort(setSortL2)} />
+                            <SortableHeader label="ĐVT" column="uom" sortConfig={sortL2} onSort={toggleSort(setSortL2)} />
+                            <SortableHeader label="Sổ sách (A)" column="qtySys" sortConfig={sortL2} onSort={toggleSort(setSortL2)} />
+                            <SortableHeader label="Thực tế L1 (B)" column="qtyL1" sortConfig={sortL2} onSort={toggleSort(setSortL2)} />
+                            <SortableHeader label="Đếm lại Lần 2 (C)" column="qtyL2" sortConfig={sortL2} onSort={toggleSort(setSortL2)} className="bg-brand-50 text-brand-700" />
+                            <SortableHeader label="Tổng thực tế (B+C)" column="totalActual" sortConfig={sortL2} onSort={toggleSort(setSortL2)} />
+                            <SortableHeader label="Chênh lệch Lần 2" column="diffL2" sortConfig={sortL2} onSort={toggleSort(setSortL2)} />
+                            <SortableHeader label="Note mã đơn / Lý do" column="note" sortConfig={sortL2} onSort={toggleSort(setSortL2)} />
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
@@ -1511,19 +1618,38 @@
                     />
                   </div>
 
+                  <div className="grid grid-cols-4 gap-4">
+                    <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm">
+                      <p className="text-[11px] font-bold text-slate-400 uppercase">Tổng SKU</p>
+                      <p className="text-lg font-extrabold">{dfMainRows.length}</p>
+                    </div>
+                    <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 shadow-sm">
+                      <p className="text-[11px] font-bold text-slate-500 uppercase">Tổng sổ sách</p>
+                      <p className="text-lg font-extrabold">{dfMainRows.reduce((sum, r) => sum + r.qtySys, 0)}</p>
+                    </div>
+                    <div className="bg-brand-50 p-3 rounded-xl border border-blue-200 shadow-sm">
+                      <p className="text-[11px] font-bold text-brand-600 uppercase">Tổng thực tế</p>
+                      <p className="text-lg font-extrabold text-brand-700">{dfMainRows.reduce((sum, r) => sum + r.totalActual, 0)}</p>
+                    </div>
+                    <div className="bg-rose-50 p-3 rounded-xl border border-rose-200 shadow-sm">
+                      <p className="text-[11px] font-bold text-rose-600 uppercase">SKU cần xử lý</p>
+                      <p className="text-lg font-extrabold text-rose-700">{dfMainRows.filter(r => r.chkStatus !== "Khớp hoàn toàn").length}</p>
+                    </div>
+                  </div>
+
                   {/* SUMMARY TABLE */}
                   <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
                     <div className="overflow-x-auto max-h-[550px]">
                       <table className="w-full text-left text-xs">
                         <thead className="bg-slate-100 text-slate-700 font-bold sticky top-0 border-b border-slate-200">
                           <tr>
-                            <th className="p-3">SKU</th>
-                            <th className="p-3">Tên hàng hóa</th>
-                            <th className="p-3 text-center">Sổ sách</th>
-                            <th className="p-3 text-center">Thực tế</th>
-                            <th className="p-3 text-center">Chênh lệch</th>
-                            <th className="p-3 text-center">Phân loại Check</th>
-                            <th className="p-3">Ghi chú / Mã đơn</th>
+                            <SortableHeader label="SKU" column="sku" sortConfig={sortMain} onSort={toggleSort(setSortMain)} />
+                            <SortableHeader label="Tên hàng hóa" column="name" sortConfig={sortMain} onSort={toggleSort(setSortMain)} />
+                            <SortableHeader label="Sổ sách" column="qtySys" sortConfig={sortMain} onSort={toggleSort(setSortMain)} />
+                            <SortableHeader label="Thực tế" column="totalActual" sortConfig={sortMain} onSort={toggleSort(setSortMain)} />
+                            <SortableHeader label="Chênh lệch" column="diff" sortConfig={sortMain} onSort={toggleSort(setSortMain)} />
+                            <SortableHeader label="Phân loại Check" column="chkStatus" sortConfig={sortMain} onSort={toggleSort(setSortMain)} />
+                            <SortableHeader label="Ghi chú / Mã đơn" column="note" sortConfig={sortMain} onSort={toggleSort(setSortMain)} />
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
