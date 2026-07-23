@@ -78,18 +78,20 @@
     const nameCandidates = ['tên sản phẩm', 'tên hàng hóa', 'tên hàng', 'tên sp', 'tên hh', 'tên vật tư', 'tên thiết bị', 'description', 'product name', 'item name', 'tên'];
     const uomCandidates = ['đơn vị tính', 'đvt', 'uom', 'unit', 'đơn vị'];
     const qtyCandidates = ['số lượng sổ sách', 'tồn cuối', 'số lượng tồn', 'tồn kho', 'tồn sổ sách', 'sl sổ sách', 'sl tồn', 'tồn cuối kỳ', 'số lượng', 'tồn', 'sl', 'thực tế đếm', 'thực tế đã đếm', 'sl thực tế', 'đã đếm'];
-    const serialCandidates = ['serial/lot', 'serial đã quét', 'serial đã kiểm', 'số serial', 'serial', 'imei', 'sn', 'seri', 'mã vạch', 'barcode', 'qr', 'mã serial', 'quét', 'chốt', 'series', 'seri no', 'serial no'];
+    const serialCandidates = ['số serial', 'serial/lot', 'serial đã quét', 'serial đã kiểm', 'mã serial', 'số seri', 'serial no', 'seri no', 'serial', 'imei', 'sn', 'barcode'];
     const partCandidates = ['part number', 'part_number', 'mã part', 'part no', 'part', 'mã phụ tùng'];
-    const binCandidates = ['mã bin', 'tên bin', 'bin kiểm đếm', 'bin', 'vị trí', 'khu vực', 'kệ', 'ô kiểm đếm'];
+    const binCandidates = ['mã bin', 'bin kiểm đếm', 'tên bin', 'bin', 'vị trí', 'khu vực', 'kệ', 'ô kiểm đếm'];
     const typeCandidates = ['loại hàng', 'loại serial', 'loại', 'hàng hóa', 'phân loại'];
 
-    function findVal(row, candidates, defaultVal = "") {
+    function findVal(row, candidates, defaultVal = "", excludeList = []) {
       if (!row) return defaultVal;
       const keys = Object.keys(row);
       for (const cand of candidates) {
         for (const key of keys) {
           const cleanKey = String(key).trim().toLowerCase();
           if (cleanKey === 'stt' || cleanKey === 'stt.' || cleanKey === 'no' || cleanKey === 'no.') continue;
+          if (excludeList.some(ex => cleanKey.includes(ex))) continue;
+          
           if (cleanKey.includes(cand)) {
             const val = row[key];
             if (val !== undefined && val !== null && String(val).trim() !== "") {
@@ -183,7 +185,6 @@
       const wb = XLSX.read(data, { type: 'array' });
       
       if (isErp) {
-        // Target Sheet 2 'KetQuaChiTiet' or Sheet Index 1 for ERP files
         const targetSheetName = wb.SheetNames.find(s => {
           const sLower = s.toLowerCase();
           return sLower.includes('ketquachitiet') || sLower.includes('chitiet') || sLower.includes('detail');
@@ -323,7 +324,7 @@
         const stockRows = stockRowsRaw.map(r => {
           const sku = findVal(r, skuCandidates);
           const name = findVal(r, nameCandidates, "Chưa có tên");
-          const serial = findVal(r, serialCandidates);
+          const serial = findVal(r, serialCandidates, "", ['loại serial', 'loại hàng']);
           const qty = parseInt(findVal(r, qtyCandidates, "1")) || 1;
           const bin = findVal(r, binCandidates);
           const uom = findVal(r, uomCandidates, "Cái");
@@ -333,9 +334,10 @@
 
         const erpRows = erpRowsRaw.map(r => {
           const sku = findVal(r, skuCandidates);
-          const serial = findVal(r, serialCandidates);
+          const serial = findVal(r, serialCandidates, "", ['loại serial', 'loại hàng']);
+          const bin = findVal(r, binCandidates);
           const qty = parseInt(findVal(r, qtyCandidates, "1")) || 1;
-          return { sku, serial, qty };
+          return { sku, serial, bin, qty };
         }).filter(r => r.sku);
 
         if (stockRows.length === 0 || erpRows.length === 0) {
@@ -343,7 +345,7 @@
           return;
         }
 
-        const erpSerialsBySku = {};
+        const erpItemsBySku = {};
         const erpQtyBySku = {};
         const serialSkusSet = new Set();
 
@@ -352,8 +354,8 @@
           erpQtyBySku[r.sku] += r.qty;
           if (r.serial) {
             serialSkusSet.add(r.sku);
-            if (!erpSerialsBySku[r.sku]) erpSerialsBySku[r.sku] = [];
-            erpSerialsBySku[r.sku].push(r.serial);
+            if (!erpItemsBySku[r.sku]) erpItemsBySku[r.sku] = [];
+            erpItemsBySku[r.sku].push({ serial: r.serial, bin: r.bin });
           }
         });
 
@@ -382,7 +384,7 @@
           const qtySys = stockQtyBySku[sku] || 0;
           let qtyL1 = 0;
           if (serialSkusSet.has(sku)) {
-            qtyL1 = (erpSerialsBySku[sku] || []).length;
+            qtyL1 = (erpItemsBySku[sku] || []).length;
           } else {
             qtyL1 = erpQtyBySku[sku] || 0;
           }
@@ -454,24 +456,28 @@
               });
             }
           } else {
-            const eSerials = [...(erpSerialsBySku[sku] || [])];
+            const eItems = [...(erpItemsBySku[sku] || [])];
             
+            // 1. Exact match by serial number
             sRows.forEach(r => {
-              if (r.stockSerial && eSerials.includes(r.stockSerial)) {
-                r.scannedSerial = r.stockSerial;
+              const matchedIdx = eItems.findIndex(e => e.serial === r.stockSerial);
+              if (r.stockSerial && matchedIdx !== -1) {
+                const matched = eItems.splice(matchedIdx, 1)[0];
+                r.scannedSerial = matched.serial;
+                r.bin = matched.bin || r.bin;
                 r.checked = 1;
                 r.diff = 0;
                 r.status = "Đã quét đủ";
-                const idx = eSerials.indexOf(r.stockSerial);
-                eSerials.splice(idx, 1);
               }
             });
 
+            // 2. Unmatched stock rows paired with unmatched scanned serials -> Bắn sai serial!
             sRows.forEach(r => {
               if (r.checked === 0) {
-                if (eSerials.length > 0) {
-                  const wrongSer = eSerials.shift();
-                  r.scannedSerial = wrongSer;
+                if (eItems.length > 0) {
+                  const wrongItem = eItems.shift();
+                  r.scannedSerial = wrongItem.serial;
+                  r.bin = wrongItem.bin || r.bin;
                   r.checked = 1;
                   r.diff = 0;
                   r.status = "Bắn sai serial";
@@ -485,12 +491,13 @@
               detailRows.push(r);
             });
 
-            if (eSerials.length > 0) {
+            // 3. Extra scanned serials -> Bắn dư serial
+            if (eItems.length > 0) {
               const firstName = sRows.length > 0 ? sRows[0].name : "Sản phẩm quét dư / chưa có trong danh mục";
               const firstUom = sRows.length > 0 ? sRows[0].uom : "Cái";
-              eSerials.forEach(extraSer => {
+              eItems.forEach(extraItem => {
                 detailRows.push({
-                  sku, name: firstName, uom: firstUom, qty: 1, stockSerial: "", scannedSerial: extraSer, bin: "",
+                  sku, name: firstName, uom: firstUom, qty: 1, stockSerial: "", scannedSerial: extraItem.serial, bin: extraItem.bin || "",
                   type: sRows.length > 0 ? "Bắn dư serial" : "Không có tồn hệ thống", checked: 1, diff: 1, status: "Bắn dư serial", note: ""
                 });
               });
@@ -862,7 +869,7 @@
 
           if (searchDetail.trim()) {
             const kw = searchDetail.toLowerCase();
-            return r.sku.toLowerCase().includes(kw) || r.name.toLowerCase().includes(kw) || r.stockSerial.toLowerCase().includes(kw) || r.scannedSerial.toLowerCase().includes(kw);
+            return r.sku.toLowerCase().includes(kw) || r.name.toLowerCase().includes(kw) || (r.stockSerial && r.stockSerial.toLowerCase().includes(kw)) || (r.scannedSerial && r.scannedSerial.toLowerCase().includes(kw));
           }
           return true;
         });
@@ -1104,7 +1111,7 @@
                         )}
                       </div>
 
-                      {/* DROPZONE 2 (ERP FILE: target Sheet 2 KetQuaChiTiet) */}
+                      {/* DROPZONE 2 */}
                       <div className={`border-2 border-dashed rounded-xl p-6 text-center transition cursor-pointer relative ${rawErpFileName ? 'border-emerald-500 bg-emerald-50/40' : 'border-slate-300 hover:border-emerald-500 bg-slate-50'}`}>
                         <input
                           type="file"
@@ -1156,7 +1163,7 @@
                             <div className="font-mono text-[11px] text-slate-600 max-h-28 overflow-y-auto space-y-1">
                               {rawStockData.slice(0, 4).map((r, i) => (
                                 <div key={i} className="truncate bg-white p-1 rounded border border-slate-200">
-                                  <b>Mã:</b> {findVal(r, skuCandidates, "—")} | <b>Tên:</b> {findVal(r, nameCandidates, "—")} | <b>Serial:</b> {findVal(r, serialCandidates, "—")}
+                                  <b>Mã:</b> {findVal(r, skuCandidates, "—")} | <b>Serial:</b> {findVal(r, serialCandidates, "—", ['loại serial'])} | <b>Bin:</b> {findVal(r, binCandidates, "—")}
                                 </div>
                               ))}
                             </div>
@@ -1166,7 +1173,7 @@
                             <div className="font-mono text-[11px] text-slate-600 max-h-28 overflow-y-auto space-y-1">
                               {rawErpData.slice(0, 4).map((r, i) => (
                                 <div key={i} className="truncate bg-white p-1 rounded border border-slate-200">
-                                  <b>Mã:</b> {findVal(r, skuCandidates, "—")} | <b>Serial:</b> {findVal(r, serialCandidates, "—")}
+                                  <b>Mã:</b> {findVal(r, skuCandidates, "—")} | <b>Serial:</b> {findVal(r, serialCandidates, "—", ['loại serial'])} | <b>Bin:</b> {findVal(r, binCandidates, "—")}
                                 </div>
                               ))}
                             </div>
@@ -1254,7 +1261,7 @@
                               <tr key={i} className="hover:bg-slate-50 transition">
                                 <td className="p-3 font-mono font-medium">{r.sku}</td>
                                 <td className="p-3 max-w-xs truncate">{r.name}</td>
-                                <td className="p-3 font-mono text-slate-600">{r.stockSerial || "—"}</td>
+                                <td className="p-3 font-mono text-slate-700 font-medium">{r.stockSerial || "—"}</td>
                                 <td className="p-2">
                                   <input
                                     type="text"
@@ -1264,7 +1271,7 @@
                                     placeholder="Gõ để sửa..."
                                   />
                                 </td>
-                                <td className="p-3 text-slate-500">{r.bin || "—"}</td>
+                                <td className="p-3 font-mono text-slate-700">{r.bin || "—"}</td>
                                 <td className="p-3 text-slate-500">{r.type}</td>
                                 <td className="p-3 text-center font-semibold">{r.checked}</td>
                                 <td className="p-3 text-center">
