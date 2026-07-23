@@ -77,10 +77,10 @@
     const skuCandidates = ['mã sản phẩm', 'mã hàng hóa', 'mã hàng', 'mã sp', 'mã hh', 'mã vật tư', 'mã vt', 'mã thiết bị', 'sku', 'item code', 'product code', 'part number', 'mã'];
     const nameCandidates = ['tên sản phẩm', 'tên hàng hóa', 'tên hàng', 'tên sp', 'tên hh', 'tên vật tư', 'tên thiết bị', 'description', 'product name', 'item name', 'tên'];
     const uomCandidates = ['đơn vị tính', 'đvt', 'uom', 'unit', 'đơn vị'];
-    const qtyCandidates = ['số lượng sổ sách', 'tồn cuối', 'số lượng tồn', 'tồn kho', 'tồn sổ sách', 'sl sổ sách', 'sl tồn', 'tồn cuối kỳ', 'số lượng', 'tồn', 'sl', 'thực tế đếm', 'thực tế đã đếm', 'sl thực tế', 'đã đếm'];
+    const qtyCandidates = ['số lượng kiểm đếm', 'thực tế đếm', 'số lượng thực tế', 'sl kiểm đếm', 'thực tế đã đếm', 'sl thực tế', 'số lượng sổ sách', 'tồn cuối', 'số lượng tồn', 'tồn kho', 'tồn sổ sách', 'sl sổ sách', 'sl tồn', 'tồn cuối kỳ', 'số lượng', 'tồn', 'sl', 'đã đếm'];
     const serialCandidates = ['số serial', 'serial/lot', 'serial đã quét', 'serial đã kiểm', 'mã serial', 'số seri', 'serial no', 'seri no', 'serial', 'imei', 'sn', 'barcode'];
     const partCandidates = ['part number', 'part_number', 'mã part', 'part no', 'part', 'mã phụ tùng'];
-    const binCandidates = ['mã bin', 'bin kiểm đếm', 'tên bin', 'bin', 'vị trí', 'khu vực', 'kệ', 'ô kiểm đếm'];
+    const binCandidates = ['bin kiểm đếm', 'mã bin', 'tên bin', 'bin', 'vị trí', 'khu vực', 'kệ', 'ô kiểm đếm'];
     const typeCandidates = ['loại hàng', 'loại serial', 'loại', 'hàng hóa', 'phân loại'];
 
     function findVal(row, candidates, defaultVal = "", excludeList = []) {
@@ -332,13 +332,15 @@
           return { sku, name, serial, qty, bin, uom, type };
         }).filter(r => r.sku);
 
+        // FILTER ERP ROWS: ONLY INCLUDE ROWS WHERE "Số lượng kiểm đếm" > 0!
         const erpRows = erpRowsRaw.map(r => {
           const sku = findVal(r, skuCandidates);
           const serial = findVal(r, serialCandidates, "", ['loại serial', 'loại hàng']);
           const bin = findVal(r, binCandidates);
-          const qty = parseInt(findVal(r, qtyCandidates, "1")) || 1;
+          const qtyValStr = findVal(r, qtyCandidates, "1");
+          const qty = parseFloat(qtyValStr) || 0;
           return { sku, serial, bin, qty };
-        }).filter(r => r.sku);
+        }).filter(r => r.sku && r.qty > 0); // EXCLUDE UNSCANNED PLACEHOLDERS WHERE QTY IS 0.00!
 
         if (stockRows.length === 0 || erpRows.length === 0) {
           alert("Không khớp được cột SKU/Mã sản phẩm trên 2 file. Vui lòng kiểm tra lại file!");
@@ -493,7 +495,7 @@
               detailRows.push(r);
             });
 
-            // 3. Extra scanned serials -> Bắn dư serial (Detect Duplicate Scan!)
+            // 3. Extra scanned serials -> Bắn dư serial
             if (eItems.length > 0) {
               const firstName = sRows.length > 0 ? sRows[0].name : "Sản phẩm quét dư / chưa có trong danh mục";
               const firstUom = sRows.length > 0 ? sRows[0].uom : "Cái";
@@ -901,8 +903,8 @@
           if (filterMainMode.startsWith("Chỉ SKU") && r.chkStatus === "Khớp hoàn toàn") return false;
           if (filterMainStatus === "Bắn sai serial" && r.chkStatus !== "Bắn sai serial") return false;
           if (filterMainStatus === "Bắn dư serial" && !r.chkStatus.includes("Bắn dư")) return false;
-          if (filterMainStatus === "Bắn thiếu hàng" && !r.chkStatus.includes("Bắn thiếu")) return false;
           if (filterMainStatus === "Bắn thừa hàng" && !r.chkStatus.includes("Bắn thừa")) return false;
+          if (filterMainStatus === "Bắn thiếu hàng" && !r.chkStatus.includes("Bắn thiếu")) return false;
           if (filterMainStatus === "Khớp hoàn toàn" && r.chkStatus !== "Khớp hoàn toàn") return false;
 
           if (searchMain.trim()) {
