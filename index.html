@@ -166,24 +166,6 @@
       return Boolean(expected && actual && expected === actual);
     }
 
-    const soldOrderNotePattern = /\[Thiếu hẳn do đã bán\s*-\s*Mã đơn hàng:\s*([^\]]+)\]/i;
-
-    function extractSoldOrderCode(note) {
-      const match = String(note || "").match(soldOrderNotePattern);
-      return match ? match[1].trim() : "";
-    }
-
-    function withoutSoldOrderNote(note) {
-      return String(note || "").replace(soldOrderNotePattern, "").replace(/\s+/g, " ").trim();
-    }
-
-    function noteWithSoldOrderCode(note, orderCode) {
-      const baseNote = withoutSoldOrderNote(note);
-      const cleanCode = String(orderCode || "").trim();
-      const soldNote = cleanCode ? `[Thiếu hẳn do đã bán - Mã đơn hàng: ${cleanCode}]` : "";
-      return [baseNote, soldNote].filter(Boolean).join(" ");
-    }
-
     async function decodeStoredRows(value) {
       if (!value) return [];
       if (Array.isArray(value)) return value;
@@ -230,7 +212,6 @@
           diff: parseQuantity(row.diff, 0),
           status: String(row.status ?? "Chưa phân loại"),
           note,
-          orderCode: String(row.orderCode ?? extractSoldOrderCode(note)),
           isNonSerial: Boolean(row.isNonSerial)
             || stockSerial.includes("Hàng không serial")
             || type === "Hàng không serial"
@@ -254,7 +235,6 @@
         diff: parseQuantity(findVal(row, ['dư/thiếu'], "0"), 0),
         status: findVal(row, ['check đơn'], "Chưa phân loại"),
         note,
-        orderCode: extractSoldOrderCode(note),
         isNonSerial
       };
     }
@@ -988,10 +968,6 @@
           row.scannedSerial = newSerial;
           row.checked = newSerial ? 1 : 0;
           row.diff = newSerial ? 0 : -1;
-          if (newSerial) {
-            row.orderCode = "";
-            row.note = withoutSoldOrderNote(row.note);
-          }
           if (!newSerial) row.status = "Bắn thiếu (Chưa quét)";
           else if (serialsMatch(row.stockSerial, newSerial)) row.status = "Đã quét đủ";
           else if (!String(row.stockSerial || "").trim()) row.status = "Bắn dư serial";
@@ -1010,14 +986,10 @@
         }));
       };
 
-      const handleSerialOrderCodeChange = (rowId, orderCode) => {
+      const handleSerialNoteChange = (rowId, note) => {
         setDfCheckDetail(prev => prev.map(row => {
           if (row.rowId !== rowId) return row;
-          return {
-            ...row,
-            orderCode,
-            note: noteWithSoldOrderCode(row.note, orderCode)
-          };
+          return { ...row, note };
         }));
         setIsDirty(true);
       };
@@ -1873,26 +1845,14 @@
                                 </td>
                                 <td className="p-3 text-slate-500">
                                   {r.status === "Bắn thiếu (Chưa quét)" ? (
-                                    <div className="space-y-1.5">
-                                      <input
-                                        type="text"
-                                        value={r.orderCode || ""}
-                                        onChange={e => handleSerialOrderCodeChange(r.rowId, e.target.value)}
-                                        placeholder="Nhập mã đơn hàng..."
-                                        aria-label={`Mã đơn hàng cho serial ${r.stockSerial || r.sku}`}
-                                        className="w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-xs font-mono text-slate-800 focus:border-brand-500 focus:outline-none"
-                                      />
-                                      {r.orderCode && (
-                                        <div className="text-[10px] leading-4 text-rose-700 font-medium">
-                                          Thiếu hẳn do đã bán — Mã đơn hàng: {r.orderCode}
-                                        </div>
-                                      )}
-                                      {withoutSoldOrderNote(r.note) && (
-                                        <div className="line-clamp-2 break-words text-[10px] italic" title={withoutSoldOrderNote(r.note)}>
-                                          {withoutSoldOrderNote(r.note)}
-                                        </div>
-                                      )}
-                                    </div>
+                                    <textarea
+                                      rows="2"
+                                      value={r.note || ""}
+                                      onChange={e => handleSerialNoteChange(r.rowId, e.target.value)}
+                                      placeholder="Nhập ghi chú tùy chỉnh..."
+                                      aria-label={`Ghi chú cho serial ${r.stockSerial || r.sku}`}
+                                      className="w-full resize-y rounded border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-800 focus:border-brand-500 focus:outline-none"
+                                    />
                                   ) : (
                                     <div className="line-clamp-2 break-words italic" title={r.note || ""}>{r.note || "—"}</div>
                                   )}
