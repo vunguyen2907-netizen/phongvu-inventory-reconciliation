@@ -1430,18 +1430,33 @@
         ws["!pageSetup"] = { orientation: "landscape", fitToWidth: 1, fitToHeight: 0, paperSize: 9 };
         ws["!margins"] = { left: 0.25, right: 0.25, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 };
 
+        for (let row = 0; row < headerRow; row += 1) {
+          for (let column = 0; column < 9; column += 1) {
+            const ref = XLSX.utils.encode_cell({ r: row, c: column });
+            const cell = ws[ref] || { t: "s", v: "" };
+            cell.s = {
+              ...(cell.s || {}),
+              fill: { patternType: "solid", fgColor: { rgb: "FFFFFF" } }
+            };
+            ws[ref] = cell;
+          }
+        }
+
         ws.A1.s = {
           font: { bold: true, sz: 16, color: { rgb: "111827" } },
+          fill: { patternType: "solid", fgColor: { rgb: "FFFFFF" } },
           alignment: { horizontal: "center", vertical: "center" }
         };
         ws.A2.s = {
           font: { bold: true, sz: 12, color: { rgb: "111827" } },
+          fill: { patternType: "solid", fgColor: { rgb: "FFFFFF" } },
           alignment: { horizontal: "center", vertical: "center", wrapText: true }
         };
         [3, 4, 5].forEach(row => {
           const cell = ws[XLSX.utils.encode_cell({ r: row, c: 0 })];
           cell.s = {
             font: { sz: 10, color: { rgb: "1F2937" } },
+            fill: { patternType: "solid", fgColor: { rgb: "FFFFFF" } },
             alignment: { horizontal: "left", vertical: "center", wrapText: true }
           };
         });
@@ -1464,6 +1479,7 @@
             if (!cell) continue;
             cell.s = {
               font: { sz: 10, color: { rgb: "111827" } },
+              fill: { patternType: "solid", fgColor: { rgb: "FFFFFF" } },
               alignment: {
                 horizontal: column >= 3 && column <= 6 ? "right" : (column === 2 ? "center" : "left"),
                 vertical: "center",
