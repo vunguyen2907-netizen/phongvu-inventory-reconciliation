@@ -160,6 +160,20 @@
       return [baseNote, audits.at(-1)].filter(Boolean).join(" ");
     }
 
+    function dedupeReportNotes(...values) {
+      const seen = new Set();
+      const notes = [];
+      values.flatMap(value => String(value || "").split("|")).forEach(value => {
+        const note = value.replace(/\s+/g, " ").trim();
+        if (!note) return;
+        const key = normalizedText(note);
+        if (seen.has(key)) return;
+        seen.add(key);
+        notes.push(note);
+      });
+      return notes.join(" | ");
+    }
+
     function serialsMatch(stockSerial, scannedSerial) {
       const expected = normalizedText(stockSerial);
       const actual = normalizedText(scannedSerial);
@@ -502,6 +516,10 @@
       // Modal State for Removing Surplus / Wrong Serial
       const [pendingClearSerial, setPendingClearSerial] = useState(null);
       const [clearReasonInput, setClearReasonInput] = useState("");
+
+      // Explanation report modal
+      const [explanationModalOpen, setExplanationModalOpen] = useState(false);
+      const [proposedActions, setProposedActions] = useState({});
 
       // Monthly Archive Form
       const [archiveMonth, setArchiveMonth] = useState(new Date().getMonth() + 1);
@@ -1346,6 +1364,150 @@
         pdfMake.createPdf(docDefinition).download(`Bien_Ban_Kiem_Ke_Hang_Ton_Kho_${reportDate.replace(/-/g, '')}.pdf`);
       };
 
+      const openExplanationReport = () => {
+        const discrepancyRows = dfMainRows.filter(row => row.diff !== 0);
+        if (discrepancyRows.length === 0) {
+          alert("Không có SKU chênh lệch tồn để lập biên bản giải trình.");
+          return;
+        }
+        setProposedActions(previous => Object.fromEntries(
+          discrepancyRows.map(row => [row.sku, previous[row.sku] || ""])
+        ));
+        setExplanationModalOpen(true);
+      };
+
+      const handleExportExplanationExcel = () => {
+        const discrepancyRows = dfMainRows.filter(row => row.diff !== 0);
+        if (discrepancyRows.length === 0) return;
+
+        const wb = XLSX.utils.book_new();
+        const headerRow = 7;
+        const dataStartRow = headerRow + 1;
+        const tableRows = discrepancyRows.map(row => [
+          row.sku,
+          row.name,
+          row.uom,
+          row.totalActual,
+          row.qtySys,
+          Math.max(row.diff, 0),
+          Math.max(-row.diff, 0),
+          row.note || "",
+          proposedActions[row.sku] || ""
+        ]);
+        const totalRow = dataStartRow + tableRows.length;
+        const reportDateText = reportDate.split('-').reverse().join('/');
+        const sheetData = [
+          ["BIÊN BẢN GIẢI TRÌNH CHÊNH LỆCH KIỂM KÊ HÀNG HÓA"],
+          [`ĐƠN VỊ: ${locationName}`],
+          [],
+          [`1. Thời gian chốt dữ liệu hệ thống: Ngày ${reportDateText}`],
+          [`2. Thời gian kiểm kê: Ngày ${reportDateText}`],
+          [`3. Thành phần tham gia kiểm kê: Quản lý đơn vị - ${mgrName}; Đại diện kiểm kê / Kho - ${staffName}`],
+          [],
+          ["Mã VT", "Tên vật tư hàng hóa", "Đvt", "Kiểm kê thực tế (A)", "Tồn cuối phần mềm (B)", "Thừa A-B", "Thiếu B-A", "Giải trình chênh lệch", "Đề xuất xử lý"],
+          ...tableRows,
+          ["Tổng cộng", "", "", "", "", "", "", "", ""]
+        ];
+        const ws = XLSX.utils.aoa_to_sheet(sheetData);
+        const border = {
+          top: { style: "thin", color: { rgb: "64748B" } },
+          bottom: { style: "thin", color: { rgb: "64748B" } },
+          left: { style: "thin", color: { rgb: "64748B" } },
+          right: { style: "thin", color: { rgb: "64748B" } }
+        };
+
+        ws["!merges"] = [0, 1, 3, 4, 5].map(row => ({
+          s: { r: row, c: 0 }, e: { r: row, c: 8 }
+        }));
+        ws["!merges"].push({ s: { r: totalRow, c: 0 }, e: { r: totalRow, c: 2 } });
+        ws["!cols"] = [15, 48, 10, 17, 18, 12, 12, 42, 42].map(wch => ({ wch }));
+        ws["!rows"] = ws["!rows"] || [];
+        ws["!rows"][0] = { hpt: 30 };
+        ws["!rows"][1] = { hpt: 24 };
+        ws["!rows"][5] = { hpt: 34 };
+        ws["!rows"][headerRow] = { hpt: 42 };
+        ws["!autofilter"] = { ref: `A${headerRow + 1}:I${totalRow}` };
+        ws["!pageSetup"] = { orientation: "landscape", fitToWidth: 1, fitToHeight: 0, paperSize: 9 };
+        ws["!margins"] = { left: 0.25, right: 0.25, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 };
+
+        ws.A1.s = {
+          font: { bold: true, sz: 16, color: { rgb: "111827" } },
+          alignment: { horizontal: "center", vertical: "center" }
+        };
+        ws.A2.s = {
+          font: { bold: true, sz: 12, color: { rgb: "111827" } },
+          alignment: { horizontal: "center", vertical: "center", wrapText: true }
+        };
+        [3, 4, 5].forEach(row => {
+          const cell = ws[XLSX.utils.encode_cell({ r: row, c: 0 })];
+          cell.s = {
+            font: { sz: 10, color: { rgb: "1F2937" } },
+            alignment: { horizontal: "left", vertical: "center", wrapText: true }
+          };
+        });
+
+        for (let column = 0; column < 9; column += 1) {
+          const cell = ws[XLSX.utils.encode_cell({ r: headerRow, c: column })];
+          cell.s = {
+            font: { bold: true, sz: 10, color: { rgb: "111827" } },
+            fill: { patternType: "solid", fgColor: { rgb: column === 5 || column === 6 ? "FFF2CC" : "CFE2F3" } },
+            alignment: { horizontal: "center", vertical: "center", wrapText: true },
+            border
+          };
+        }
+
+        tableRows.forEach((row, rowIndex) => {
+          const sheetRow = dataStartRow + rowIndex;
+          ws["!rows"][sheetRow] = { hpt: 42 };
+          for (let column = 0; column < 9; column += 1) {
+            const cell = ws[XLSX.utils.encode_cell({ r: sheetRow, c: column })];
+            if (!cell) continue;
+            cell.s = {
+              font: { sz: 10, color: { rgb: "111827" } },
+              alignment: {
+                horizontal: column >= 3 && column <= 6 ? "right" : (column === 2 ? "center" : "left"),
+                vertical: "center",
+                wrapText: column === 1 || column >= 7
+              },
+              border
+            };
+            if (column >= 3 && column <= 6) cell.z = '0;[Red](0);-';
+          }
+        });
+
+        const excelFirstDataRow = dataStartRow + 1;
+        const excelLastDataRow = totalRow;
+        const totals = [
+          discrepancyRows.reduce((sum, row) => sum + row.totalActual, 0),
+          discrepancyRows.reduce((sum, row) => sum + row.qtySys, 0),
+          discrepancyRows.reduce((sum, row) => sum + Math.max(row.diff, 0), 0),
+          discrepancyRows.reduce((sum, row) => sum + Math.max(-row.diff, 0), 0)
+        ];
+        [3, 4, 5, 6].forEach(column => {
+          const cell = ws[XLSX.utils.encode_cell({ r: totalRow, c: column })] || {};
+          cell.f = `SUM(${XLSX.utils.encode_col(column)}${excelFirstDataRow}:${XLSX.utils.encode_col(column)}${excelLastDataRow})`;
+          cell.t = "n";
+          cell.v = totals[column - 3];
+          cell.z = '0;[Red](0);-';
+          ws[XLSX.utils.encode_cell({ r: totalRow, c: column })] = cell;
+        });
+        for (let column = 0; column < 9; column += 1) {
+          const ref = XLSX.utils.encode_cell({ r: totalRow, c: column });
+          const cell = ws[ref] || { t: "s", v: "" };
+          cell.s = {
+            font: { bold: true, sz: 10, color: { rgb: "C00000" } },
+            fill: { patternType: "solid", fgColor: { rgb: "FFF2CC" } },
+            alignment: { horizontal: column >= 3 && column <= 6 ? "right" : "left", vertical: "center" },
+            border
+          };
+          ws[ref] = cell;
+        }
+
+        XLSX.utils.book_append_sheet(wb, ws, "Giai trinh chenh lech");
+        XLSX.writeFile(wb, `Bien_Ban_Giai_Trinh_Chenh_Lech_${reportDate.replace(/-/g, '')}.xlsx`);
+        setExplanationModalOpen(false);
+      };
+
       // --- DERIVED TAB 4 SUMMARY ROWS ---
       const dfMainRows = useMemo(() => {
         if (dfCountL2.length === 0 || dfCheckDetail.length === 0) return [];
@@ -1375,7 +1537,9 @@
 
           const l2Note = r.note || "";
           const dtNote = (detailNotesBySku[sku] || []).join(" | ");
-          const combinedNote = [dtNote, l2Note].filter(Boolean).join(" | ");
+          // Cùng một ghi chú có thể được lưu ở cả chi tiết serial và kiểm đếm L2.
+          // Chuẩn hóa và loại trùng trước khi đưa lên báo cáo.
+          const combinedNote = dedupeReportNotes(dtNote, l2Note);
           // Ghi chú xử lý vẫn được giữ ở dữ liệu chi tiết để truy vết,
           // nhưng báo cáo tổng hợp chỉ hiển thị ghi chú khi SKU còn lệch tồn.
           const reportNote = diff !== 0 ? combinedNote : "";
@@ -2133,7 +2297,7 @@
                       </div>
                     </div>
 
-                    <div className="pt-4 border-t border-slate-200 grid grid-cols-2 gap-4">
+                    <div className="pt-4 border-t border-slate-200 grid grid-cols-3 gap-4">
                       <button
                         onClick={handleExportExcel}
                         className="py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-md transition"
@@ -2145,6 +2309,12 @@
                         className="py-3 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-md transition"
                       >
                         📄 Tải xuống Biên Bản PDF Chuẩn Phong Vũ
+                      </button>
+                      <button
+                        onClick={openExplanationReport}
+                        className="py-3 bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs rounded-xl shadow-md transition"
+                      >
+                        📋 Xuất Biên bản giải trình
                       </button>
                     </div>
                   </div>
@@ -2180,6 +2350,101 @@
 
             </div>
           </main>
+
+          {explanationModalOpen && (
+            <div className="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-4">
+              <div
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="explanation-report-title"
+                className="w-full max-w-6xl max-h-[90vh] bg-white rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden"
+              >
+                <div className="p-5 border-b border-slate-200 flex items-start justify-between gap-4">
+                  <div>
+                    <h3 id="explanation-report-title" className="text-base font-extrabold text-slate-800">
+                      Biên bản giải trình chênh lệch kiểm kê hàng hóa
+                    </h3>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Chỉ hiển thị SKU còn lệch tồn theo số liệu cuối cùng tại Bảng tổng hợp chênh lệch.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    aria-label="Đóng biên bản giải trình"
+                    onClick={() => setExplanationModalOpen(false)}
+                    className="w-8 h-8 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold"
+                  >
+                    ×
+                  </button>
+                </div>
+
+                <div className="overflow-auto flex-1">
+                  <table className="w-full min-w-[1050px] text-left text-xs">
+                    <thead className="sticky top-0 bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
+                      <tr>
+                        <th className="p-3">SKU</th>
+                        <th className="p-3">Tên hàng hóa</th>
+                        <th className="p-3 text-center">Thực tế</th>
+                        <th className="p-3 text-center">Sổ sách</th>
+                        <th className="p-3 text-center">Chênh lệch</th>
+                        <th className="p-3">Giải trình chênh lệch</th>
+                        <th className="p-3 min-w-[280px]">Đề xuất xử lý</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {dfMainRows.filter(row => row.diff !== 0).map(row => (
+                        <tr key={row.sku} className="align-top hover:bg-slate-50">
+                          <td className="p-3 font-mono font-semibold text-slate-800">{row.sku}</td>
+                          <td className="p-3 max-w-xs">{row.name}</td>
+                          <td className="p-3 text-center font-semibold">{row.totalActual}</td>
+                          <td className="p-3 text-center font-semibold">{row.qtySys}</td>
+                          <td className={`p-3 text-center font-extrabold ${row.diff < 0 ? 'text-rose-600' : 'text-orange-600'}`}>
+                            {row.diff > 0 ? `+${row.diff}` : row.diff}
+                          </td>
+                          <td className="p-3 text-slate-600 italic max-w-sm">{row.note || "—"}</td>
+                          <td className="p-2">
+                            <textarea
+                              rows="2"
+                              value={proposedActions[row.sku] || ""}
+                              onChange={event => setProposedActions(previous => ({
+                                ...previous,
+                                [row.sku]: event.target.value
+                              }))}
+                              placeholder="Nhập hướng xử lý đề xuất..."
+                              aria-label={`Đề xuất xử lý cho SKU ${row.sku}`}
+                              className="w-full resize-y rounded-lg border border-slate-300 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-amber-400"
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="p-4 border-t border-slate-200 bg-slate-50 flex items-center justify-between gap-4">
+                  <p className="text-xs text-slate-500">
+                    {dfMainRows.filter(row => row.diff !== 0).length} SKU chênh lệch sẽ được xuất ra file Excel.
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setExplanationModalOpen(false)}
+                      className="px-4 py-2 rounded-lg bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-bold"
+                    >
+                      Hủy
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleExportExplanationExcel}
+                      className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold shadow-sm"
+                    >
+                      📥 Tải file biên bản giải trình
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           {pendingClearSerial && (
             <div className="fixed inset-0 z-50 bg-slate-900/55 flex items-center justify-center p-4">
