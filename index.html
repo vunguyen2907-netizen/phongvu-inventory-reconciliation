@@ -1376,6 +1376,9 @@
           const l2Note = r.note || "";
           const dtNote = (detailNotesBySku[sku] || []).join(" | ");
           const combinedNote = [dtNote, l2Note].filter(Boolean).join(" | ");
+          // Ghi chú xử lý vẫn được giữ ở dữ liệu chi tiết để truy vết,
+          // nhưng báo cáo tổng hợp chỉ hiển thị ghi chú khi SKU còn lệch tồn.
+          const reportNote = diff !== 0 ? combinedNote : "";
 
           let chkStatus = "Khớp hoàn toàn";
           if (wrongSerialSkus.has(sku)) chkStatus = "Bắn sai serial";
@@ -1386,7 +1389,7 @@
           else if (totalActual > qtySys) chkStatus = `Bắn thừa hàng ${diff}`;
 
           return {
-            sku, name, uom, qtySys, qtyL1, qtyL2, totalActual, diff, chkStatus, note: combinedNote
+            sku, name, uom, qtySys, qtyL1, qtyL2, totalActual, diff, chkStatus, note: reportNote
           };
         });
       }, [dfCountL2, dfCheckDetail]);
