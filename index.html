@@ -85,6 +85,64 @@
     const partCandidates = ['part number', 'part_number', 'mã part', 'part no', 'part', 'mã phụ tùng'];
     const binCandidates = ['bin kiểm đếm', 'mã bin', 'tên bin', 'bin', 'vị trí', 'khu vực', 'kệ', 'ô kiểm đếm'];
     const typeCandidates = ['loại hàng', 'loại serial', 'loại', 'hàng hóa', 'phân loại'];
+    const performerCandidates = ['người thực hiện', 'người kiểm kê', 'nhân viên kiểm kê', 'nhân viên', 'username', 'user name', 'created by', 'người tạo'];
+    const inventoryTimeCandidates = ['thời gian kiểm kê', 'thời gian thực hiện', 'ngày giờ kiểm kê', 'giờ kiểm kê', 'thời gian', 'created at', 'created_at'];
+
+    // --- EXECUTION METADATA HELPERS ---
+    function formatInventoryTime(value) {
+      const text = String(value ?? "").trim();
+      if (!text) return "";
+
+      const clockMatch = text.match(/(?:^|[\sT])(\d{1,2}):(\d{2})(?::\d{2})?/);
+      if (clockMatch) {
+        return `${String(Number(clockMatch[1])).padStart(2, "0")}:${clockMatch[2]}`;
+      }
+
+      const vietnameseClockMatch = text.match(/(?:^|\s)(\d{1,2})h(\d{2})(?:\s|$)/i);
+      if (vietnameseClockMatch) {
+        return `${String(Number(vietnameseClockMatch[1])).padStart(2, "0")}:${vietnameseClockMatch[2]}`;
+      }
+
+      const numericValue = Number(text.replace(",", "."));
+      if (Number.isFinite(numericValue)) {
+        const dayFraction = ((numericValue % 1) + 1) % 1;
+        const totalSeconds = Math.min(86399, Math.max(0, Math.round(dayFraction * 24 * 60 * 60)));
+        const totalMinutes = Math.floor(totalSeconds / 60);
+        const hours = Math.floor(totalMinutes / 60);
+        const minutes = totalMinutes % 60;
+        return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+      }
+
+      return text;
+    }
+
+    function summarizeExecutionMetadata(items) {
+      const performers = [];
+      const times = [];
+      const performerKeys = new Set();
+      const timeKeys = new Set();
+
+      (items || []).forEach(item => {
+        const performer = String(item?.performedBy ?? "").trim();
+        const inventoryTime = formatInventoryTime(item?.inventoryTime);
+        const performerKey = performer.toLocaleLowerCase("vi");
+
+        if (performer && !performerKeys.has(performerKey)) {
+          performerKeys.add(performerKey);
+          performers.push(performer);
+        }
+        if (inventoryTime && !timeKeys.has(inventoryTime)) {
+          timeKeys.add(inventoryTime);
+          times.push(inventoryTime);
+        }
+      });
+
+      return {
+        performedBy: performers.join(", "),
+        inventoryTime: times.join(", ")
+      };
+    }
+    // --- END EXECUTION METADATA HELPERS ---
 
     function normalizedText(value) {
       return String(value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
@@ -222,6 +280,8 @@
           scannedSerial: String(row.scannedSerial ?? ""),
           bin: String(row.bin ?? ""),
           type,
+          performedBy: String(row.performedBy ?? ""),
+          inventoryTime: String(row.inventoryTime ?? ""),
           checked: parseQuantity(row.checked, 0),
           diff: parseQuantity(row.diff, 0),
           status: String(row.status ?? "Chưa phân loại"),
@@ -245,6 +305,8 @@
         scannedSerial: findVal(row, ['serial đã quét'], ""),
         bin: findVal(row, binCandidates, ""),
         type,
+        performedBy: findVal(row, performerCandidates, ""),
+        inventoryTime: findVal(row, inventoryTimeCandidates, ""),
         checked: parseQuantity(findVal(row, ['đã kiểm'], "0"), 0),
         diff: parseQuantity(findVal(row, ['dư/thiếu'], "0"), 0),
         status: findVal(row, ['check đơn'], "Chưa phân loại"),
@@ -629,7 +691,9 @@
           const bin = findVal(r, binCandidates);
           const qtyValStr = findVal(r, qtyCandidates, "1");
           const qty = parseQuantity(qtyValStr, 0);
-          return { sku, serial, bin, qty };
+          const performedBy = findVal(r, performerCandidates, "");
+          const inventoryTime = formatInventoryTime(findVal(r, inventoryTimeCandidates, ""));
+          return { sku, serial, bin, qty, performedBy, inventoryTime };
         }).filter(r => r.sku && r.qty > 0); // EXCLUDE UNSCANNED PLACEHOLDERS WHERE QTY IS 0.00!
 
         if (stockRows.length === 0 || erpRows.length === 0) {
@@ -638,18 +702,28 @@
         }
 
         const erpItemsBySku = {};
+        const erpMetadataBySku = {};
         const erpQtyBySku = {};
         const serialSkusSet = new Set();
 
         erpRows.forEach(r => {
           if (!erpQtyBySku[r.sku]) erpQtyBySku[r.sku] = 0;
           erpQtyBySku[r.sku] += r.qty;
+          if (!erpMetadataBySku[r.sku]) erpMetadataBySku[r.sku] = [];
+          erpMetadataBySku[r.sku].push(r);
           if (r.serial) {
             serialSkusSet.add(r.sku);
             if (!erpItemsBySku[r.sku]) erpItemsBySku[r.sku] = [];
-            erpItemsBySku[r.sku].push({ serial: r.serial, bin: r.bin });
+            erpItemsBySku[r.sku].push({
+              serial: r.serial,
+              bin: r.bin,
+              performedBy: r.performedBy,
+              inventoryTime: r.inventoryTime
+            });
           }
         });
+
+        const getSkuExecutionMetadata = sku => summarizeExecutionMetadata(erpMetadataBySku[sku] || []);
 
         stockRows.forEach(r => {
           if (r.serial) serialSkusSet.add(r.sku);
@@ -708,6 +782,8 @@
             scannedSerial: "",
             bin: r.bin,
             type: isNonSerial ? "Hàng không serial" : r.type,
+            performedBy: "",
+            inventoryTime: "",
             checked: 0,
             diff: -(isNonSerial ? r.qty : 1),
             status: "Bắn thiếu (Chưa quét)",
@@ -722,6 +798,7 @@
 
           if (!isSerial) {
             const totalErp = erpQtyBySku[sku] || 0;
+            const executionMetadata = getSkuExecutionMetadata(sku);
             let remErp = totalErp;
             sRows.forEach((r, idx) => {
               const sysQ = r.qty;
@@ -735,6 +812,7 @@
               detailRows.push({
                 ...r,
                 scannedSerial: alloc > 0 ? `${alloc} cái` : "0 cái",
+                ...executionMetadata,
                 checked: alloc,
                 diff: diffQ,
                 status: diffQ === 0 ? `Đã đếm đủ (${alloc}/${sysQ})` : (diffQ < 0 ? `Bắn thiếu ${Math.abs(diffQ)} hàng (${alloc}/${sysQ})` : `Bắn thừa ${diffQ} hàng (${alloc}/${sysQ})`)
@@ -744,7 +822,8 @@
               detailRows.push({
                 sku, name: "Sản phẩm không serial chưa có trong danh mục", uom: "Cái", qty: 0,
                 stockSerial: "(Hàng không serial)", scannedSerial: `Đã đếm: ${totalErp}`, bin: "",
-                type: "Không có tồn hệ thống", checked: totalErp, diff: totalErp, status: `Bắn thừa hàng ${totalErp}`, note: ""
+                type: "Không có tồn hệ thống", ...executionMetadata,
+                checked: totalErp, diff: totalErp, status: `Bắn thừa hàng ${totalErp}`, note: ""
               });
             }
           } else {
@@ -758,6 +837,8 @@
                 const matched = eItems.splice(matchedIdx, 1)[0];
                 r.scannedSerial = matched.serial;
                 r.bin = matched.bin || r.bin;
+                r.performedBy = matched.performedBy || "";
+                r.inventoryTime = matched.inventoryTime || "";
                 r.checked = 1;
                 r.diff = 0;
                 r.status = "Đã quét đủ";
@@ -772,6 +853,8 @@
                   const wrongItem = eItems.shift();
                   r.scannedSerial = wrongItem.serial;
                   r.bin = wrongItem.bin || r.bin;
+                  r.performedBy = wrongItem.performedBy || "";
+                  r.inventoryTime = wrongItem.inventoryTime || "";
                   r.checked = 1;
                   r.diff = 0;
                   r.status = "Bắn sai serial";
@@ -796,7 +879,9 @@
 
                 detailRows.push({
                   sku, name: firstName, uom: firstUom, qty: 1, stockSerial: "", scannedSerial: extraItem.serial, bin: extraItem.bin || "",
-                  type: sRows.length > 0 ? "Bắn dư serial" : "Không có tồn hệ thống", checked: 1, diff: 1, status: statusStr, note: noteStr
+                  type: sRows.length > 0 ? "Bắn dư serial" : "Không có tồn hệ thống",
+                  performedBy: extraItem.performedBy || "", inventoryTime: extraItem.inventoryTime || "",
+                  checked: 1, diff: 1, status: statusStr, note: noteStr
                 });
               });
             }
@@ -1971,13 +2056,14 @@
                   {/* SERIAL TABLE */}
                   <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
                     <div className="overflow-x-auto max-h-[550px]">
-                      <table className="w-full min-w-[1500px] table-fixed text-left text-xs">
+                      <table className="w-full min-w-[1840px] table-fixed text-left text-xs">
                         <colgroup>
                           <col className="w-[110px]" /><col className="w-[260px]" />
                           <col className="w-[230px]" /><col className="w-[190px]" />
                           <col className="w-[150px]" /><col className="w-[120px]" />
                           <col className="w-[90px]" /><col className="w-[170px]" />
-                          <col className="w-[280px]" />
+                          <col className="w-[280px]" /><col className="w-[190px]" />
+                          <col className="w-[150px]" />
                         </colgroup>
                         <thead className="bg-slate-100 text-slate-700 font-bold sticky top-0 border-b border-slate-200">
                           <tr>
@@ -1990,6 +2076,8 @@
                             <SortableHeader label="Đã kiểm" column="checked" sortConfig={sortDetail} onSort={toggleSort(setSortDetail)} className="text-center" />
                             <SortableHeader label="Phân loại Check" column="status" sortConfig={sortDetail} onSort={toggleSort(setSortDetail)} />
                             <SortableHeader label="Ghi chú" column="note" sortConfig={sortDetail} onSort={toggleSort(setSortDetail)} />
+                            <SortableHeader label="Người thực hiện" column="performedBy" sortConfig={sortDetail} onSort={toggleSort(setSortDetail)} />
+                            <SortableHeader label="Thời gian kiểm kê" column="inventoryTime" sortConfig={sortDetail} onSort={toggleSort(setSortDetail)} />
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
@@ -2063,6 +2151,8 @@
                                     <div className={`${wrapDetailText ? 'whitespace-pre-wrap break-words' : 'truncate'} italic`} title={r.note || ""}>{r.note || "—"}</div>
                                   )}
                                 </td>
+                                <td className="p-3 whitespace-normal break-words text-slate-700" title={r.performedBy || ""}>{r.performedBy || "—"}</td>
+                                <td className="p-3 whitespace-normal break-words font-mono text-slate-600" title={r.inventoryTime || ""}>{r.inventoryTime || "—"}</td>
                               </tr>
                             );
                           })}
