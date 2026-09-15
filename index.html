@@ -86,7 +86,7 @@
     const binCandidates = ['bin kiểm đếm', 'mã bin', 'tên bin', 'bin', 'vị trí', 'khu vực', 'kệ', 'ô kiểm đếm'];
     const typeCandidates = ['loại hàng', 'loại serial', 'loại', 'hàng hóa', 'phân loại'];
     const performerCandidates = ['người thực hiện', 'người kiểm kê', 'nhân viên kiểm kê', 'nhân viên', 'username', 'user name', 'created by', 'người tạo'];
-    const inventoryTimeCandidates = ['thời gian kiểm kê', 'thời gian thực hiện', 'ngày giờ kiểm kê', 'giờ kiểm kê', 'thời gian', 'created at', 'created_at'];
+    const inventoryTimeCandidates = ['thời gian kiểm kê', 'thời gian thực hiện', 'ngày giờ kiểm kê', 'giờ kiểm kê', 'ngày cập nhật', 'ngày giờ cập nhật', 'thời gian', 'updated at', 'updated_at', 'created at', 'created_at'];
 
     // --- EXECUTION METADATA HELPERS ---
     function formatInventoryTime(value) {
@@ -141,6 +141,55 @@
         performedBy: performers.join(", "),
         inventoryTime: times.join(", ")
       };
+    }
+
+    function normalizeExecutionMetadataKey(value) {
+      return String(value ?? "")
+        .normalize("NFKC")
+        .replace(/[\u200B-\u200D\uFEFF]/g, "")
+        .replace(/\s+/g, "")
+        .toLocaleLowerCase("vi");
+    }
+
+    function buildExecutionMetadataIndex(items) {
+      const bySerial = new Map();
+      const bySku = new Map();
+
+      (items || []).forEach(item => {
+        const skuKey = normalizeExecutionMetadataKey(item?.sku);
+        const serialKey = normalizeExecutionMetadataKey(item?.serial);
+        if (skuKey) {
+          if (!bySku.has(skuKey)) bySku.set(skuKey, []);
+          bySku.get(skuKey).push(item);
+        }
+        if (serialKey) {
+          if (!bySerial.has(serialKey)) bySerial.set(serialKey, []);
+          bySerial.get(serialKey).push(item);
+        }
+      });
+
+      return { bySerial, bySku };
+    }
+
+    function resolveExecutionMetadata(index, row) {
+      if (!index) return { performedBy: "", inventoryTime: "" };
+
+      const serialKeys = [row?.scannedSerial, row?.stockSerial]
+        .map(normalizeExecutionMetadataKey)
+        .filter(Boolean);
+
+      for (const serialKey of serialKeys) {
+        const serialItems = index.bySerial?.get(serialKey);
+        if (serialItems?.length) return summarizeExecutionMetadata(serialItems);
+      }
+
+      // A missing serial has no counted Serial/LOT to join against. In that case,
+      // show every executor/time recorded for the same SKU, as requested for Tab 2.
+      const skuKey = normalizeExecutionMetadataKey(row?.sku);
+      const skuItems = index.bySku?.get(skuKey);
+      if (skuItems?.length) return summarizeExecutionMetadata(skuItems);
+
+      return { performedBy: "", inventoryTime: "" };
     }
     // --- END EXECUTION METADATA HELPERS ---
 
@@ -684,8 +733,8 @@
           return { sku, name, serial, qty, bin, uom, type };
         }).filter(r => r.sku);
 
-        // FILTER ERP ROWS: ONLY INCLUDE ROWS WHERE "Số lượng kiểm đếm" > 0!
-        const erpRows = erpRowsRaw.map(r => {
+        // Keep metadata from every KetQuaChiTiet row, including quantity 0 placeholders.
+        const erpSourceRows = erpRowsRaw.map(r => {
           const sku = normalizeSku(findVal(r, skuCandidates));
           const serial = findVal(r, serialCandidates, "", ['loại serial', 'loại hàng']);
           const bin = findVal(r, binCandidates);
@@ -694,7 +743,12 @@
           const performedBy = findVal(r, performerCandidates, "");
           const inventoryTime = formatInventoryTime(findVal(r, inventoryTimeCandidates, ""));
           return { sku, serial, bin, qty, performedBy, inventoryTime };
-        }).filter(r => r.sku && r.qty > 0); // EXCLUDE UNSCANNED PLACEHOLDERS WHERE QTY IS 0.00!
+        }).filter(r => r.sku);
+
+        // Only positive quantities take part in reconciliation, but all rows remain
+        // available above for showing executor metadata by Serial/LOT.
+        const erpRows = erpSourceRows.filter(r => r.qty > 0);
+        const executionMetadataIndex = buildExecutionMetadataIndex(erpSourceRows);
 
         if (stockRows.length === 0 || erpRows.length === 0) {
           alert("Không khớp được cột SKU/Mã sản phẩm trên 2 file. Vui lòng kiểm tra lại file!");
@@ -832,7 +886,8 @@
             
             // 1. Exact match by serial number
             sRows.forEach(r => {
-              const matchedIdx = eItems.findIndex(e => e.serial === r.stockSerial);
+              const stockSerialKey = normalizeExecutionMetadataKey(r.stockSerial);
+              const matchedIdx = eItems.findIndex(e => normalizeExecutionMetadataKey(e.serial) === stockSerialKey);
               if (r.stockSerial && matchedIdx !== -1) {
                 const matched = eItems.splice(matchedIdx, 1)[0];
                 r.scannedSerial = matched.serial;
@@ -888,8 +943,18 @@
           }
         });
 
+        const enrichedDetailRows = detailRows.map((row, index) => {
+          const sourceMetadata = resolveExecutionMetadata(executionMetadataIndex, row);
+          return {
+            ...row,
+            performedBy: row.performedBy || sourceMetadata.performedBy,
+            inventoryTime: row.inventoryTime || sourceMetadata.inventoryTime,
+            rowId: `${row.sku}::${index}`
+          };
+        });
+
         setDfCountL2(countL2Data);
-        setDfCheckDetail(detailRows.map((row, index) => ({ ...row, rowId: `${row.sku}::${index}` })));
+        setDfCheckDetail(enrichedDetailRows);
         setIsDirty(true);
         setActiveTab(1);
       };
