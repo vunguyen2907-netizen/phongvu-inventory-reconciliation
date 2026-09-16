@@ -1103,6 +1103,232 @@
       );
     }
 
+    function AccountManagementPanel({ callerRole, onClose }) {
+      const filters = [
+        { id: "pending", label: "Chờ duyệt" },
+        { id: "active", label: "Hoạt động" },
+        { id: "locked", label: "Đã khóa" },
+        { id: "deleted", label: "Đã xóa" }
+      ];
+      const [accounts, setAccounts] = useState([]);
+      const [filter, setFilter] = useState("pending");
+      const [aliases, setAliases] = useState({});
+      const [loading, setLoading] = useState(true);
+      const [busyId, setBusyId] = useState("");
+      const [error, setError] = useState("");
+      const [message, setMessage] = useState("");
+      const [lockTarget, setLockTarget] = useState(null);
+      const [lockReason, setLockReason] = useState("");
+      const [deleteTarget, setDeleteTarget] = useState(null);
+      const [deleteConfirmation, setDeleteConfirmation] = useState("");
+
+      const loadAccounts = async () => {
+        setLoading(true);
+        setError("");
+        try {
+          const client = await getReadySupabaseClient();
+          if (!client) throw new Error("Chưa cấu hình Supabase Auth.");
+          const { data, error } = await client
+            .from("profiles")
+            .select("id, email, full_name, erp_name, role, status, approved_at, locked_at, deleted_at, created_at")
+            .order("created_at", { ascending: true });
+          if (error) throw error;
+          const manageable = (data || []).filter(account => (
+            account.role !== "admin" && (callerRole === "admin" || account.role === "counter")
+          ));
+          setAccounts(manageable);
+          setAliases(previous => ({
+            ...Object.fromEntries(manageable.map(account => [account.id, account.erp_name || ""])),
+            ...previous
+          }));
+        } catch (actionError) {
+          setError(authErrorMessage(actionError, "Không thể tải danh sách tài khoản."));
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      useEffect(() => { loadAccounts(); }, []);
+
+      const runAction = async (account, successMessage, action) => {
+        setBusyId(account.id);
+        setError("");
+        setMessage("");
+        try {
+          const client = await getReadySupabaseClient();
+          if (!client) throw new Error("Chưa cấu hình Supabase Auth.");
+          await action(client);
+          setMessage(successMessage);
+          await loadAccounts();
+          return true;
+        } catch (actionError) {
+          setError(authErrorMessage(actionError, "Không thể cập nhật tài khoản."));
+          return false;
+        } finally {
+          setBusyId("");
+        }
+      };
+
+      const approve = async account => {
+        const erpName = String(aliases[account.id] || "").trim();
+        if (!erpName) {
+          setError("Tên nhân viên ERP không được để trống.");
+          return;
+        }
+        await runAction(account, `Đã phê duyệt ${account.full_name}.`, async client => {
+          const { error } = await client.rpc("manager_approve_profile", {
+            p_user_id: account.id,
+            p_erp_name: erpName
+          });
+          if (error) throw error;
+        });
+      };
+
+      const confirmLock = async () => {
+        const reason = lockReason.trim();
+        if (!lockTarget || !reason) return;
+        const succeeded = await runAction(lockTarget, `Đã khóa ${lockTarget.full_name}.`, async client => {
+          const { error } = await client.rpc("manager_lock_profile", {
+            p_user_id: lockTarget.id,
+            p_reason: reason
+          });
+          if (error) throw error;
+        });
+        if (succeeded) {
+          setLockTarget(null);
+          setLockReason("");
+        }
+      };
+
+      const invokeLifecycle = async (client, action, account) => {
+        const { data, error } = await client.functions.invoke("admin-user-lifecycle", {
+          body: { action, target_user_id: account.id }
+        });
+        if (error) throw error;
+        if (!data?.ok) throw new Error(data?.error || "Yêu cầu vòng đời tài khoản thất bại.");
+      };
+
+      const unlock = async account => {
+        await runAction(account, `Đã mở khóa ${account.full_name}.`, client => invokeLifecycle(client, "unlock_user", account));
+      };
+
+      const confirmDelete = async () => {
+        if (!deleteTarget || deleteConfirmation.trim().toLowerCase() !== deleteTarget.email.toLowerCase()) return;
+        const succeeded = await runAction(deleteTarget, `Đã xóa quyền đăng nhập của ${deleteTarget.full_name}.`, client => (
+          invokeLifecycle(client, "delete_user", deleteTarget)
+        ));
+        if (succeeded) {
+          setDeleteTarget(null);
+          setDeleteConfirmation("");
+        }
+      };
+
+      const visibleAccounts = accounts.filter(account => account.status === filter);
+
+      return (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 flex justify-end" role="dialog" aria-modal="true" aria-labelledby="account-management-title">
+          <section className="h-full w-full max-w-4xl bg-slate-50 shadow-2xl flex flex-col">
+            <header className="bg-white border-b border-slate-200 px-6 py-5 flex items-start justify-between gap-4">
+              <div>
+                <h2 id="account-management-title" className="text-xl font-extrabold text-slate-900">Quản lý tài khoản</h2>
+                <p className="mt-1 text-sm text-slate-500">Phê duyệt và vô hiệu hóa tài khoản kiểm đếm. Lịch sử đã hoàn tất luôn được giữ lại.</p>
+              </div>
+              <button type="button" onClick={onClose} aria-label="Đóng quản lý tài khoản" className="w-9 h-9 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold">×</button>
+            </header>
+
+            <div className="px-6 pt-5">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2" role="group" aria-label="Lọc trạng thái tài khoản">
+                {filters.map(item => (
+                  <button key={item.id} type="button" aria-label={item.label} onClick={() => setFilter(item.id)} className={`rounded-xl border px-3 py-2.5 text-sm font-bold ${filter === item.id ? 'border-brand-600 bg-brand-600 text-white' : 'border-slate-200 bg-white text-slate-600 hover:border-brand-300'}`}>
+                    {item.label} <span className="ml-1 opacity-75">{accounts.filter(account => account.status === item.id).length}</span>
+                  </button>
+                ))}
+              </div>
+              {error && <p role="alert" className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">{error}</p>}
+              {message && <p role="status" className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">{message}</p>}
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-6">
+              {loading ? (
+                <p className="text-sm text-slate-500">Đang tải tài khoản…</p>
+              ) : visibleAccounts.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500">Không có tài khoản trong nhóm này.</div>
+              ) : (
+                <div className="space-y-3">
+                  {visibleAccounts.map(account => (
+                    <article key={account.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                        <div className="min-w-0">
+                          <h3 className="font-bold text-slate-900">{account.full_name}</h3>
+                          <p className="text-sm text-slate-500 break-all">{account.email}</p>
+                          <p className="mt-1 text-xs text-slate-400">{account.role} · {account.erp_name || "Chưa có ERP"}</p>
+                        </div>
+                        {account.status === "pending" && (
+                          <div className="flex flex-col sm:flex-row gap-2 sm:items-end">
+                            <label className="text-xs font-bold text-slate-600">
+                              Tên nhân viên ERP
+                              <input aria-label={`ERP cho ${account.full_name}`} value={aliases[account.id] || ""} onChange={event => setAliases(previous => ({ ...previous, [account.id]: event.target.value }))} className="mt-1 block w-full sm:w-56 rounded-lg border border-slate-300 px-3 py-2 text-sm font-normal" />
+                            </label>
+                            <button type="button" aria-label={`Phê duyệt ${account.full_name}`} onClick={() => approve(account)} disabled={busyId === account.id} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">Phê duyệt</button>
+                            <button type="button" aria-label={`Xóa ${account.full_name}`} onClick={() => { setDeleteTarget(account); setDeleteConfirmation(""); }} className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-bold text-white">Xóa</button>
+                          </div>
+                        )}
+                        {account.status === "active" && (
+                          <div className="flex gap-2">
+                            <button type="button" aria-label={`Khóa ${account.full_name}`} onClick={() => { setLockTarget(account); setLockReason(""); }} className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-bold text-white">Khóa</button>
+                            <button type="button" aria-label={`Xóa ${account.full_name}`} onClick={() => { setDeleteTarget(account); setDeleteConfirmation(""); }} className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-bold text-white">Xóa</button>
+                          </div>
+                        )}
+                        {account.status === "locked" && (
+                          <div className="flex gap-2">
+                            <button type="button" aria-label={`Mở khóa ${account.full_name}`} onClick={() => unlock(account)} disabled={busyId === account.id} className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">Mở khóa</button>
+                            <button type="button" aria-label={`Xóa ${account.full_name}`} onClick={() => { setDeleteTarget(account); setDeleteConfirmation(""); }} className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-bold text-white">Xóa</button>
+                          </div>
+                        )}
+                        {account.status === "deleted" && <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-500">Đã vô hiệu hóa</span>}
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+
+          {lockTarget && (
+            <div className="fixed inset-0 z-[60] bg-slate-950/50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="lock-account-title">
+              <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
+                <h3 id="lock-account-title" className="text-lg font-extrabold text-slate-900">Khóa tài khoản</h3>
+                <p className="mt-1 text-sm text-slate-500">Công việc chưa hoàn tất của {lockTarget.full_name} sẽ trở về trạng thái chưa phân công.</p>
+                <label className="mt-4 block text-sm font-bold text-slate-700">Lý do khóa
+                  <textarea aria-label="Lý do khóa" rows="3" value={lockReason} onChange={event => setLockReason(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 font-normal" />
+                </label>
+                <div className="mt-4 flex justify-end gap-2">
+                  <button type="button" onClick={() => setLockTarget(null)} className="rounded-lg bg-slate-100 px-4 py-2 text-sm font-bold text-slate-700">Hủy</button>
+                  <button type="button" onClick={confirmLock} disabled={!lockReason.trim() || busyId === lockTarget.id} className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">Xác nhận khóa</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {deleteTarget && (
+            <div className="fixed inset-0 z-[60] bg-slate-950/50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="delete-account-title">
+              <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl">
+                <h3 id="delete-account-title" className="text-lg font-extrabold text-rose-700">Xóa quyền đăng nhập</h3>
+                <p className="mt-2 text-sm text-slate-600">Nhập <strong>{deleteTarget.email}</strong> để xác nhận. Hồ sơ và lịch sử kiểm đếm không bị xóa vật lý.</p>
+                <label className="mt-4 block text-sm font-bold text-slate-700">Nhập email để xác nhận
+                  <input aria-label="Nhập email để xác nhận" value={deleteConfirmation} onChange={event => setDeleteConfirmation(event.target.value)} className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 font-normal" />
+                </label>
+                <div className="mt-4 flex justify-end gap-2">
+                  <button type="button" onClick={() => setDeleteTarget(null)} className="rounded-lg bg-slate-100 px-4 py-2 text-sm font-bold text-slate-700">Hủy</button>
+                  <button type="button" onClick={confirmDelete} disabled={deleteConfirmation.trim().toLowerCase() !== deleteTarget.email.toLowerCase() || busyId === deleteTarget.id} className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">Xác nhận xóa</button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
     // --- MAIN REACT SPA COMPONENT ---
     function ApplicationShell({ session, profile, legacyMode = false }) {
       const isManager = legacyMode || profile?.role === "manager" || profile?.role === "admin";
@@ -1118,6 +1344,7 @@
       const [authActionError, setAuthActionError] = useState("");
       const [authActionMessage, setAuthActionMessage] = useState("");
       const [authActionPending, setAuthActionPending] = useState(false);
+      const [accountPanelOpen, setAccountPanelOpen] = useState(false);
 
       // Raw Uploaded Files States
       const [rawStockData, setRawStockData] = useState([]);
@@ -2398,6 +2625,15 @@
                 </div>
               </div>
 
+              {/* ACCOUNT MANAGEMENT */}
+              {!legacyMode && (
+                <div className="mb-5 pt-4 border-t border-slate-800">
+                  <button type="button" onClick={() => setAccountPanelOpen(true)} className="w-full rounded-lg bg-slate-800 hover:bg-slate-700 px-3 py-2.5 text-left text-sm font-bold text-slate-100 transition">
+                    👥 Quản lý tài khoản
+                  </button>
+                </div>
+              )}
+
               {/* MONTHLY ARCHIVES SECTION */}
               <div className="pt-4 border-t border-slate-800 space-y-3">
                 <label className="text-xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
@@ -3220,6 +3456,10 @@
                 </div>
               </div>
             </div>
+          )}
+
+          {accountPanelOpen && !legacyMode && (
+            <AccountManagementPanel callerRole={profile?.role} onClose={() => setAccountPanelOpen(false)} />
           )}
 
           {pendingClearSerial && (

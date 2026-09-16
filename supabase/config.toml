@@ -47,6 +47,9 @@ enable_signup = true
 double_confirm_changes = true
 enable_confirmations = false
 
+[functions.admin-user-lifecycle]
+verify_jwt = true
+
 # Standard CLI paths: migrations in supabase/migrations; pgTAP in supabase/tests.
 # Hand-authored because this host has no CLI. Validate with `supabase start`
 # on a disposable local environment; these settings do not alter hosted Auth.

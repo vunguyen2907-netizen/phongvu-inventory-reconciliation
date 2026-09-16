@@ -1,11 +1,17 @@
 """Static deployment contracts only; these do not replace the pgTAP database gate."""
 from pathlib import Path
 import re
-import tomllib
 import unittest
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.9 remains supported by the application.
+    tomllib = None
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "supabase/migrations/202609160001_secure_second_count.sql"
+LIFECYCLE_FUNCTION = ROOT / "supabase/functions/admin-user-lifecycle/index.ts"
+INDEX_HTML = ROOT / "index.html"
 TABLES = ("profiles", "recount_batches", "recount_tasks", "recount_task_secrets",
           "recount_serial_evidence", "recount_attempts", "recount_code_resolutions", "audit_logs")
 
@@ -32,12 +38,21 @@ class SecureRecountSchemaContractTests(unittest.TestCase):
     def test_local_project_uses_standard_supabase_layout(self):
         config = ROOT / "supabase/config.toml"
         self.assertTrue(config.exists(), "local Supabase config is missing")
-        with config.open("rb") as source:
-            settings = tomllib.load(source)
-        self.assertEqual(settings["db"]["major_version"], 15)
-        self.assertTrue(settings["db"]["migrations"]["enabled"])
-        self.assertNotIn("private", settings["api"]["schemas"])
-        self.assertTrue(settings["auth"]["enable_anonymous_sign_ins"])
+        if tomllib is None:
+            source = config.read_text()
+            self.assertRegex(source, r"(?m)^major_version\s*=\s*15$")
+            self.assertRegex(source, r"(?ms)^\[db\.migrations\].*?^enabled\s*=\s*true$")
+            self.assertNotRegex(source, r"(?m)^schemas\s*=.*\bprivate\b")
+            self.assertRegex(source, r"(?m)^enable_anonymous_sign_ins\s*=\s*true$")
+            self.assertRegex(source, r"(?ms)^\[functions\.admin-user-lifecycle\].*?^verify_jwt\s*=\s*true$")
+        else:
+            with config.open("rb") as source:
+                settings = tomllib.load(source)
+            self.assertEqual(settings["db"]["major_version"], 15)
+            self.assertTrue(settings["db"]["migrations"]["enabled"])
+            self.assertNotIn("private", settings["api"]["schemas"])
+            self.assertTrue(settings["auth"]["enable_anonymous_sign_ins"])
+            self.assertTrue(settings["functions"]["admin-user-lifecycle"]["verify_jwt"])
 
     def test_anonymous_auth_bypasses_named_profile_creation(self):
         sql = self.migration().lower()
@@ -109,6 +124,49 @@ class SecureRecountSchemaContractTests(unittest.TestCase):
         for name, body in definers:
             self.assertIn("set search_path = ''", body, name)
             self.assertRegex(sql, rf"revoke all on function {re.escape(name)}\([^;]*\) from public, anon, authenticated;")
+
+    def test_account_lifecycle_rpcs_are_definer_only_and_client_allowlisted(self):
+        sql = self.migration().lower()
+        for name, signature in (
+            ("manager_approve_profile", "uuid, text"),
+            ("manager_lock_profile", "uuid, text"),
+            ("manager_unlock_profile", "uuid"),
+            ("manager_delete_profile", "uuid"),
+        ):
+            with self.subTest(name=name):
+                self.assertIn(f"function public.{name}", sql)
+                body = sql.split(f"function public.{name}", 1)[1].split("$$;", 1)[0]
+                self.assertIn("security definer", body)
+                self.assertIn("set search_path = ''", body)
+                self.assertIn(
+                    f"revoke all on function public.{name}({signature}) from public, anon, authenticated;",
+                    sql,
+                )
+                self.assertIn(
+                    f"grant execute on function public.{name}({signature}) to authenticated;",
+                    sql,
+                )
+
+    def test_account_lifecycle_edge_contract_preserves_the_auth_user_row(self):
+        self.assertTrue(LIFECYCLE_FUNCTION.exists(), "account lifecycle Edge Function is missing")
+        source = LIFECYCLE_FUNCTION.read_text()
+        self.assertIn('case "delete_user"', source)
+        self.assertIn('case "unlock_user"', source)
+        self.assertIn("auth.getUser", source)
+        self.assertIn("manager_delete_profile", source)
+        self.assertIn("manager_unlock_profile", source)
+        self.assertIn('ban_duration: INDEFINITE_BAN_DURATION', source)
+        self.assertNotIn(".deleteUser(", source)
+
+    def test_manager_account_panel_exposes_all_lifecycle_controls_without_service_credentials(self):
+        source = INDEX_HTML.read_text()
+        for label in ("Quản lý tài khoản", "Chờ duyệt", "Hoạt động", "Đã khóa", "Đã xóa",
+                      "Lý do khóa", "Nhập email để xác nhận"):
+            self.assertIn(label, source)
+        self.assertIn('rpc("manager_approve_profile"', source)
+        self.assertIn('rpc("manager_lock_profile"', source)
+        self.assertIn('functions.invoke("admin-user-lifecycle"', source)
+        self.assertNotIn("SUPABASE_SERVICE_ROLE_KEY", source)
 
     def test_consolidated_schema_matches_migration_and_preserves_legacy(self):
         sql = self.migration()

@@ -409,6 +409,209 @@ begin
 end;
 $$;
 
+create or replace function public.manager_approve_profile(p_user_id uuid, p_erp_name text)
+returns jsonb
+language plpgsql security definer
+set search_path = ''
+as $$
+declare
+  v_actor public.profiles%rowtype;
+  v_target public.profiles%rowtype;
+  v_erp_name text := trim(coalesce(p_erp_name, ''));
+  v_erp_name_normalized text := public.normalize_inventory_code(p_erp_name);
+begin
+  lock table public.profiles in share row exclusive mode;
+  select * into v_actor from public.profiles where id = (select auth.uid()) for update;
+  if not found or v_actor.status <> 'active' or v_actor.role not in ('manager', 'admin') then
+    raise exception 'Active manager or admin profile required' using errcode = '42501';
+  end if;
+
+  select * into v_target from public.profiles where id = p_user_id for update;
+  if not found then
+    raise exception 'Target profile not found' using errcode = 'P0002';
+  end if;
+  if v_target.role = 'admin' or (v_actor.role = 'manager' and v_target.role <> 'counter') then
+    raise exception 'Caller cannot manage this profile role' using errcode = '42501';
+  end if;
+  if v_target.status <> 'pending' then
+    raise exception 'Only pending profiles can be approved' using errcode = '55000';
+  end if;
+  if v_erp_name = '' or v_erp_name_normalized = '' then
+    raise exception 'ERP alias is required' using errcode = '22023';
+  end if;
+  if exists (
+    select 1 from public.profiles p
+    where p.id <> p_user_id
+      and p.status <> 'deleted'
+      and p.erp_name_normalized = v_erp_name_normalized
+  ) then
+    raise exception 'ERP alias is already assigned' using errcode = '23505';
+  end if;
+
+  update public.profiles
+  set erp_name = v_erp_name,
+      erp_name_normalized = v_erp_name_normalized,
+      status = 'active',
+      approved_by = v_actor.id,
+      approved_at = now(),
+      locked_at = null,
+      deleted_at = null
+  where id = p_user_id;
+
+  insert into public.audit_logs (
+    actor_user_id, actor_name_snapshot, action, entity_type, entity_id, before_data, after_data
+  ) values (
+    v_actor.id, v_actor.full_name, 'approve_profile', 'profile', p_user_id::text,
+    jsonb_build_object('role', v_target.role, 'status', v_target.status, 'erp_name', v_target.erp_name),
+    jsonb_build_object('role', v_target.role, 'status', 'active', 'erp_name', v_erp_name)
+  );
+  return jsonb_build_object('user_id', p_user_id, 'status', 'active', 'erp_name', v_erp_name);
+end;
+$$;
+
+create or replace function public.manager_lock_profile(p_user_id uuid, p_reason text)
+returns jsonb
+language plpgsql security definer
+set search_path = ''
+as $$
+declare
+  v_actor public.profiles%rowtype;
+  v_target public.profiles%rowtype;
+  v_reason text := trim(coalesce(p_reason, ''));
+  v_unassigned integer := 0;
+begin
+  select * into v_actor from public.profiles where id = (select auth.uid()) for update;
+  if not found or v_actor.status <> 'active' or v_actor.role not in ('manager', 'admin') then
+    raise exception 'Active manager or admin profile required' using errcode = '42501';
+  end if;
+  select * into v_target from public.profiles where id = p_user_id for update;
+  if not found then
+    raise exception 'Target profile not found' using errcode = 'P0002';
+  end if;
+  if v_target.role = 'admin' or (v_actor.role = 'manager' and v_target.role <> 'counter') then
+    raise exception 'Caller cannot manage this profile role' using errcode = '42501';
+  end if;
+  if v_target.status <> 'active' then
+    raise exception 'Only active profiles can be locked' using errcode = '55000';
+  end if;
+  if v_reason = '' then
+    raise exception 'Lock reason is required' using errcode = '22023';
+  end if;
+
+  update public.profiles set status = 'locked', locked_at = now() where id = p_user_id;
+  update public.recount_tasks
+  set assigned_user_id = null,
+      assigned_name_snapshot = null,
+      state = 'unassigned',
+      resolution = null,
+      reason = null,
+      completed_by = null,
+      completed_by_name_snapshot = null,
+      completed_at = null,
+      version = version + 1
+  where assigned_user_id = p_user_id and state <> 'completed';
+  get diagnostics v_unassigned = row_count;
+
+  insert into public.audit_logs (
+    actor_user_id, actor_name_snapshot, action, entity_type, entity_id, before_data, after_data, reason
+  ) values (
+    v_actor.id, v_actor.full_name, 'lock_profile', 'profile', p_user_id::text,
+    jsonb_build_object('role', v_target.role, 'status', v_target.status),
+    jsonb_build_object('role', v_target.role, 'status', 'locked', 'unassigned_tasks', v_unassigned),
+    v_reason
+  );
+  return jsonb_build_object('user_id', p_user_id, 'status', 'locked', 'unassigned_tasks', v_unassigned);
+end;
+$$;
+
+create or replace function public.manager_unlock_profile(p_user_id uuid)
+returns jsonb
+language plpgsql security definer
+set search_path = ''
+as $$
+declare
+  v_actor public.profiles%rowtype;
+  v_target public.profiles%rowtype;
+begin
+  select * into v_actor from public.profiles where id = (select auth.uid()) for update;
+  if not found or v_actor.status <> 'active' or v_actor.role not in ('manager', 'admin') then
+    raise exception 'Active manager or admin profile required' using errcode = '42501';
+  end if;
+  select * into v_target from public.profiles where id = p_user_id for update;
+  if not found then
+    raise exception 'Target profile not found' using errcode = 'P0002';
+  end if;
+  if v_target.role = 'admin' or (v_actor.role = 'manager' and v_target.role <> 'counter') then
+    raise exception 'Caller cannot manage this profile role' using errcode = '42501';
+  end if;
+  if v_target.status <> 'locked' then
+    raise exception 'Only locked profiles can be unlocked' using errcode = '55000';
+  end if;
+
+  update public.profiles set status = 'active', locked_at = null where id = p_user_id;
+  insert into public.audit_logs (
+    actor_user_id, actor_name_snapshot, action, entity_type, entity_id, before_data, after_data
+  ) values (
+    v_actor.id, v_actor.full_name, 'unlock_profile', 'profile', p_user_id::text,
+    jsonb_build_object('role', v_target.role, 'status', v_target.status),
+    jsonb_build_object('role', v_target.role, 'status', 'active')
+  );
+  return jsonb_build_object('user_id', p_user_id, 'status', 'active');
+end;
+$$;
+
+create or replace function public.manager_delete_profile(p_user_id uuid)
+returns jsonb
+language plpgsql security definer
+set search_path = ''
+as $$
+declare
+  v_actor public.profiles%rowtype;
+  v_target public.profiles%rowtype;
+  v_unassigned integer := 0;
+begin
+  select * into v_actor from public.profiles where id = (select auth.uid()) for update;
+  if not found or v_actor.status <> 'active' or v_actor.role not in ('manager', 'admin') then
+    raise exception 'Active manager or admin profile required' using errcode = '42501';
+  end if;
+  select * into v_target from public.profiles where id = p_user_id for update;
+  if not found then
+    raise exception 'Target profile not found' using errcode = 'P0002';
+  end if;
+  if v_target.role = 'admin' or (v_actor.role = 'manager' and v_target.role <> 'counter') then
+    raise exception 'Caller cannot manage this profile role' using errcode = '42501';
+  end if;
+  if v_target.status = 'deleted' then
+    return jsonb_build_object('user_id', p_user_id, 'status', 'deleted', 'already_deleted', true);
+  end if;
+
+  update public.profiles
+  set status = 'deleted', deleted_at = now(), locked_at = coalesce(locked_at, now())
+  where id = p_user_id;
+  update public.recount_tasks
+  set assigned_user_id = null,
+      assigned_name_snapshot = null,
+      state = 'unassigned',
+      resolution = null,
+      reason = null,
+      completed_by = null,
+      completed_by_name_snapshot = null,
+      completed_at = null,
+      version = version + 1
+  where assigned_user_id = p_user_id and state <> 'completed';
+  get diagnostics v_unassigned = row_count;
+
+  insert into public.audit_logs (
+    actor_user_id, actor_name_snapshot, action, entity_type, entity_id, before_data, after_data
+  ) values (
+    v_actor.id, v_actor.full_name, 'delete_profile', 'profile', p_user_id::text,
+    jsonb_build_object('role', v_target.role, 'status', v_target.status),
+    jsonb_build_object('role', v_target.role, 'status', 'deleted', 'unassigned_tasks', v_unassigned)
+  );
+  return jsonb_build_object('user_id', p_user_id, 'status', 'deleted', 'unassigned_tasks', v_unassigned);
+end;
+$$;
+
 revoke all on function public.normalize_inventory_code(text) from public, anon, authenticated;
 revoke all on function public.mask_inventory_code(text, integer, integer) from public, anon, authenticated;
 revoke all on function public.current_profile_role() from public, anon, authenticated;
@@ -416,8 +619,16 @@ revoke all on function public.is_active_profile() from public, anon, authenticat
 revoke all on function private.handle_registered_user() from public, anon, authenticated;
 revoke all on function private.set_recount_updated_at() from public, anon, authenticated;
 revoke all on function private.bootstrap_initial_admin(uuid) from public, anon, authenticated;
+revoke all on function public.manager_approve_profile(uuid, text) from public, anon, authenticated;
+revoke all on function public.manager_lock_profile(uuid, text) from public, anon, authenticated;
+revoke all on function public.manager_unlock_profile(uuid) from public, anon, authenticated;
+revoke all on function public.manager_delete_profile(uuid) from public, anon, authenticated;
 grant execute on function public.normalize_inventory_code(text) to authenticated;
 grant execute on function public.mask_inventory_code(text, integer, integer) to authenticated;
 grant execute on function public.current_profile_role() to authenticated;
 grant execute on function public.is_active_profile() to authenticated;
+grant execute on function public.manager_approve_profile(uuid, text) to authenticated;
+grant execute on function public.manager_lock_profile(uuid, text) to authenticated;
+grant execute on function public.manager_unlock_profile(uuid) to authenticated;
+grant execute on function public.manager_delete_profile(uuid) to authenticated;
 -- Bootstrap is SQL-Editor/operator-only. Never expose private through the Data API.

@@ -77,6 +77,16 @@ select ('40000000-0000-0000-0000-' || lpad(i::text, 12, '0'))::uuid,
 from generate_series(1, 5) i;
 insert into public.recount_tasks(id, batch_id, source_detail_row_id, sku, product_name, first_count_status, task_type, masked_reference, state)
 values ('40000000-0000-0000-0000-000000000006', '30000000-0000-0000-0000-000000000001', 'row-unassigned', 'SKU1', 'Product', 'Bắn thiếu (Chưa quét)', 'missing_serial', '********AB12', 'unassigned');
+insert into public.recount_tasks(
+  id, batch_id, source_detail_row_id, sku, product_name, first_count_status,
+  assigned_user_id, assigned_name_snapshot, task_type, masked_reference, state,
+  resolution, completed_by, completed_by_name_snapshot, completed_at
+) values (
+  '40000000-0000-0000-0000-000000000007', '30000000-0000-0000-0000-000000000001',
+  'row-completed', 'SKU1', 'Product', 'Bắn thiếu (Chưa quét)',
+  '10000000-0000-0000-0000-000000000003', 'User 3', 'missing_serial', '********AB12',
+  'completed', 'matched', '10000000-0000-0000-0000-000000000003', 'User 3', now()
+);
 insert into public.recount_task_secrets(task_id, expected_serial_normalized)
 select id, 'SECRET12AB12' from public.recount_tasks;
 insert into public.recount_serial_evidence(batch_id, source_detail_row_id, sku, serial_normalized)
@@ -142,7 +152,7 @@ select ok(not public.is_active_profile(), 'deleted profile is inactive');
 select throws_ok($$select expected_serial_normalized from public.recount_task_secrets$$, '42501');
 
 select set_config('request.jwt.claims', '{"sub":"10000000-0000-0000-0000-000000000006","role":"authenticated"}', true);
-select is((select count(*) from public.recount_tasks), 6::bigint, 'active manager can read all safe tasks including unassigned');
+select is((select count(*) from public.recount_tasks), 7::bigint, 'active manager can read all safe tasks including unassigned');
 select is((select count(*) from public.profiles), 7::bigint, 'active manager can read account list');
 select is((select count(*) from public.audit_logs), 1::bigint, 'active manager can read audit');
 select is((select count(*) from public.inventory_sessions), 1::bigint, 'active manager can read existing legacy sessions');
@@ -152,12 +162,78 @@ select throws_ok($$select expected_serial_normalized from public.recount_task_se
 select throws_ok($$select serial_normalized from public.recount_serial_evidence$$, '42501');
 select throws_ok($$update public.profiles set role = 'admin'$$, '42501');
 select set_config('request.jwt.claims', '{"sub":"10000000-0000-0000-0000-000000000007","role":"authenticated"}', true);
-select is((select count(*) from public.recount_tasks), 6::bigint, 'active admin can read all safe tasks including unassigned');
+select is((select count(*) from public.recount_tasks), 7::bigint, 'active admin can read all safe tasks including unassigned');
 select is((select count(*) from public.profiles), 7::bigint, 'active admin can read account list');
 select is((select count(*) from public.inventory_sessions), 1::bigint, 'active admin can read existing legacy sessions');
 select is((select count(*) from public.monthly_archives), 1::bigint, 'active admin can read existing legacy archives');
 select throws_ok($$select expected_serial_normalized from public.recount_task_secrets$$, '42501');
 select throws_ok($$select serial_normalized from public.recount_serial_evidence$$, '42501');
+
+-- Account lifecycle RPCs authorize from active profiles, preserve roles, and update
+-- profile/task/audit state in one database transaction.
+select set_config('request.jwt.claims', '{"sub":"10000000-0000-0000-0000-000000000001","role":"authenticated"}', true);
+select throws_ok(
+  $$select public.manager_approve_profile('10000000-0000-0000-0000-000000000003', 'ERP NEW')$$,
+  '42501',
+  'counter cannot approve a profile'
+);
+
+select set_config('request.jwt.claims', '{"sub":"10000000-0000-0000-0000-000000000006","role":"authenticated"}', true);
+select throws_ok(
+  $$select public.manager_approve_profile('10000000-0000-0000-0000-000000000003', ' ERP 1 ')$$,
+  '23505',
+  'approval rejects a normalized ERP alias already held by a non-deleted profile'
+);
+select lives_ok(
+  $$select public.manager_approve_profile('10000000-0000-0000-0000-000000000003', E' ERP\tNEW ')$$,
+  'manager approves a pending counter with an editable ERP alias'
+);
+select is(
+  (select role::text || '/' || status::text || '/' || erp_name_normalized from public.profiles where id = '10000000-0000-0000-0000-000000000003'),
+  'counter/active/ERPNEW',
+  'approval preserves the counter role and stores a normalized unique alias'
+);
+select is(
+  (select approved_by from public.profiles where id = '10000000-0000-0000-0000-000000000003'),
+  '10000000-0000-0000-0000-000000000006'::uuid,
+  'approval records the manager'
+);
+select is((select count(*) from public.audit_logs where action = 'approve_profile' and entity_id = '10000000-0000-0000-0000-000000000003'), 1::bigint, 'approval is audited');
+select throws_ok(
+  $$select public.manager_approve_profile('10000000-0000-0000-0000-000000000007', 'ADMIN')$$,
+  '42501',
+  'manager cannot operate on an admin'
+);
+
+update public.recount_tasks
+set state = 'in_progress', assigned_name_snapshot = 'User 3'
+where id = '40000000-0000-0000-0000-000000000003';
+select throws_ok(
+  $$select public.manager_lock_profile('10000000-0000-0000-0000-000000000003', '   ')$$,
+  '22023',
+  'locking requires a reason'
+);
+select lives_ok(
+  $$select public.manager_lock_profile('10000000-0000-0000-0000-000000000003', 'Nghỉ việc')$$,
+  'manager locks a counter'
+);
+select is((select status::text from public.profiles where id = '10000000-0000-0000-0000-000000000003'), 'locked', 'lock changes profile status');
+select is(
+  (select state::text || '/' || coalesce(assigned_user_id::text, 'none') || '/' || coalesce(assigned_name_snapshot, 'none') from public.recount_tasks where id = '40000000-0000-0000-0000-000000000003'),
+  'unassigned/none/none',
+  'locking atomically releases incomplete work'
+);
+select is(
+  (select state::text || '/' || assigned_user_id::text || '/' || assigned_name_snapshot || '/' || completed_by_name_snapshot from public.recount_tasks where id = '40000000-0000-0000-0000-000000000007'),
+  'completed/10000000-0000-0000-0000-000000000003/User 3/User 3',
+  'locking retains completed assignment and attribution snapshots'
+);
+select is((select count(*) from public.audit_logs where action = 'lock_profile' and entity_id = '10000000-0000-0000-0000-000000000003' and reason = 'Nghỉ việc'), 1::bigint, 'locking is audited with its reason');
+select throws_ok(
+  $$select public.manager_lock_profile('10000000-0000-0000-0000-000000000007', 'forbidden')$$,
+  '42501',
+  'manager cannot lock an admin'
+);
 
 reset role;
 update public.profiles set status = 'locked' where role in ('manager', 'admin');
@@ -167,6 +243,11 @@ select is((select count(*) from public.recount_tasks), 0::bigint, 'locked manage
 select is((select count(*) from public.audit_logs), 0::bigint, 'locked manager loses audit access');
 select is((select count(*) from public.inventory_sessions), 0::bigint, 'locked manager loses legacy session access');
 select is((select count(*) from public.monthly_archives), 0::bigint, 'locked manager loses legacy archive access');
+select throws_ok(
+  $$select public.manager_lock_profile('10000000-0000-0000-0000-000000000001', 'forbidden while inactive')$$,
+  '42501',
+  'locked manager cannot call lifecycle RPCs'
+);
 select set_config('request.jwt.claims', '{"sub":"10000000-0000-0000-0000-000000000007","role":"authenticated"}', true);
 select is((select count(*) from public.recount_tasks), 0::bigint, 'locked admin loses all task access');
 select set_config('request.jwt.claims', '{"sub":"99999999-0000-0000-0000-000000000000","role":"authenticated","user_metadata":{"role":"admin","status":"active"}}', true);

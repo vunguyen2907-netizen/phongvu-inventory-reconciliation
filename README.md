@@ -76,6 +76,34 @@ Sau khi các tài khoản thí điểm đã được phê duyệt và kiểm tra
 2. Vào **Authentication > Providers > Anonymous Sign-Ins** và tắt Anonymous
    Sign-Ins.
 
+## Quản lý vòng đời tài khoản
+
+Tài khoản tự đăng ký bắt đầu ở trạng thái `pending`. Quản lý mở
+**Quản lý tài khoản** trong thanh bên để:
+
+- phê duyệt với tên nhân viên ERP có thể chỉnh sửa;
+- khóa tài khoản kèm lý do, đồng thời trả công việc chưa hoàn tất
+  về trạng thái chưa phân công;
+- mở khóa; hoặc
+- xóa quyền đăng nhập sau khi nhập lại email để xác nhận.
+
+Xóa tài khoản là thao tác xóa mềm: hồ sơ được đánh dấu
+`deleted` và Supabase Auth bị cấm đăng nhập dài hạn. Dòng `auth.users`,
+kết quả hoàn tất, snapshot người kiểm đếm và audit được giữ lại.
+Edge Function không gọi API xóa Auth vì các khóa ngoại lịch sử không
+dùng cascade.
+
+Triển khai Edge Function sau khi áp dụng migration:
+
+```bash
+supabase functions deploy admin-user-lifecycle --verify-jwt
+```
+
+Thiết lập `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` (hoặc
+`SUPABASE_ANON_KEY`) và `SUPABASE_SERVICE_ROLE_KEY` là secret phía server
+của Edge Function. Service-role key chỉ được dùng bên trong function, không
+được đưa vào `index.html`, biến trình duyệt hay local storage.
+
 ## Lịch sử và bảo mật
 
 Mỗi đợt kiểm kê được lưu trong bảng `inventory_sessions` dưới dạng JSONB; sidebar cho phép tạo, lưu và mở lại các đợt đã có. Hai file dữ liệu nguồn (tồn kho và ERP) của từng đợt cũng được lưu một lần vào bucket private `inventory-source-files` trên Supabase Storage.

@@ -148,7 +148,9 @@ def _mock_supabase_script(session, profile, legacy=False, behavior=None):
             order: async () => ({{
               data: table === "inventory_sessions"
                 ? [{{ id: "saved-1", session_name: "Saved session", updated_at: "2026-09-16T00:00:00Z" }}]
-                : [{{ id: "archive-1", year_month: "2026-09", session_name: "Saved archive", updated_at: "2026-09-16T00:00:00Z" }}],
+                : table === "profiles"
+                  ? (fixture.behavior.accountProfiles || [])
+                  : [{{ id: "archive-1", year_month: "2026-09", session_name: "Saved archive", updated_at: "2026-09-16T00:00:00Z" }}],
               error: null
             }}),
             maybeSingle: async () => {{
@@ -166,6 +168,16 @@ def _mock_supabase_script(session, profile, legacy=False, behavior=None):
             single: async () => ({{ data: fixture.profile, error: null }})
           }};
           return query;
+        }},
+        rpc: async (name, payload) => {{
+          record("rpc", {{ name, payload }});
+          return {{ data: {{}}, error: null }};
+        }},
+        functions: {{
+          invoke: async (name, options) => {{
+            record("function.invoke", {{ name, body: options?.body }});
+            return {{ data: {{ ok: true }}, error: null }};
+          }}
         }}
       }};
       window.__TRIGGER_AUTH__ = async (event, nextSession = fixture.session) => {{
@@ -350,6 +362,62 @@ class AuthUiTest(unittest.TestCase):
                 page = self.open_auth_page(session, profile)
                 tabs = page.get_by_role("navigation").get_by_role("button").all_inner_texts()
                 self.assertEqual(tabs, MANAGER_TABS)
+
+    def test_manager_account_panel_approves_with_an_edited_erp_alias(self):
+        session = {"user": {"id": "manager-user", "email": "manager@example.com"}}
+        profile = {"id": "manager-user", "email": "manager@example.com", "full_name": "Manager User", "erp_name": "ERP Manager", "role": "manager", "status": "active"}
+        pending = {"id": "pending-user", "email": "pending@example.com", "full_name": "Pending User", "erp_name": "Old ERP", "role": "counter", "status": "pending"}
+        page = self.open_auth_page(session, profile, behavior={"accountProfiles": [pending]})
+
+        page.get_by_role("button", name="Quản lý tài khoản").click()
+        page.get_by_role("heading", name="Quản lý tài khoản").wait_for()
+        alias = page.get_by_label("ERP cho Pending User")
+        alias.fill("ERP NEW")
+        page.get_by_role("button", name="Phê duyệt Pending User").click()
+
+        call = page.evaluate("window.__AUTH_CALLS__.find(call => call.method === 'rpc')")
+        self.assertEqual(call["payload"], {"name": "manager_approve_profile", "payload": {"p_user_id": "pending-user", "p_erp_name": "ERP NEW"}})
+
+    def test_manager_account_panel_can_delete_a_pending_registration_with_typed_confirmation(self):
+        session = {"user": {"id": "manager-user", "email": "manager@example.com"}}
+        profile = {"id": "manager-user", "email": "manager@example.com", "full_name": "Manager User", "erp_name": "ERP Manager", "role": "manager", "status": "active"}
+        pending = {"id": "pending-user", "email": "pending@example.com", "full_name": "Pending User", "erp_name": "Old ERP", "role": "counter", "status": "pending"}
+        page = self.open_auth_page(session, profile, behavior={"accountProfiles": [pending]})
+        page.get_by_role("button", name="Quản lý tài khoản").click()
+
+        page.get_by_role("button", name="Xóa Pending User").click()
+        page.get_by_label("Nhập email để xác nhận").fill("pending@example.com")
+        page.get_by_role("button", name="Xác nhận xóa").click()
+        call = page.evaluate("window.__AUTH_CALLS__.find(call => call.method === 'function.invoke')")
+        self.assertEqual(call["payload"]["body"], {"action": "delete_user", "target_user_id": "pending-user"})
+
+    def test_manager_account_panel_locks_unlocks_and_requires_typed_delete_confirmation(self):
+        session = {"user": {"id": "manager-user", "email": "manager@example.com"}}
+        profile = {"id": "manager-user", "email": "manager@example.com", "full_name": "Manager User", "erp_name": "ERP Manager", "role": "manager", "status": "active"}
+        accounts = [
+            {"id": "active-user", "email": "active@example.com", "full_name": "Active User", "erp_name": "ERP Active", "role": "counter", "status": "active"},
+            {"id": "locked-user", "email": "locked@example.com", "full_name": "Locked User", "erp_name": "ERP Locked", "role": "counter", "status": "locked"},
+            {"id": "deleted-user", "email": "deleted@example.com", "full_name": "Deleted User", "erp_name": "ERP Deleted", "role": "counter", "status": "deleted"},
+        ]
+        page = self.open_auth_page(session, profile, behavior={"accountProfiles": accounts})
+        page.get_by_role("button", name="Quản lý tài khoản").click()
+
+        page.get_by_role("button", name="Hoạt động", exact=True).click()
+        page.get_by_role("button", name="Khóa Active User").click()
+        page.get_by_label("Lý do khóa").fill("Nghỉ việc")
+        page.get_by_role("button", name="Xác nhận khóa").click()
+        page.get_by_role("button", name="Xóa Active User").click()
+        confirm = page.get_by_role("button", name="Xác nhận xóa")
+        self.assertTrue(confirm.is_disabled())
+        page.get_by_label("Nhập email để xác nhận").fill("active@example.com")
+        confirm.click()
+
+        page.get_by_role("button", name="Đã khóa", exact=True).click()
+        page.get_by_role("button", name="Mở khóa Locked User").click()
+        calls = page.evaluate("window.__AUTH_CALLS__.filter(call => ['rpc', 'function.invoke'].includes(call.method))")
+        self.assertEqual(calls[0]["payload"]["name"], "manager_lock_profile")
+        self.assertEqual(calls[1]["payload"]["body"], {"action": "delete_user", "target_user_id": "active-user"})
+        self.assertEqual(calls[2]["payload"]["body"], {"action": "unlock_user", "target_user_id": "locked-user"})
 
     def test_auth_legacy_shell_requires_explicit_migration_flag(self):
         without_flag = self.open_auth_page()
