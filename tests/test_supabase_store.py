@@ -79,6 +79,19 @@ class SupabaseStoreHelpersTest(unittest.TestCase):
             rendered_html,
         )
 
+    def test_parent_auth_bridge_forwards_recovery_location_to_iframe(self):
+        app = importlib.import_module("app")
+        bridge = app.build_auth_parent_bridge_script()
+
+        self.assertIn("inventory-auth-bridge-ready", bridge)
+        self.assertIn("inventory-auth-location", bridge)
+        self.assertIn("hostWindow.location.hash", bridge)
+        self.assertIn("hostWindow.location.search", bridge)
+        self.assertIn("const hostWindow = window.parent", bridge)
+        self.assertIn('hostWindow.addEventListener("message"', bridge)
+        self.assertIn("targetWindow.postMessage", bridge)
+        self.assertNotIn('document.querySelectorAll("iframe")', bridge)
+
     def test_compressed_dataframe_round_trip(self):
         original = pd.DataFrame(
             [{"sku": "00123", "qty": 1.5}, {"sku": "ABC", "qty": 2.0}]

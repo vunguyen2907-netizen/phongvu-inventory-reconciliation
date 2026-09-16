@@ -3,6 +3,54 @@ import os
 import json
 
 
+def build_auth_parent_bridge_script() -> str:
+    """Forward top-level recovery credentials to the embedded SPA iframe."""
+    return """
+<script id="inventory-auth-parent-bridge">
+(() => {
+  const hostWindow = window.parent === window ? window : window.parent;
+  let targetWindow = null;
+  const locationMessage = () => ({
+    type: "inventory-auth-location",
+    href: hostWindow.location.href,
+    search: hostWindow.location.search,
+    hash: hostWindow.location.hash
+  });
+  const forward = () => {
+    if (targetWindow && typeof targetWindow.postMessage === "function") {
+      targetWindow.postMessage(locationMessage(), "*");
+    }
+  };
+  const handleMessage = event => {
+    if (event.data?.type === "inventory-auth-bridge-ready") {
+      targetWindow = event.source;
+      forward();
+    }
+    if (
+      event.source === targetWindow
+      && event.data?.type === "inventory-auth-location-consumed"
+    ) {
+      const clean = new URL(hostWindow.location.href);
+      clean.hash = "";
+      clean.searchParams.delete("code");
+      clean.searchParams.delete("type");
+      clean.searchParams.delete("auth_recovery");
+      hostWindow.history.replaceState({}, hostWindow.document.title, clean.toString());
+    }
+  };
+  hostWindow.addEventListener("message", handleMessage);
+  hostWindow.addEventListener("hashchange", forward);
+  hostWindow.addEventListener("popstate", forward);
+  window.addEventListener("unload", () => {
+    hostWindow.removeEventListener("message", handleMessage);
+    hostWindow.removeEventListener("hashchange", forward);
+    hostWindow.removeEventListener("popstate", forward);
+  });
+})();
+</script>
+"""
+
+
 def build_embedded_html(
     html_code: str,
     domain_code: str,
@@ -18,7 +66,8 @@ def build_embedded_html(
         "</script>"
     )
     html_code = html_code.replace("</head>", f"{public_config}</head>", 1)
-    domain_script = f"<script>{domain_code.replace('</script', '<\\/script')}</script>"
+    escaped_domain_code = domain_code.replace("</script", "<\\/script")
+    domain_script = f"<script>{escaped_domain_code}</script>"
     return html_code.replace(
         '<script type="text/babel">',
         f'{domain_script}<script type="text/babel">',
@@ -52,6 +101,11 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+st.components.v1.html(
+    build_auth_parent_bridge_script(),
+    height=0,
+    scrolling=False,
+)
 
 html_path = os.path.join(os.path.dirname(__file__), "index.html")
 if os.path.exists(html_path):

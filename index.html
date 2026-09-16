@@ -570,13 +570,64 @@
       return { url, key };
     };
 
+    const AUTH_LOCATION_MESSAGE = "inventory-auth-location";
+    const authLocationSubscribers = new Set();
+    let pendingAuthLocation = null;
+
+    function queueAuthLocation(payload) {
+      pendingAuthLocation = payload;
+      authLocationSubscribers.forEach(subscriber => subscriber(payload));
+    }
+
+    function subscribeAuthLocation(subscriber) {
+      authLocationSubscribers.add(subscriber);
+      return () => authLocationSubscribers.delete(subscriber);
+    }
+
+    function recoveryLocationFromPayload(payload) {
+      if (!payload || payload.type !== AUTH_LOCATION_MESSAGE) return null;
+      try {
+        const url = new URL(String(payload.href || ""), getAuthRedirectUrl());
+        const configured = new URL(getAuthRedirectUrl());
+        if (url.origin !== configured.origin) return null;
+        const hash = new URLSearchParams(url.hash.replace(/^#/, ""));
+        const isRecovery = hash.get("type") === "recovery"
+          || url.searchParams.get("type") === "recovery"
+          || url.searchParams.get("auth_recovery") === "1";
+        if (!isRecovery) return null;
+        return { href: url.toString(), hash, search: url.searchParams };
+      } catch (_error) {
+        return null;
+      }
+    }
+
+    window.addEventListener("message", event => {
+      if (window.parent === window || event.source !== window.parent) return;
+      const recoveryLocation = recoveryLocationFromPayload(event.data);
+      if (recoveryLocation) queueAuthLocation(recoveryLocation);
+    });
+
+    try {
+      const directLocation = recoveryLocationFromPayload({
+        type: AUTH_LOCATION_MESSAGE,
+        href: window.location.href
+      });
+      if (directLocation) queueAuthLocation(directLocation);
+    } catch (_error) {}
+
+    if (window.parent !== window) {
+      window.parent.postMessage({ type: "inventory-auth-bridge-ready" }, "*");
+    }
+
     let supabaseClient = null;
     let supabaseReady = Promise.resolve(null);
     const initSupabase = () => {
       const { url, key } = getSupabaseConfig();
       if (url && key) {
         try {
-          supabaseClient = supabase.createClient(url, key);
+          supabaseClient = supabase.createClient(url, key, {
+            auth: { detectSessionInUrl: false }
+          });
           supabaseReady = Promise.resolve(supabaseClient);
         } catch (e) { console.error("Supabase init error:", e); }
       }
@@ -616,6 +667,18 @@
       return window.location.origin;
     }
 
+    function getPasswordRecoveryRedirectUrl() {
+      const url = new URL(getAuthRedirectUrl());
+      url.searchParams.set("auth_recovery", "1");
+      return url.toString();
+    }
+
+    function acknowledgeAuthLocation() {
+      if (window.parent !== window) {
+        window.parent.postMessage({ type: "inventory-auth-location-consumed" }, "*");
+      }
+    }
+
     function authErrorMessage(error, fallback = "Không thể xác thực tài khoản.") {
       return error?.message || String(error || "").trim() || fallback;
     }
@@ -628,40 +691,40 @@
         profile: null,
         loading: true,
         error: "",
-        legacyMode: false
+        legacyMode: false,
+        profileMissing: false
       });
 
       useEffect(() => {
         let mounted = true;
         let requestVersion = 0;
         let subscription = null;
+        let unsubscribeAuthLocation = () => {};
+        let recoveryInProgress = false;
+        const handledRecoveryLocations = new Set();
         const legacyEnabled = window.ENABLE_LEGACY_ANONYMOUS === true;
 
-        const setFailure = (error) => {
-          if (!mounted) return;
+        const invalidateProfileRequests = () => ++requestVersion;
+
+        const setFailure = (error, version = null) => {
+          if (!mounted || (version !== null && version !== requestVersion)) return;
+          invalidateProfileRequests();
           setAuthState({
             session: null,
             profile: null,
             loading: false,
             error: authErrorMessage(error),
-            legacyMode: false
+            legacyMode: false,
+            profileMissing: false
           });
         };
 
-        const loadAuthoritativeProfile = async (session) => {
-          const version = ++requestVersion;
+        const loadAuthoritativeProfile = async (client, session, version) => {
           try {
-            if (!session?.user?.id) {
-              if (mounted) setAuthState({ session: null, profile: null, loading: false, error: "", legacyMode: false });
-              return;
-            }
-
             if (mounted) {
-              setAuthState({ session, profile: null, loading: true, error: "", legacyMode: false });
+              setAuthState({ session, profile: null, loading: true, error: "", legacyMode: false, profileMissing: false });
             }
 
-            const client = await getReadySupabaseClient();
-            if (!client) throw new Error("Chưa cấu hình Supabase Auth.");
             const { data, error } = await client
               .from("profiles")
               .select("id, email, full_name, erp_name, role, status")
@@ -674,40 +737,99 @@
               session,
               profile: data,
               loading: false,
-              error: data ? "" : "Không tìm thấy hồ sơ tài khoản.",
-              legacyMode: false
+              error: "",
+              legacyMode: false,
+              profileMissing: !data
             });
           } catch (error) {
-            if (mounted && version === requestVersion) setFailure(error);
+            setFailure(error, version);
           }
         };
 
-        const acceptSession = async (client, session) => {
+        const acceptSession = async (client, session, acceptedVersion = null) => {
+          const version = acceptedVersion === null
+            ? invalidateProfileRequests()
+            : acceptedVersion;
+          if (version !== requestVersion) return;
+          recoveryInProgress = false;
+          if (mounted) setRecovery(false);
+
           if (!session) {
             if (!legacyEnabled) {
-              setAuthState({ session: null, profile: null, loading: false, error: "", legacyMode: false });
+              if (mounted && version === requestVersion) {
+                setAuthState({ session: null, profile: null, loading: false, error: "", legacyMode: false, profileMissing: false });
+              }
               return;
             }
             const { data, error } = await client.auth.signInAnonymously();
             if (error) throw error;
             const anonymousSession = data?.session || null;
             if (!anonymousSession) throw new Error("Không thể tạo phiên chuyển đổi.");
-            setAuthState({ session: anonymousSession, profile: null, loading: false, error: "", legacyMode: true });
+            if (mounted && version === requestVersion) {
+              setAuthState({ session: anonymousSession, profile: null, loading: false, error: "", legacyMode: true, profileMissing: false });
+            }
             return;
           }
 
           if (session.user?.is_anonymous === true) {
             if (legacyEnabled) {
-              setAuthState({ session, profile: null, loading: false, error: "", legacyMode: true });
+              if (mounted && version === requestVersion) {
+                setAuthState({ session, profile: null, loading: false, error: "", legacyMode: true, profileMissing: false });
+              }
               return;
             }
             const { error } = await client.auth.signOut();
             if (error) throw error;
-            setAuthState({ session: null, profile: null, loading: false, error: "", legacyMode: false });
+            if (mounted && version === requestVersion) {
+              setAuthState({ session: null, profile: null, loading: false, error: "", legacyMode: false, profileMissing: false });
+            }
             return;
           }
 
-          await loadAuthoritativeProfile(session);
+          if (!session.user?.id) {
+            if (mounted && version === requestVersion) {
+              setAuthState({ session: null, profile: null, loading: false, error: "", legacyMode: false, profileMissing: false });
+            }
+            return;
+          }
+
+          await loadAuthoritativeProfile(client, session, version);
+        };
+
+        const showRecovery = (session) => {
+          invalidateProfileRequests();
+          recoveryInProgress = true;
+          if (!mounted) return;
+          setRecovery(true);
+          setAuthState({ session, profile: null, loading: false, error: "", legacyMode: false, profileMissing: false });
+        };
+
+        const processRecoveryLocation = async (client, location) => {
+          if (!location || handledRecoveryLocations.has(location.href)) return false;
+          handledRecoveryLocations.add(location.href);
+          recoveryInProgress = true;
+
+          const accessToken = location.hash.get("access_token");
+          const refreshToken = location.hash.get("refresh_token");
+          const code = location.search.get("code");
+          let result = null;
+          if (accessToken && refreshToken) {
+            result = await client.auth.setSession({
+              access_token: accessToken,
+              refresh_token: refreshToken
+            });
+          } else if (code) {
+            result = await client.auth.exchangeCodeForSession(code);
+          } else {
+            recoveryInProgress = false;
+            return false;
+          }
+
+          if (result?.error) throw result.error;
+          showRecovery(result?.data?.session || null);
+          pendingAuthLocation = null;
+          acknowledgeAuthLocation();
+          return true;
         };
 
         (async () => {
@@ -716,31 +838,47 @@
             setAuthState(current => ({ ...current, loading: true, error: "" }));
             const client = await getReadySupabaseClient();
             if (!client) throw new Error("Chưa cấu hình Supabase Auth.");
-            const { data, error } = await client.auth.getSession();
-            if (error) throw error;
-            await acceptSession(client, data?.session || null);
-            if (!mounted) return;
 
             const listener = client.auth.onAuthStateChange((event, nextSession) => {
               if (event === "PASSWORD_RECOVERY") {
-                setRecovery(true);
-                setAuthState({ session: nextSession, profile: null, loading: false, error: "", legacyMode: false });
+                showRecovery(nextSession);
                 return;
               }
-              Promise.resolve()
-                .then(() => acceptSession(client, nextSession))
-                .catch(setFailure);
+              if (recoveryInProgress && event !== "SIGNED_OUT") return;
+              const version = invalidateProfileRequests();
+              return Promise.resolve()
+                .then(() => acceptSession(client, nextSession, version))
+                .catch(error => setFailure(error, version));
             });
             subscription = listener?.data?.subscription || null;
+
+            const handleRecoveryLocation = (location) => {
+              processRecoveryLocation(client, location).catch(error => {
+                recoveryInProgress = false;
+                setFailure(error);
+              });
+            };
+            unsubscribeAuthLocation = subscribeAuthLocation(handleRecoveryLocation);
+
+            const recovered = pendingAuthLocation
+              ? await processRecoveryLocation(client, pendingAuthLocation)
+              : false;
+            if (!recovered && !recoveryInProgress) {
+              const { data, error } = await client.auth.getSession();
+              if (error) throw error;
+              await acceptSession(client, data?.session || null);
+            }
           } catch (error) {
+            recoveryInProgress = false;
             setFailure(error);
           }
         })();
 
         return () => {
           mounted = false;
-          requestVersion += 1;
+          invalidateProfileRequests();
           subscription?.unsubscribe();
+          unsubscribeAuthLocation();
         };
       }, [attempt]);
 
@@ -918,7 +1056,7 @@
       );
     }
 
-    function AccountStateScreen({ title, description, profile }) {
+    function AccountStateScreen({ title, description, profile, onRetry = null }) {
       const [signOutError, setSignOutError] = useState("");
       const [signingOut, setSigningOut] = useState(false);
       const handleSignOut = async () => {
@@ -944,7 +1082,10 @@
             <dd className="mt-1 font-semibold text-slate-800">{profile?.full_name || profile?.email || "—"}</dd>
           </dl>
           {signOutError && <p role="alert" className="mt-4 rounded-lg bg-rose-50 p-3 text-xs text-rose-700">{signOutError}</p>}
-          <button type="button" onClick={handleSignOut} disabled={signingOut} className="mt-5 w-full rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 disabled:opacity-50">{signingOut ? "Đang đăng xuất…" : "Đăng xuất"}</button>
+          <div className="mt-5 flex gap-3">
+            {onRetry && <button type="button" onClick={onRetry} disabled={signingOut} className="flex-1 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">Thử lại</button>}
+            <button type="button" onClick={handleSignOut} disabled={signingOut} className="flex-1 rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 disabled:opacity-50">{signingOut ? "Đang đăng xuất…" : "Đăng xuất"}</button>
+          </div>
         </AuthCard>
       );
     }
@@ -2169,7 +2310,7 @@
         try {
           const client = await getReadySupabaseClient();
           if (!client?.auth?.resetPasswordForEmail) throw new Error("Không thể gửi email đổi mật khẩu.");
-          const { error } = await client.auth.resetPasswordForEmail(email, { redirectTo: getAuthRedirectUrl() });
+          const { error } = await client.auth.resetPasswordForEmail(email, { redirectTo: getPasswordRecoveryRedirectUrl() });
           if (error) throw error;
           setAuthActionMessage("Email đổi mật khẩu đã được gửi.");
         } catch (error) {
@@ -3130,6 +3271,7 @@
         loading,
         error,
         legacyMode,
+        profileMissing,
         recovery,
         retry,
         completeRecovery
@@ -3160,12 +3302,13 @@
         return <ApplicationShell session={session} profile={null} legacyMode={true} />;
       }
 
-      if (!profile) {
+      if (profileMissing || !profile) {
         return (
           <AccountStateScreen
-            title="Quyền truy cập đã bị vô hiệu hóa"
-            description={error || "Tài khoản chưa có hồ sơ truy cập hợp lệ. Vui lòng liên hệ quản trị viên."}
+            title="Không tìm thấy hồ sơ tài khoản"
+            description="Tài khoản chưa có hồ sơ truy cập hợp lệ. Hãy thử lại hoặc liên hệ quản trị viên."
             profile={{ email: session.user?.email }}
+            onRetry={retry}
           />
         );
       }

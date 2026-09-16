@@ -32,6 +32,7 @@ def _mock_supabase_script(session, profile, legacy=False, behavior=None):
     return f"""
       window.SUPABASE_URL = "https://example.supabase.co";
       window.SUPABASE_KEY = "publishable-test-key";
+      window.tailwind = {{ config: {{}} }};
       window.ENABLE_LEGACY_ANONYMOUS = {str(legacy).lower()};
       window.__AUTH_FIXTURE__ = {json.dumps(fixture)};
       window.__AUTH_CALLS__ = [];
@@ -93,6 +94,22 @@ def _mock_supabase_script(session, profile, legacy=False, behavior=None):
             record("resetPasswordForEmail", {{ email, options }});
             return {{ data: {{}}, error: null }};
           }},
+          setSession: async (payload) => {{
+            record("setSession", payload);
+            fixture.session = fixture.behavior.recoverySession || {{
+              user: {{ id: "recovery-user", email: "recovery@example.com" }}
+            }};
+            for (const callback of authListeners) await callback("SIGNED_IN", fixture.session);
+            return {{ data: {{ session: fixture.session }}, error: null }};
+          }},
+          exchangeCodeForSession: async (code) => {{
+            record("exchangeCodeForSession", {{ code }});
+            fixture.session = fixture.behavior.recoverySession || {{
+              user: {{ id: "recovery-user", email: "recovery@example.com" }}
+            }};
+            for (const callback of authListeners) await callback("SIGNED_IN", fixture.session);
+            return {{ data: {{ session: fixture.session }}, error: null }};
+          }},
           updateUser: async (payload) => {{
             record("updateUser", payload);
             if (fixture.behavior.updateUserError) {{
@@ -122,6 +139,11 @@ def _mock_supabase_script(session, profile, legacy=False, behavior=None):
               error: null
             }}),
             maybeSingle: async () => {{
+              if (fixture.behavior.profileDeferred) {{
+                return await new Promise(resolve => {{
+                  window.__RESOLVE_PROFILE__ = () => resolve({{ data: fixture.profile, error: null }});
+                }});
+              }}
               if ((fixture.behavior.profileFailures || 0) > 0) {{
                 fixture.behavior.profileFailures -= 1;
                 throw new Error("profile network unavailable");
@@ -154,9 +176,44 @@ class AuthUiTest(unittest.TestCase):
         cls.browser.close()
         cls.playwright.stop()
 
+    def setUp(self):
+        self.pages = []
+        self.browser_errors = []
+
+    def tearDown(self):
+        failures = list(self.browser_errors)
+        for page in self.pages:
+            if page.is_closed():
+                failures.append("test closed a page before backend-call inspection")
+                continue
+            for frame in page.frames:
+                try:
+                    unexpected = frame.evaluate("window.__UNEXPECTED_CALLS__ || []")
+                    failures.extend(
+                        f"{frame.url}: {item}" for item in unexpected
+                    )
+                except Exception as error:
+                    if not frame.is_detached():
+                        failures.append(
+                            f"could not inspect browser calls in {frame.url}: {error}"
+                        )
+            page.close()
+        if failures:
+            self.fail("Browser/backend errors:\n" + "\n".join(failures))
+
+    def track_page(self, page):
+        self.pages.append(page)
+        page.on("pageerror", lambda error: self.browser_errors.append(f"pageerror: {error}"))
+        page.on(
+            "console",
+            lambda message: self.browser_errors.append(f"console error: {message.text}")
+            if message.type == "error"
+            else None,
+        )
+        return page
+
     def open_auth_page(self, session=None, profile=None, legacy=False, behavior=None):
-        page = self.browser.new_page()
-        self.addCleanup(page.close)
+        page = self.track_page(self.browser.new_page())
         page.set_default_timeout(7000)
         page.add_init_script(_mock_supabase_script(session, profile, legacy, behavior))
         page.route("**/*", lambda route: self._route_asset(route))
@@ -175,7 +232,7 @@ class AuthUiTest(unittest.TestCase):
         if url.startswith("file:") or any(part in url for part in required):
             route.continue_()
         else:
-            route.abort()
+            route.fulfill(status=200, content_type="text/plain", body="")
 
     def test_auth_unauthenticated_user_can_switch_between_sign_in_and_sign_up(self):
         page = self.open_auth_page()
@@ -236,7 +293,6 @@ class AuthUiTest(unittest.TestCase):
                 page = self.open_auth_page(session, profile)
                 self.assertTrue(page.get_by_role("heading", name="Quyền truy cập đã bị vô hiệu hóa").is_visible())
                 self.assertEqual(page.get_by_role("navigation").count(), 0)
-                page.close()
 
     def test_auth_counter_sees_only_second_count_tab(self):
         session = {"user": {"id": "counter-user", "email": "counter@example.com"}}
@@ -269,7 +325,6 @@ class AuthUiTest(unittest.TestCase):
                 page = self.open_auth_page(session, profile)
                 tabs = page.get_by_role("navigation").get_by_role("button").all_inner_texts()
                 self.assertEqual(tabs, MANAGER_TABS)
-                page.close()
 
     def test_auth_legacy_shell_requires_explicit_migration_flag(self):
         without_flag = self.open_auth_page()
@@ -279,7 +334,6 @@ class AuthUiTest(unittest.TestCase):
             [call["method"] for call in without_flag.evaluate("window.__AUTH_CALLS__")],
         )
         self.assertEqual(without_flag.evaluate("window.__UNEXPECTED_CALLS__"), [])
-        without_flag.close()
 
         with_flag = self.open_auth_page(legacy=True)
         tabs = with_flag.get_by_role("navigation").get_by_role("button").all_inner_texts()
@@ -398,7 +452,7 @@ class AuthUiTest(unittest.TestCase):
             call["payload"],
             {
                 "email": "manager@example.com",
-                "options": {"redirectTo": "https://inventory.example.com/auth"},
+                "options": {"redirectTo": "https://inventory.example.com/auth?auth_recovery=1"},
             },
         )
 
@@ -422,6 +476,97 @@ class AuthUiTest(unittest.TestCase):
 
         page.get_by_role("navigation").wait_for()
         call = page.evaluate("window.__AUTH_CALLS__.find(call => call.method === 'updateUser')")
+        self.assertEqual(call["payload"], {"password": "new-safe-password"})
+
+    def test_auth_delayed_profile_cannot_restore_shell_after_sign_out(self):
+        session = {"user": {"id": "manager-user", "email": "manager@example.com"}}
+        profile = {
+            "id": "manager-user",
+            "email": "manager@example.com",
+            "full_name": "Manager User",
+            "erp_name": "ERP Manager",
+            "role": "manager",
+            "status": "active",
+        }
+        page = self.open_auth_page(session, profile, behavior={"profileDeferred": True})
+        page.wait_for_function("window.__RESOLVE_PROFILE__ !== undefined")
+        page.evaluate("window.__TRIGGER_AUTH__('SIGNED_OUT', null)")
+        page.evaluate("window.__RESOLVE_PROFILE__()")
+
+        page.get_by_role("heading", name="Đăng nhập").wait_for()
+        self.assertEqual(page.get_by_role("navigation").count(), 0)
+
+    def test_auth_missing_profile_shows_sign_out_and_retry_without_shell(self):
+        session = {"user": {"id": "orphan-user", "email": "orphan@example.com"}}
+        page = self.open_auth_page(session, profile=None)
+
+        page.get_by_role("heading", name="Không tìm thấy hồ sơ tài khoản").wait_for()
+        self.assertEqual(page.get_by_role("button", name="Đăng xuất").count(), 1)
+        self.assertEqual(page.get_by_role("button", name="Thử lại").count(), 1)
+        self.assertEqual(page.get_by_role("navigation").count(), 0)
+
+    def test_auth_parent_recovery_bridge_opens_update_password(self):
+        recovery_session = {
+            "user": {"id": "recovery-user", "email": "recovery@example.com"}
+        }
+        page = self.track_page(self.browser.new_page())
+        page.set_default_timeout(7000)
+        page.add_init_script(
+            _mock_supabase_script(
+                None,
+                None,
+                behavior={
+                    "authRedirectUrl": "https://inventory.example.com/auth",
+                    "recoverySession": recovery_session,
+                },
+            )
+        )
+        index_html = (ROOT / "index.html").read_text(encoding="utf-8")
+        parent_html = """
+          <!doctype html><html><body>
+            <iframe id="inventory-app" src="https://inventory.example.com/app"></iframe>
+            <script>
+              const forward = () => {
+                const frame = document.getElementById("inventory-app");
+                frame.contentWindow.postMessage({
+                  type: "inventory-auth-location",
+                  href: window.location.href,
+                  search: window.location.search,
+                  hash: window.location.hash
+                }, "*");
+              };
+              window.addEventListener("message", event => {
+                if (event.data?.type === "inventory-auth-bridge-ready") forward();
+              });
+              document.getElementById("inventory-app").addEventListener("load", forward);
+            </script>
+          </body></html>
+        """
+
+        def route_recovery(route):
+            url = route.request.url
+            if url.startswith("https://inventory.example.com/auth"):
+                route.fulfill(status=200, content_type="text/html", body=parent_html)
+            elif url == "https://inventory.example.com/app":
+                route.fulfill(status=200, content_type="text/html", body=index_html)
+            else:
+                self._route_asset(route)
+
+        page.route("**/*", route_recovery)
+        page.goto(
+            "https://inventory.example.com/auth?auth_recovery=1"
+            "#access_token=recovery-access&refresh_token=recovery-refresh&type=recovery",
+            wait_until="domcontentloaded",
+        )
+        app = page.frame_locator("#inventory-app")
+        app.get_by_role("heading", name="Đặt mật khẩu mới").wait_for()
+        app.get_by_label("Mật khẩu mới", exact=True).fill("new-safe-password")
+        app.get_by_label("Nhập lại mật khẩu mới").fill("new-safe-password")
+        app.get_by_role("button", name="Cập nhật mật khẩu").click()
+
+        call = page.frames[1].evaluate(
+            "window.__AUTH_CALLS__.find(call => call.method === 'updateUser')"
+        )
         self.assertEqual(call["payload"], {"password": "new-safe-password"})
 
 
