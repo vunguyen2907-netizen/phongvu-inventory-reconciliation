@@ -16,11 +16,14 @@
     excluded: ["excluded_from_actual", "excludedFromActual"]
   });
 
-  function normalizeInventoryCode(value) {
+  function projectInventoryCode(value) {
     return String(value ?? "")
-      .normalize("NFKC")
       .replace(/[a-z]/g, character => String.fromCharCode(character.charCodeAt(0) - 32))
       .replace(REMOVABLE_CODE_CHARACTERS, "");
+  }
+
+  function normalizeInventoryCode(value) {
+    return projectInventoryCode(String(value ?? "").normalize("NFKC"));
   }
 
   function maskCode(code, revealStart) {
@@ -85,6 +88,40 @@
     return firstDefined(row, DETAIL_FIELDS[fieldName]);
   }
 
+  function suppliedAliasEntries(row, fieldNames) {
+    return fieldNames
+      .filter(fieldName => Object.prototype.hasOwnProperty.call(row, fieldName)
+        && row[fieldName] !== undefined
+        && row[fieldName] !== null)
+      .map(fieldName => ({ fieldName, value: row[fieldName] }));
+  }
+
+  function consistentTextAlias(row, fieldNames, label, location, normalizer, options = {}) {
+    const entries = suppliedAliasEntries(row, fieldNames);
+    const normalizedEntries = entries.map(entry => ({
+      ...entry,
+      normalized: normalizer(entry.value)
+    }));
+    const meaningful = options.allowEmpty
+      ? normalizedEntries
+      : normalizedEntries.filter(entry => entry.normalized !== "");
+    const distinct = new Set(meaningful.map(entry => entry.normalized));
+    if (distinct.size > 1) throw new Error(`Conflicting ${label} aliases at ${location}`);
+    const selected = meaningful[0];
+    return {
+      value: selected?.value,
+      normalized: selected?.normalized ?? "",
+      rawValues: meaningful.map(entry => String(entry.value ?? ""))
+    };
+  }
+
+  function consistentBooleanAlias(row, fieldNames, label, location) {
+    const entries = suppliedAliasEntries(row, fieldNames);
+    const distinct = new Set(entries.map(entry => entry.value));
+    if (distinct.size > 1) throw new Error(`Conflicting ${label} aliases at ${location}`);
+    return entries.length ? entries[0].value : undefined;
+  }
+
   function taskTypeForStatus(status) {
     const normalizedStatus = String(status ?? "").trim().toLocaleLowerCase("vi");
     if (normalizedStatus === "bắn thiếu (chưa quét)") return "missing_serial";
@@ -106,22 +143,74 @@
         throw new TypeError(`Invalid detail row at index ${index}`);
       }
 
-      const rawSourceId = String(detailField(row, "sourceId") ?? "").trim();
+      const sourceIdEntries = suppliedAliasEntries(row, DETAIL_FIELDS.sourceId);
+      if (sourceIdEntries.some(entry => String(entry.value).trim() === "")) {
+        throw new Error(`Missing stable source detail row ID at index ${index}`);
+      }
+      const sourceIdAlias = consistentTextAlias(
+        row,
+        DETAIL_FIELDS.sourceId,
+        "source detail row ID",
+        `index ${index}`,
+        value => String(value ?? "").trim()
+      );
+      const rawSourceId = sourceIdAlias.normalized;
       if (!rawSourceId) throw new Error(`Missing stable source detail row ID at index ${index}`);
       if (sourceIds.has(rawSourceId)) throw new Error(`Duplicate source detail row ID: ${rawSourceId}`);
       sourceIds.add(rawSourceId);
 
       const isNonSerial = Boolean(detailField(row, "isNonSerial"));
-      const expectedSerial = normalizeInventoryCode(detailField(row, "expectedSerial"));
-      const firstScannedCode = normalizeInventoryCode(detailField(row, "firstScannedCode"));
+      const expectedAlias = consistentTextAlias(
+        row,
+        DETAIL_FIELDS.expectedSerial,
+        "expected serial",
+        rawSourceId,
+        normalizeInventoryCode
+      );
+      const scannedAlias = consistentTextAlias(
+        row,
+        DETAIL_FIELDS.firstScannedCode,
+        "first-scanned code",
+        rawSourceId,
+        normalizeInventoryCode
+      );
+      const performerAlias = consistentTextAlias(
+        row,
+        DETAIL_FIELDS.performer,
+        "performer",
+        rawSourceId,
+        normalizeInventoryCode
+      );
+      const expectedSerial = expectedAlias.normalized;
+      const firstScannedCode = scannedAlias.normalized;
       if (!isNonSerial && !expectedSerial && !firstScannedCode) {
         throw new Error(`Missing expected or first-scanned inventory code at ${rawSourceId}`);
       }
 
-      const status = String(detailField(row, "status") ?? "");
-      const resolution = detailField(row, "resolution");
+      const statusAlias = consistentTextAlias(
+        row,
+        DETAIL_FIELDS.status,
+        "first-count status",
+        rawSourceId,
+        value => String(value ?? "").trim()
+      );
+      const resolutionAlias = consistentTextAlias(
+        row,
+        DETAIL_FIELDS.resolution,
+        "recount resolution",
+        rawSourceId,
+        value => String(value ?? "").trim()
+      );
+      const status = statusAlias.normalized;
+      const resolution = resolutionAlias.normalized || undefined;
       const resolved = detailField(row, "resolved");
-      const excludedFromActual = Boolean(detailField(row, "excluded"))
+      const excludedAlias = consistentBooleanAlias(
+        row,
+        DETAIL_FIELDS.excluded,
+        "exclusion",
+        rawSourceId
+      );
+      const excludedFromActual = Boolean(excludedAlias)
         || String(resolution ?? "") === "same_product_multiple_codes"
         || status === "Đã loại bỏ Serial dư";
 
@@ -132,8 +221,10 @@
         publicSourceId: rawSourceId,
         isNonSerial,
         expectedSerial,
+        expectedSerialVariants: expectedAlias.rawValues,
         firstScannedCode,
-        performer: String(detailField(row, "performer") ?? ""),
+        firstScannedCodeVariants: scannedAlias.rawValues,
+        performer: String(performerAlias.value ?? ""),
         sku: String(row.sku ?? ""),
         productName: String(detailField(row, "productName") ?? ""),
         stockBin: String(detailField(row, "stockBin") ?? ""),
@@ -148,7 +239,9 @@
   }
 
   function createProtectedCodeMatcher(protectedCodes) {
-    const codes = [...new Set(protectedCodes.filter(Boolean))];
+    const codes = [...new Set(protectedCodes
+      .flatMap(code => [projectInventoryCode(code), normalizeInventoryCode(code)])
+      .filter(Boolean))];
     const nodes = [{ transitions: new Map(), failure: 0, terminal: false }];
 
     for (const code of codes) {
@@ -194,7 +287,12 @@
 
     return Object.freeze({
       hasMatch(value) {
-        return hasNormalizedMatch(normalizeInventoryCode(value));
+        const rawProjection = projectInventoryCode(value);
+        if (hasNormalizedMatch(rawProjection)) return true;
+        const normalizedProjection = normalizeInventoryCode(value);
+        return normalizedProjection === rawProjection
+          ? false
+          : hasNormalizedMatch(normalizedProjection);
       }
     });
   }
@@ -264,12 +362,13 @@
   }
 
   function profileAlias(profile) {
-    return normalizeInventoryCode(
-      profile?.erp_name_normalized
-      ?? profile?.erpNameNormalized
-      ?? profile?.erp_name
-      ?? profile?.erpName
-    );
+    return consistentTextAlias(
+      profile ?? {},
+      ["erp_name_normalized", "erpNameNormalized", "erp_name", "erpName"],
+      "profile ERP name",
+      String(profile?.id ?? "unknown profile"),
+      normalizeInventoryCode
+    ).normalized;
   }
 
   function activeProfileAliases(profileRows) {
@@ -339,11 +438,14 @@
     const sources = parseDetailRows(detailRows);
     const protectedCodes = sources
       .filter(source => !source.isNonSerial)
-      .flatMap(source => [source.expectedSerial, source.firstScannedCode])
+      .flatMap(source => [
+        ...source.expectedSerialVariants,
+        ...source.firstScannedCodeVariants
+      ])
       .filter(Boolean);
     const matcher = createProtectedCodeMatcher(protectedCodes);
     const longCodeMatcher = createProtectedCodeMatcher(
-      protectedCodes.filter(code => Array.from(code).length > 4)
+      protectedCodes.filter(code => Array.from(normalizeInventoryCode(code)).length > 4)
     );
     assignSafeSourceIds(sources, matcher);
     const redactionText = safeRedactionText(matcher);
@@ -367,6 +469,10 @@
       const assignedUserId = safeOptionalText(assignedProfile?.id ?? assignedProfile?.user_id, matcher);
       const firstCounterName = safeOptionalText(assignedProfile?.full_name ?? assignedProfile?.fullName, matcher);
       const reference = taskReference(source);
+      const proposedMask = masksBySku.get(source.sku).get(reference);
+      const safeMask = matcher.hasMatch(proposedMask)
+        ? "*".repeat(Array.from(reference).length)
+        : proposedMask;
       const task = {
         source_detail_row_id: source.publicSourceId,
         sku: safeRequiredText(source.sku, matcher, redactionText),
@@ -379,7 +485,7 @@
         assigned_user_id: assignedUserId,
         assigned_name_snapshot: firstCounterName,
         task_type: taskTypeForStatus(source.status),
-        masked_reference: masksBySku.get(source.sku).get(reference),
+        masked_reference: safeMask,
         state: assignedUserId === null ? "unassigned" : "assigned"
       };
       assertSafePublicTask(task, matcher, longCodeMatcher);
@@ -390,22 +496,69 @@
     return { tasks, evidence };
   }
 
-  function resolutionSourceDetailRowId(task) {
-    return String(task?.source_detail_row_id ?? task?.sourceDetailRowId ?? task?.rowId ?? "").trim();
+  function resolutionSourceDetailRowId(task, index) {
+    const sourceIdEntries = suppliedAliasEntries(task ?? {}, DETAIL_FIELDS.sourceId);
+    if (sourceIdEntries.some(entry => String(entry.value).trim() === "")) {
+      throw new Error(`Missing source detail row ID for recount resolution at index ${index}`);
+    }
+    const sourceId = consistentTextAlias(
+      task ?? {},
+      DETAIL_FIELDS.sourceId,
+      "source detail row ID",
+      `recount resolution index ${index}`,
+      value => String(value ?? "").trim()
+    ).normalized;
+    if (!sourceId) throw new Error(`Missing source detail row ID for recount resolution at index ${index}`);
+    return sourceId;
   }
 
-  function isConfirmedResolution(task) {
-    if (!task?.resolution) return false;
-    if (task.confirmed === false || task.is_confirmed === false) return false;
-    if (task.confirmed !== true && task.is_confirmed !== true) return false;
+  function resolutionBooleanAlias(task, fieldNames, label, sourceId) {
+    const entries = suppliedAliasEntries(task ?? {}, fieldNames);
+    const distinct = new Set(entries.map(entry => entry.value));
+    if (distinct.size > 1) throw new Error(`Conflicting ${label} aliases for source ${sourceId}`);
+    return entries.length ? entries[0].value : undefined;
+  }
+
+  function resolutionValue(task, sourceId) {
+    return consistentTextAlias(
+      task ?? {},
+      ["resolution", "recount_resolution", "recountResolution"],
+      "recount resolution",
+      `source ${sourceId}`,
+      value => String(value ?? "").trim()
+    ).normalized;
+  }
+
+  function isConfirmedResolution(task, sourceId, resolution) {
+    if (!resolution) return false;
+    const confirmed = resolutionBooleanAlias(
+      task,
+      ["confirmed", "is_confirmed"],
+      "confirmation",
+      sourceId
+    );
+    if (confirmed !== true) return false;
 
     const suppliedStates = [task.state, task.status].filter(value => value !== undefined && value !== null);
     if (suppliedStates.some(value => value !== "completed")) return false;
 
-    if (task.resolution === "genuine_surplus") {
-      return task.managerApproved === true || task.manager_approved === true;
+    if (resolution === "genuine_surplus") {
+      return resolutionBooleanAlias(
+        task,
+        ["managerApproved", "manager_approved"],
+        "manager approval",
+        sourceId
+      ) === true;
     }
     return true;
+  }
+
+  function synchronizedAliasPatch(row, fieldNames, canonicalField, value) {
+    const patch = { [canonicalField]: value };
+    for (const fieldName of fieldNames) {
+      if (Object.prototype.hasOwnProperty.call(row, fieldName)) patch[fieldName] = value;
+    }
+    return patch;
   }
 
   function applyConfirmedRecounts(detailRows, resolvedTasks) {
@@ -413,16 +566,27 @@
     const matcher = createProtectedCodeMatcher(
       sources
         .filter(source => !source.isNonSerial)
-        .flatMap(source => [source.expectedSerial, source.firstScannedCode])
+        .flatMap(source => [
+          ...source.expectedSerialVariants,
+          ...source.firstScannedCodeVariants
+        ])
         .filter(Boolean)
     );
     assignSafeSourceIds(sources, matcher);
 
     const confirmedBySource = new Map();
-    for (const task of (Array.isArray(resolvedTasks) ? resolvedTasks : [])) {
-      if (!isConfirmedResolution(task)) continue;
-      const sourceId = resolutionSourceDetailRowId(task);
-      if (sourceId) confirmedBySource.set(sourceId, task);
+    const resolutionRows = Array.isArray(resolvedTasks) ? resolvedTasks : [];
+    const seenResolutionSources = new Set();
+    for (let index = 0; index < resolutionRows.length; index += 1) {
+      const task = resolutionRows[index];
+      const sourceId = resolutionSourceDetailRowId(task, index);
+      if (seenResolutionSources.has(sourceId)) {
+        throw new Error(`Duplicate recount resolution for source ${sourceId}`);
+      }
+      seenResolutionSources.add(sourceId);
+      const resolution = resolutionValue(task, sourceId);
+      if (!isConfirmedResolution(task, sourceId, resolution)) continue;
+      confirmedBySource.set(sourceId, { ...task, resolution });
     }
 
     return sources.map(source => {
@@ -436,40 +600,61 @@
           ...row,
           checked: 0,
           diff: 0,
-          status: "Đã loại bỏ Serial dư",
-          excludedFromActual: true,
-          recountResolution: resolution
+          ...synchronizedAliasPatch(row, DETAIL_FIELDS.status, "status", "Đã loại bỏ Serial dư"),
+          ...synchronizedAliasPatch(row, DETAIL_FIELDS.excluded, "excludedFromActual", true),
+          ...synchronizedAliasPatch(row, DETAIL_FIELDS.resolution, "recountResolution", resolution)
         };
       }
       if (resolution === "corrected_serial") {
-        const correctedSerial = task.correctedSerial ?? task.corrected_serial ?? task.scannedSerial ?? task.scanned_serial;
+        const correctedAlias = consistentTextAlias(
+          task,
+          ["correctedSerial", "corrected_serial", "scannedSerial", "scanned_serial"],
+          "corrected serial",
+          `source ${source.publicSourceId}`,
+          normalizeInventoryCode
+        );
+        const correctedSerial = correctedAlias.value;
         const wasCountedInRoundOne = Number(row?.checked) > 0;
         return {
           ...row,
-          ...(correctedSerial === undefined ? {} : { scannedSerial: correctedSerial }),
+          ...(correctedSerial === undefined
+            ? {}
+            : synchronizedAliasPatch(row, DETAIL_FIELDS.firstScannedCode, "scannedSerial", correctedSerial)),
           ...(wasCountedInRoundOne ? {} : { l2Added: true }),
           checked: 1,
           diff: 0,
-          status: "Đã quét đủ",
-          recountResolution: resolution
+          ...synchronizedAliasPatch(row, DETAIL_FIELDS.status, "status", "Đã quét đủ"),
+          ...synchronizedAliasPatch(row, DETAIL_FIELDS.excluded, "excludedFromActual", false),
+          ...synchronizedAliasPatch(row, DETAIL_FIELDS.resolution, "recountResolution", resolution)
         };
       }
       if (resolution === "not_found") {
         return {
           ...row,
-          recountResolution: resolution,
+          ...synchronizedAliasPatch(row, DETAIL_FIELDS.excluded, "excludedFromActual", false),
+          ...synchronizedAliasPatch(row, DETAIL_FIELDS.resolution, "recountResolution", resolution),
           ...(task.reason === undefined ? {} : { recountReason: task.reason })
         };
       }
       if (resolution === "genuine_surplus") {
-        const scannedSerial = task.scannedSerial ?? task.scanned_serial ?? task.correctedSerial ?? task.corrected_serial;
+        const scannedAlias = consistentTextAlias(
+          task,
+          ["scannedSerial", "scanned_serial", "correctedSerial", "corrected_serial"],
+          "scanned serial",
+          `source ${source.publicSourceId}`,
+          normalizeInventoryCode
+        );
+        const scannedSerial = scannedAlias.value;
         return {
           ...row,
-          ...(scannedSerial === undefined ? {} : { scannedSerial }),
+          ...(scannedSerial === undefined
+            ? {}
+            : synchronizedAliasPatch(row, DETAIL_FIELDS.firstScannedCode, "scannedSerial", scannedSerial)),
           checked: 1,
           diff: 1,
-          status: "Bắn dư serial",
-          recountResolution: resolution
+          ...synchronizedAliasPatch(row, DETAIL_FIELDS.status, "status", "Bắn dư serial"),
+          ...synchronizedAliasPatch(row, DETAIL_FIELDS.excluded, "excludedFromActual", false),
+          ...synchronizedAliasPatch(row, DETAIL_FIELDS.resolution, "recountResolution", resolution)
         };
       }
       return row;

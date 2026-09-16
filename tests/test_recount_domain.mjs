@@ -95,6 +95,77 @@ assert.throws(
   "a protected code matching a required protocol value fails closed"
 );
 
+const shortSuffixDraft = buildRecountDraft([
+  {
+    rowId: "LONG-SUFFIX::1",
+    sku: "LONG-SUFFIX",
+    name: "Long suffix product",
+    stockSerial: "LONGABCD",
+    scannedSerial: "",
+    bin: "BIN-LONG",
+    performedBy: "",
+    checked: 0,
+    status: "Bắn thiếu (Chưa quét)"
+  },
+  {
+    rowId: "SHORT-SUFFIX::2",
+    sku: "SHORT-SUFFIX",
+    name: "Short suffix product",
+    stockSerial: "ABCD",
+    scannedSerial: "",
+    bin: "BIN-SHORT",
+    performedBy: "",
+    checked: 0,
+    status: "Bắn thiếu (Chưa quét)"
+  }
+], []);
+assert.deepEqual(
+  shortSuffixDraft.tasks.map(task => task.masked_reference),
+  ["********", "****"],
+  "a long mask that reveals another row's complete short code falls back to full masking"
+);
+
+const shortMiddleDraft = buildRecountDraft([
+  {
+    rowId: "MIDDLE::1",
+    sku: "MIDDLE-GROUP",
+    name: "Middle one",
+    stockSerial: "AAAA7X9QZZZZ",
+    scannedSerial: "",
+    bin: "BIN-1",
+    performedBy: "",
+    checked: 0,
+    status: "Bắn thiếu (Chưa quét)"
+  },
+  {
+    rowId: "MIDDLE::2",
+    sku: "MIDDLE-GROUP",
+    name: "Middle two",
+    stockSerial: "AAAA2B4CZZZZ",
+    scannedSerial: "",
+    bin: "BIN-2",
+    performedBy: "",
+    checked: 0,
+    status: "Bắn thiếu (Chưa quét)"
+  },
+  {
+    rowId: "MIDDLE-SHORT::3",
+    sku: "SHORT-CODE",
+    name: "Short middle code",
+    stockSerial: "7X9Q",
+    scannedSerial: "",
+    bin: "BIN-3",
+    performedBy: "",
+    checked: 0,
+    status: "Bắn thiếu (Chưa quét)"
+  }
+], []);
+assert.deepEqual(
+  shortMiddleDraft.tasks.map(task => task.masked_reference),
+  ["************", "****2B4C****", "****"],
+  "an unsafe middle-window mask falls back without degrading other collision masks"
+);
+
 const detailRows = [
   {
     rowId: "SKU-A::0",
@@ -342,6 +413,43 @@ assert.deepEqual(
 assert.equal(aliasShapeDraft.evidence.length, 3);
 
 assert.throws(
+  () => buildRecountDraft([{
+    rowId: "CONFLICT-EXPECTED",
+    sku: "CONFLICT",
+    name: "Conflicting expected aliases",
+    expectedSerial: "EXPECTED-ONE",
+    stockSerial: "EXPECTED-TWO",
+    scannedSerial: "",
+    status: "Bắn thiếu (Chưa quét)"
+  }], []),
+  /Conflicting expected serial aliases at CONFLICT-EXPECTED/
+);
+assert.throws(
+  () => buildRecountDraft([{
+    rowId: "CONFLICT-SCANNED",
+    sku: "CONFLICT",
+    name: "Conflicting scanned aliases",
+    stockSerial: "EXPECTED-THREE",
+    firstScannedCode: "SCANNED-ONE",
+    scannedSerial: "SCANNED-TWO",
+    status: "Bắn sai serial"
+  }], []),
+  /Conflicting first-scanned code aliases at CONFLICT-SCANNED/
+);
+assert.throws(
+  () => buildRecountDraft([{
+    rowId: "CONFLICT-PERFORMER",
+    sku: "CONFLICT",
+    name: "Conflicting performer aliases",
+    stockSerial: "EXPECTED-FOUR",
+    firstCounterErpName: "counter one",
+    performedBy: "counter two",
+    status: "Bắn thiếu (Chưa quét)"
+  }], []),
+  /Conflicting performer aliases at CONFLICT-PERFORMER/
+);
+
+assert.throws(
   () => buildRecountDraft([{ sku: "NO-ID", stockSerial: "NOID1234", status: "Bắn thiếu (Chưa quét)" }], []),
   /Missing stable source detail row ID/
 );
@@ -461,6 +569,49 @@ for (const protectedCode of ["CURRENT999900", "SECOND7777", "CROSS123456"]) {
   );
 }
 
+const combiningBoundaryDraft = buildRecountDraft([
+  {
+    rowId: "row::12345A\u0301",
+    sku: "BOUNDARY-1",
+    name: "Product 12345A\u0301 suffix",
+    stockSerial: "12345A",
+    scannedSerial: "",
+    bin: "BIN-12345A\u0301",
+    performedBy: "",
+    checked: 0,
+    status: "Bắn thiếu (Chưa quét)"
+  },
+  {
+    rowId: "BOUNDARY::2",
+    sku: "BOUNDARY-2",
+    name: "Product A\u030112345 decomposed",
+    stockSerial: "Á12345",
+    scannedSerial: "",
+    bin: "BIN-A\u030112345",
+    performedBy: "",
+    checked: 0,
+    status: "Bắn thiếu (Chưa quét)"
+  },
+  {
+    rowId: "row::\u0301A12345",
+    sku: "BOUNDARY-3",
+    name: "\u0301A12345 leading context",
+    stockSerial: "A12345",
+    scannedSerial: "",
+    bin: "\u0301A12345-BIN",
+    performedBy: "",
+    checked: 0,
+    status: "Bắn thiếu (Chưa quét)"
+  }
+], []);
+const combiningPublicJson = JSON.stringify(combiningBoundaryDraft.tasks);
+assert.equal(combiningPublicJson.includes("12345A"), false, "raw projection catches suffix composition boundaries");
+assert.equal(combiningPublicJson.includes("A\u030112345"), false, "normalized projection catches decomposed secret forms");
+assert.equal(combiningPublicJson.includes("A12345"), false, "raw projection catches leading combining-mark context");
+assert.equal(normalizeInventoryCode(combiningPublicJson).includes("12345A"), false);
+assert.equal(normalizeInventoryCode(combiningPublicJson).includes("Á12345"), false);
+assert.equal(normalizeInventoryCode(combiningPublicJson).includes("A12345"), false);
+
 const mergeRows = [
   { rowId: "SKU::0", stockSerial: "STOCK0", scannedSerial: "OLD0", checked: 1, diff: 0, status: "Bắn sai serial" },
   { rowId: "SKU::1", stockSerial: "STOCK1", scannedSerial: "OLD1", checked: 1, diff: 1, status: "Bắn dư serial" },
@@ -534,6 +685,131 @@ assert.deepEqual(
   strictlyPending,
   mergeRows,
   "missing confirmation, reopened state, conflicting state/status, and stale surplus completion all fail closed"
+);
+
+assert.throws(
+  () => applyConfirmedRecounts(mergeRows, [
+    { sourceDetailRowId: "SKU::0", resolution: "corrected_serial", confirmed: true, state: "completed", correctedSerial: "DONE0" },
+    { sourceDetailRowId: "SKU::0", resolution: "corrected_serial", confirmed: true, state: "reopened", correctedSerial: "STALE0" }
+  ]),
+  /Duplicate recount resolution for source SKU::0/,
+  "a reopened record cannot be filtered away after an older completed record wins"
+);
+assert.throws(
+  () => applyConfirmedRecounts(mergeRows, [
+    { sourceDetailRowId: "SKU::8", resolution: "not_found", confirmed: true, state: "completed" },
+    { sourceDetailRowId: "SKU::8", resolution: "corrected_serial", confirmed: true, state: "completed", correctedSerial: "FOUND8" }
+  ]),
+  /Duplicate recount resolution for source SKU::8/,
+  "two different completed resolutions are ambiguous"
+);
+assert.throws(
+  () => applyConfirmedRecounts(mergeRows, [
+    { sourceDetailRowId: "SKU::7", resolution: "same_product_multiple_codes", confirmed: true, state: "completed" },
+    { sourceDetailRowId: "SKU::7", resolution: "same_product_multiple_codes", confirmed: true, state: "completed" }
+  ]),
+  /Duplicate recount resolution for source SKU::7/,
+  "even exact duplicate records fail fast instead of hiding upstream duplication"
+);
+assert.throws(
+  () => applyConfirmedRecounts(mergeRows, [{
+    sourceDetailRowId: "SKU::1",
+    resolution: "genuine_surplus",
+    confirmed: true,
+    managerApproved: true,
+    manager_approved: false,
+    state: "completed"
+  }]),
+  /Conflicting manager approval aliases for source SKU::1/
+);
+assert.throws(
+  () => applyConfirmedRecounts(mergeRows, [{
+    sourceDetailRowId: "SKU::0",
+    resolution: "corrected_serial",
+    confirmed: true,
+    is_confirmed: false,
+    state: "completed",
+    correctedSerial: "CONFLICT0"
+  }]),
+  /Conflicting confirmation aliases for source SKU::0/
+);
+
+const aliasMergeRows = [
+  {
+    source_detail_row_id: "ALIAS-MERGE::1",
+    sku: "ALIAS-MERGE",
+    product_name: "Corrected snake row",
+    stock_serial: "FOUND-ALIAS-1",
+    scanned_serial: "",
+    stock_bin: "STOCK-1",
+    first_count_bin: "COUNT-1",
+    first_count_status: "Bắn thiếu (Chưa quét)",
+    recount_resolution: null,
+    excluded_from_actual: true,
+    checked: 0,
+    diff: -1
+  },
+  {
+    source_detail_row_id: "ALIAS-MERGE::2",
+    sku: "ALIAS-MERGE",
+    product_name: "Excluded snake row",
+    stock_serial: "",
+    scanned_serial: "DUPLICATE-ALIAS-2",
+    stock_bin: "STOCK-2",
+    first_count_bin: "COUNT-2",
+    first_count_status: "Bắn dư serial",
+    recount_resolution: null,
+    excluded_from_actual: false,
+    checked: 1,
+    diff: 1
+  }
+];
+const aliasMerged = applyConfirmedRecounts(aliasMergeRows, [
+  {
+    source_detail_row_id: "ALIAS-MERGE::1",
+    resolution: "corrected_serial",
+    confirmed: true,
+    state: "completed",
+    corrected_serial: "FOUND-ALIAS-1"
+  },
+  {
+    source_detail_row_id: "ALIAS-MERGE::2",
+    resolution: "same_product_multiple_codes",
+    confirmed: true,
+    state: "completed"
+  }
+]);
+assert.equal(aliasMerged[0].scanned_serial, "FOUND-ALIAS-1");
+assert.equal(aliasMerged[0].scannedSerial, "FOUND-ALIAS-1");
+assert.equal(aliasMerged[0].first_count_status, "Đã quét đủ");
+assert.equal(aliasMerged[0].status, "Đã quét đủ");
+assert.equal(aliasMerged[0].recount_resolution, "corrected_serial");
+assert.equal(aliasMerged[0].recountResolution, "corrected_serial");
+assert.equal(aliasMerged[0].excluded_from_actual, false);
+assert.equal(aliasMerged[0].excludedFromActual, false);
+assert.equal(aliasMerged[1].excluded_from_actual, true);
+assert.equal(aliasMerged[1].excludedFromActual, true);
+assert.equal(aliasMerged[1].first_count_status, "Đã loại bỏ Serial dư");
+assert.equal(aliasMerged[1].status, "Đã loại bỏ Serial dư");
+assert.equal(aliasMerged[1].recount_resolution, "same_product_multiple_codes");
+
+const rebuiltAliasDraft = buildRecountDraft(aliasMerged, []);
+assert.equal(rebuiltAliasDraft.tasks.length, 0, "merged snake-case rows remain resolved when rebuilt");
+assert.deepEqual(
+  rebuiltAliasDraft.evidence.filter(item => item.source_detail_row_id === "ALIAS-MERGE::1")
+    .map(({ serial_normalized, first_scanned_code_normalized, is_counted }) => ({
+      serial_normalized,
+      first_scanned_code_normalized,
+      is_counted
+    })),
+  [{ serial_normalized: "FOUND-ALIAS-1", first_scanned_code_normalized: "FOUND-ALIAS-1", is_counted: true }],
+  "rebuilding evidence uses the synchronized corrected scan"
+);
+assert.deepEqual(
+  rebuiltAliasDraft.evidence.filter(item => item.source_detail_row_id === "ALIAS-MERGE::2")
+    .map(({ serial_normalized, is_excluded }) => ({ serial_normalized, is_excluded })),
+  [{ serial_normalized: "DUPLICATE-ALIAS-2", is_excluded: true }],
+  "rebuilding evidence keeps duplicate-code exclusion authoritative"
 );
 
 console.log("Recount domain tests passed");
