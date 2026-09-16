@@ -612,6 +612,61 @@ assert.equal(normalizeInventoryCode(combiningPublicJson).includes("12345A"), fal
 assert.equal(normalizeInventoryCode(combiningPublicJson).includes("Á12345"), false);
 assert.equal(normalizeInventoryCode(combiningPublicJson).includes("A12345"), false);
 
+const compatibilityBoundaryRows = [
+  {
+    rowId: "row::12345Ａ\u0301",
+    sku: "COMPAT-1",
+    name: "Product 12345Ａ\u0301 suffix",
+    stockSerial: "12345A",
+    scannedSerial: "",
+    bin: "BIN-12345Ａ\u0301",
+    performedBy: "",
+    checked: 0,
+    status: "Bắn thiếu (Chưa quét)"
+  },
+  {
+    rowId: "row::\u0301１２３４５Ａ",
+    sku: "COMPAT-2",
+    name: "Leading \u0301１２３４５Ａ context",
+    stockSerial: "12345A",
+    scannedSerial: "",
+    bin: "\u0301１２３４５Ａ-BIN",
+    performedBy: "",
+    checked: 0,
+    status: "Bắn thiếu (Chưa quét)"
+  },
+  {
+    rowId: "row::1234ﬃ\u0301",
+    sku: "COMPAT-3",
+    name: "Expanded 1234ﬃ\u0301 code",
+    stockSerial: "1234FFI",
+    scannedSerial: "",
+    bin: "BIN-1234ﬃ\u0301",
+    performedBy: "",
+    checked: 0,
+    status: "Bắn thiếu (Chưa quét)"
+  }
+];
+const compatibilityBoundaryDraft = buildRecountDraft(compatibilityBoundaryRows, []);
+const repeatedCompatibilityBoundaryDraft = buildRecountDraft(compatibilityBoundaryRows, []);
+assert.deepEqual(
+  compatibilityBoundaryDraft.tasks.map(task => task.source_detail_row_id),
+  repeatedCompatibilityBoundaryDraft.tasks.map(task => task.source_detail_row_id),
+  "compatibility-boundary source redaction remains deterministic"
+);
+assert.ok(
+  compatibilityBoundaryDraft.tasks.every(task => /^row-[0-9a-f]{16}(?:-[0-9]+)?$/.test(task.source_detail_row_id)),
+  "fullwidth and expanding compatibility forms next to combining marks redact source IDs"
+);
+assert.ok(
+  compatibilityBoundaryDraft.tasks.every(task => task.product_name === "[redacted]" && task.stock_bin === null),
+  "compatibility-boundary secrets are removed from all public metadata"
+);
+const compatibilityBoundaryPublicJson = JSON.stringify(compatibilityBoundaryDraft.tasks);
+for (const leakedForm of ["12345Ａ", "\u0301１２３４５Ａ", "1234ﬃ"]) {
+  assert.equal(compatibilityBoundaryPublicJson.includes(leakedForm), false);
+}
+
 const mergeRows = [
   { rowId: "SKU::0", stockSerial: "STOCK0", scannedSerial: "OLD0", checked: 1, diff: 0, status: "Bắn sai serial" },
   { rowId: "SKU::1", stockSerial: "STOCK1", scannedSerial: "OLD1", checked: 1, diff: 1, status: "Bắn dư serial" },
@@ -743,8 +798,8 @@ const aliasMergeRows = [
     scanned_serial: "",
     stock_bin: "STOCK-1",
     first_count_bin: "COUNT-1",
-    first_count_status: "Bắn thiếu (Chưa quét)",
-    recount_resolution: null,
+    first_count_status: "Đã loại bỏ Serial dư",
+    recount_resolution: "same_product_multiple_codes",
     excluded_from_actual: true,
     checked: 0,
     diff: -1
@@ -797,12 +852,18 @@ const rebuiltAliasDraft = buildRecountDraft(aliasMerged, []);
 assert.equal(rebuiltAliasDraft.tasks.length, 0, "merged snake-case rows remain resolved when rebuilt");
 assert.deepEqual(
   rebuiltAliasDraft.evidence.filter(item => item.source_detail_row_id === "ALIAS-MERGE::1")
-    .map(({ serial_normalized, first_scanned_code_normalized, is_counted }) => ({
+    .map(({ serial_normalized, first_scanned_code_normalized, is_counted, is_excluded }) => ({
       serial_normalized,
       first_scanned_code_normalized,
-      is_counted
+      is_counted,
+      is_excluded
     })),
-  [{ serial_normalized: "FOUND-ALIAS-1", first_scanned_code_normalized: "FOUND-ALIAS-1", is_counted: true }],
+  [{
+    serial_normalized: "FOUND-ALIAS-1",
+    first_scanned_code_normalized: "FOUND-ALIAS-1",
+    is_counted: true,
+    is_excluded: false
+  }],
   "rebuilding evidence uses the synchronized corrected scan"
 );
 assert.deepEqual(
@@ -810,6 +871,65 @@ assert.deepEqual(
     .map(({ serial_normalized, is_excluded }) => ({ serial_normalized, is_excluded })),
   [{ serial_normalized: "DUPLICATE-ALIAS-2", is_excluded: true }],
   "rebuilding evidence keeps duplicate-code exclusion authoritative"
+);
+
+const clearedExclusionRows = [
+  {
+    source_detail_row_id: "CLEAR-EXCLUSION::NOT-FOUND",
+    sku: "CLEAR-EXCLUSION",
+    stock_serial: "NOT-FOUND-1",
+    scanned_serial: "",
+    first_count_status: "Đã loại bỏ Serial dư",
+    status: "Đã loại bỏ Serial dư",
+    recount_resolution: "same_product_multiple_codes",
+    excluded_from_actual: true,
+    excludedFromActual: true,
+    checked: 0,
+    diff: 0
+  },
+  {
+    source_detail_row_id: "CLEAR-EXCLUSION::SURPLUS",
+    sku: "CLEAR-EXCLUSION",
+    stock_serial: "",
+    scanned_serial: "SURPLUS-1",
+    first_count_status: "Đã loại bỏ Serial dư",
+    status: "Đã loại bỏ Serial dư",
+    recount_resolution: "same_product_multiple_codes",
+    excluded_from_actual: true,
+    excludedFromActual: true,
+    checked: 0,
+    diff: 0
+  }
+];
+const clearedExclusion = applyConfirmedRecounts(clearedExclusionRows, [
+  {
+    source_detail_row_id: "CLEAR-EXCLUSION::NOT-FOUND",
+    resolution: "not_found",
+    confirmed: true,
+    state: "completed"
+  },
+  {
+    source_detail_row_id: "CLEAR-EXCLUSION::SURPLUS",
+    resolution: "genuine_surplus",
+    confirmed: true,
+    manager_approved: true,
+    state: "completed",
+    scanned_serial: "SURPLUS-1"
+  }
+]);
+assert.equal(clearedExclusion[0].first_count_status, "Bắn thiếu (Chưa quét)");
+assert.equal(clearedExclusion[0].status, "Bắn thiếu (Chưa quét)");
+assert.equal(clearedExclusion[0].excluded_from_actual, false);
+assert.equal(clearedExclusion[0].excludedFromActual, false);
+assert.equal(clearedExclusion[1].first_count_status, "Bắn dư serial");
+assert.equal(clearedExclusion[1].status, "Bắn dư serial");
+assert.equal(clearedExclusion[1].excluded_from_actual, false);
+assert.equal(clearedExclusion[1].excludedFromActual, false);
+const rebuiltClearedExclusion = buildRecountDraft(clearedExclusion, []);
+assert.equal(rebuiltClearedExclusion.tasks.length, 0);
+assert.ok(
+  rebuiltClearedExclusion.evidence.every(item => item.is_excluded === false),
+  "confirmed not-found and genuine-surplus transitions cannot retain duplicate-exclusion evidence"
 );
 
 console.log("Recount domain tests passed");

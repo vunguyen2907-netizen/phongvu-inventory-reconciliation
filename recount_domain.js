@@ -1,6 +1,7 @@
 (function attachInventoryRecountDomain(global) {
   const REMOVABLE_CODE_CHARACTERS = /[\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200D\u2028\u2029\u202F\u205F\u2060\u3000\uFEFF]/gu;
   const REQUIRED_REDACTION_CANDIDATES = ["[redacted]", "[hidden]", "[private]", ""];
+  const NOT_FOUND_STATUS = "Bắn thiếu (Chưa quét)";
   const DETAIL_FIELDS = Object.freeze({
     sourceId: ["source_detail_row_id", "sourceDetailRowId", "rowId"],
     expectedSerial: ["expected_serial", "expectedSerial", "stock_serial", "stockSerial"],
@@ -24,6 +25,16 @@
 
   function normalizeInventoryCode(value) {
     return projectInventoryCode(String(value ?? "").normalize("NFKC"));
+  }
+
+  function projectCompatibilityCodePoints(value) {
+    const text = String(value ?? "");
+    if (/^[\x00-\x7F]*$/u.test(text)) return projectInventoryCode(text);
+    const normalizedCodePoints = [];
+    for (const character of text) {
+      normalizedCodePoints.push(character.normalize("NFKC"));
+    }
+    return projectInventoryCode(normalizedCodePoints.join(""));
   }
 
   function maskCode(code, revealStart) {
@@ -240,7 +251,11 @@
 
   function createProtectedCodeMatcher(protectedCodes) {
     const codes = [...new Set(protectedCodes
-      .flatMap(code => [projectInventoryCode(code), normalizeInventoryCode(code)])
+      .flatMap(code => [
+        projectInventoryCode(code),
+        projectCompatibilityCodePoints(code),
+        normalizeInventoryCode(code)
+      ])
       .filter(Boolean))];
     const nodes = [{ transitions: new Map(), failure: 0, terminal: false }];
 
@@ -289,10 +304,13 @@
       hasMatch(value) {
         const rawProjection = projectInventoryCode(value);
         if (hasNormalizedMatch(rawProjection)) return true;
+        const compatibilityProjection = projectCompatibilityCodePoints(value);
+        if (compatibilityProjection !== rawProjection
+          && hasNormalizedMatch(compatibilityProjection)) return true;
         const normalizedProjection = normalizeInventoryCode(value);
-        return normalizedProjection === rawProjection
-          ? false
-          : hasNormalizedMatch(normalizedProjection);
+        return normalizedProjection !== rawProjection
+          && normalizedProjection !== compatibilityProjection
+          && hasNormalizedMatch(normalizedProjection);
       }
     });
   }
@@ -631,6 +649,7 @@
       if (resolution === "not_found") {
         return {
           ...row,
+          ...synchronizedAliasPatch(row, DETAIL_FIELDS.status, "status", NOT_FOUND_STATUS),
           ...synchronizedAliasPatch(row, DETAIL_FIELDS.excluded, "excludedFromActual", false),
           ...synchronizedAliasPatch(row, DETAIL_FIELDS.resolution, "recountResolution", resolution),
           ...(task.reason === undefined ? {} : { recountReason: task.reason })
