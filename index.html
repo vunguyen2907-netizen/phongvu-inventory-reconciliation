@@ -577,17 +577,7 @@
       if (url && key) {
         try {
           supabaseClient = supabase.createClient(url, key);
-          supabaseReady = (async () => {
-            const { data } = await supabaseClient.auth.getSession();
-            if (!data?.session) {
-              const { error } = await supabaseClient.auth.signInAnonymously();
-              if (error) throw error;
-            }
-            return supabaseClient;
-          })().catch(error => {
-            console.error("Supabase anonymous auth error:", error);
-            return null;
-          });
+          supabaseReady = Promise.resolve(supabaseClient);
         } catch (e) { console.error("Supabase init error:", e); }
       }
     };
@@ -597,9 +587,219 @@
       return supabaseReady;
     }
 
+    const MANAGER_TABS = Object.freeze([
+      { id: "import", label: "1. Nhập dữ liệu" },
+      { id: "serial-detail", label: "2. Chi tiết Serial" },
+      { id: "second-count", label: "3. Kiểm đếm lần 2" },
+      { id: "second-count-report", label: "4. Báo cáo kiểm lần 2" },
+      { id: "variance-summary", label: "5. Bảng tổng hợp chênh lệch" },
+      { id: "export", label: "6. Xuất báo cáo" },
+      { id: "monthly-archive", label: "7. Lưu trữ hàng tháng" }
+    ]);
+    const COUNTER_TABS = Object.freeze([
+      { id: "second-count", label: "Kiểm đếm lần 2" }
+    ]);
+
+    function useAuthState() {
+      const [authState, setAuthState] = useState({
+        session: null,
+        profile: null,
+        loading: true,
+        error: ""
+      });
+
+      useEffect(() => {
+        let mounted = true;
+        let requestVersion = 0;
+        let subscription = null;
+
+        const loadAuthoritativeProfile = async (session) => {
+          const version = ++requestVersion;
+          if (!session?.user?.id) {
+            if (mounted) setAuthState({ session: null, profile: null, loading: false, error: "" });
+            return;
+          }
+
+          if (mounted) {
+            setAuthState({ session, profile: null, loading: true, error: "" });
+          }
+
+          const client = await getReadySupabaseClient();
+          if (!client) {
+            if (mounted && version === requestVersion) {
+              setAuthState({ session, profile: null, loading: false, error: "Chưa cấu hình Supabase Auth." });
+            }
+            return;
+          }
+
+          const { data, error } = await client
+            .from("profiles")
+            .select("id, email, full_name, erp_name, role, status")
+            .eq("id", session.user.id)
+            .maybeSingle();
+
+          if (!mounted || version !== requestVersion) return;
+          setAuthState({
+            session,
+            profile: error ? null : data,
+            loading: false,
+            error: error ? error.message : (data ? "" : "Không tìm thấy hồ sơ tài khoản.")
+          });
+        };
+
+        (async () => {
+          const client = await getReadySupabaseClient();
+          if (!mounted) return;
+          if (!client) {
+            setAuthState({ session: null, profile: null, loading: false, error: "" });
+            return;
+          }
+
+          const { data, error } = await client.auth.getSession();
+          if (error) {
+            setAuthState({ session: null, profile: null, loading: false, error: error.message });
+          } else {
+            await loadAuthoritativeProfile(data?.session || null);
+          }
+
+          const listener = client.auth.onAuthStateChange((_event, nextSession) => {
+            Promise.resolve().then(() => loadAuthoritativeProfile(nextSession));
+          });
+          subscription = listener?.data?.subscription || null;
+        })();
+
+        return () => {
+          mounted = false;
+          requestVersion += 1;
+          subscription?.unsubscribe();
+        };
+      }, []);
+
+      return authState;
+    }
+
+    function AuthCard({ children }) {
+      return (
+        <main className="min-h-screen flex items-center justify-center bg-slate-100 p-4">
+          <section className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-7 shadow-xl">
+            <div className="mb-6 flex items-center gap-3">
+              <div className="w-11 h-11 rounded-xl bg-brand-600 flex items-center justify-center font-bold text-white">PV</div>
+              <div>
+                <p className="font-bold text-slate-900">Phong Vũ Inventory</p>
+                <p className="text-xs text-slate-500">Kiểm kê một chi nhánh</p>
+              </div>
+            </div>
+            {children}
+          </section>
+        </main>
+      );
+    }
+
+    function AuthForm() {
+      const [mode, setMode] = useState("sign-in");
+      const [email, setEmail] = useState("");
+      const [password, setPassword] = useState("");
+      const [fullName, setFullName] = useState("");
+      const [erpName, setErpName] = useState("");
+      const [submitting, setSubmitting] = useState(false);
+      const [message, setMessage] = useState("");
+      const [error, setError] = useState("");
+      const isSignUp = mode === "sign-up";
+
+      const handleSubmit = async (event) => {
+        event.preventDefault();
+        setSubmitting(true);
+        setMessage("");
+        setError("");
+        try {
+          const client = await getReadySupabaseClient();
+          if (!client) throw new Error("Chưa cấu hình Supabase Auth.");
+
+          const result = isSignUp
+            ? await client.auth.signUp({
+                email: email.trim(),
+                password,
+                options: { data: { full_name: fullName.trim(), erp_name: erpName.trim() } }
+              })
+            : await client.auth.signInWithPassword({ email: email.trim(), password });
+          if (result.error) throw result.error;
+          if (isSignUp) {
+            setMessage("Tài khoản đã được tạo. Hãy xác nhận email (nếu được yêu cầu) và chờ quản lý phê duyệt.");
+          }
+        } catch (submitError) {
+          setError(submitError?.message || "Không thể xác thực tài khoản.");
+        } finally {
+          setSubmitting(false);
+        }
+      };
+
+      return (
+        <AuthCard>
+          <h1 className="text-xl font-extrabold text-slate-900">{isSignUp ? "Đăng ký tài khoản" : "Đăng nhập"}</h1>
+          <p className="mt-1 text-sm text-slate-500">
+            {isSignUp ? "Tạo tài khoản nhân viên để chờ phê duyệt." : "Dùng tài khoản đã được phê duyệt."}
+          </p>
+          <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
+            <div>
+              <label htmlFor="auth-email" className="block text-xs font-semibold text-slate-700 mb-1">Email</label>
+              <input id="auth-email" type="email" required autoComplete="email" value={email} onChange={event => setEmail(event.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label htmlFor="auth-password" className="block text-xs font-semibold text-slate-700 mb-1">Mật khẩu</label>
+              <input id="auth-password" type="password" required minLength="6" autoComplete={isSignUp ? "new-password" : "current-password"} value={password} onChange={event => setPassword(event.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+            </div>
+            {isSignUp && (
+              <>
+                <div>
+                  <label htmlFor="auth-full-name" className="block text-xs font-semibold text-slate-700 mb-1">Họ và tên</label>
+                  <input id="auth-full-name" required value={fullName} onChange={event => setFullName(event.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+                </div>
+                <div>
+                  <label htmlFor="auth-erp-name" className="block text-xs font-semibold text-slate-700 mb-1">Tên nhân viên ERP</label>
+                  <input id="auth-erp-name" required value={erpName} onChange={event => setErpName(event.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+                </div>
+              </>
+            )}
+            {error && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-xs text-rose-700">{error}</p>}
+            {message && <p role="status" className="rounded-lg bg-emerald-50 p-3 text-xs text-emerald-700">{message}</p>}
+            <button type="submit" disabled={submitting} className="w-full rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">
+              {submitting ? "Đang xử lý…" : (isSignUp ? "Đăng ký" : "Đăng nhập")}
+            </button>
+          </form>
+          <button
+            type="button"
+            onClick={() => { setMode(isSignUp ? "sign-in" : "sign-up"); setError(""); setMessage(""); }}
+            className="mt-4 w-full text-sm font-semibold text-brand-700"
+          >
+            {isSignUp ? "Quay lại đăng nhập" : "Tạo tài khoản"}
+          </button>
+        </AuthCard>
+      );
+    }
+
+    function AccountStateScreen({ title, description, profile }) {
+      const handleSignOut = async () => {
+        const client = await getReadySupabaseClient();
+        await client?.auth.signOut();
+      };
+      return (
+        <AuthCard>
+          <h1 className="text-xl font-extrabold text-slate-900">{title}</h1>
+          <p className="mt-2 text-sm text-slate-600">{description}</p>
+          <dl className="mt-5 rounded-xl bg-slate-50 p-4 text-sm">
+            <dt className="text-xs font-semibold uppercase text-slate-500">Tài khoản</dt>
+            <dd className="mt-1 font-semibold text-slate-800">{profile?.full_name || profile?.email || "—"}</dd>
+          </dl>
+          <button type="button" onClick={handleSignOut} className="mt-5 w-full rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700">Đăng xuất</button>
+        </AuthCard>
+      );
+    }
+
     // --- MAIN REACT SPA COMPONENT ---
-    function App() {
-      const [activeTab, setActiveTab] = useState(0);
+    function ApplicationShell({ session, profile, legacyMode = false }) {
+      const isManager = legacyMode || profile?.role === "manager" || profile?.role === "admin";
+      const allowedTabs = isManager ? MANAGER_TABS : COUNTER_TABS;
+      const [activeTab, setActiveTab] = useState(() => isManager ? "import" : "second-count");
       const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
       const [sessionName, setSessionName] = useState(`Kiểm kê ${new Date().toLocaleDateString('vi-VN')}`);
       const [activeSessionId, setActiveSessionId] = useState(null);
@@ -655,6 +855,12 @@
       const [wrapL2Text, setWrapL2Text] = useState(false);
       const [wrapMainText, setWrapMainText] = useState(false);
 
+      useEffect(() => {
+        setActiveTab(currentTab => (
+          allowedTabs.some(tab => tab.id === currentTab) ? currentTab : allowedTabs[0].id
+        ));
+      }, [profile?.role, legacyMode]);
+
       const toggleSort = (setter) => (key) => {
         setter(prev => ({
           key,
@@ -664,7 +870,7 @@
 
       // Supabase fetch
       const fetchSavedSessions = async () => {
-        if (!supabaseClient) return;
+        if (!isManager || !supabaseClient) return;
         try {
           const client = await getReadySupabaseClient();
           if (!client) return;
@@ -677,7 +883,7 @@
       };
 
       const fetchMonthlyArchives = async () => {
-        if (!supabaseClient) return;
+        if (!isManager || !supabaseClient) return;
         try {
           const client = await getReadySupabaseClient();
           if (!client) return;
@@ -696,18 +902,19 @@
       };
 
       useEffect(() => {
+        if (!isManager) return;
         fetchSavedSessions();
         fetchMonthlyArchives();
-      }, []);
+      }, [isManager]);
 
       // Auto-save debounce (10s)
       useEffect(() => {
-        if (!isDirty || !supabaseClient || dfCheckDetail.length === 0) return;
+        if (!isManager || !isDirty || !supabaseClient || dfCheckDetail.length === 0) return;
         const timer = setTimeout(() => {
           handleSaveSession(false);
         }, 10000);
         return () => clearTimeout(timer);
-      }, [isDirty, dfCheckDetail, dfCountL2]);
+      }, [isManager, isDirty, dfCheckDetail, dfCountL2]);
 
       // Serial được bổ sung tại tab Chi tiết là số đếm Lần 2 của SKU tương ứng.
       useEffect(() => {
@@ -956,7 +1163,7 @@
         setDfCountL2(countL2Data);
         setDfCheckDetail(enrichedDetailRows);
         setIsDirty(true);
-        setActiveTab(1);
+        setActiveTab("serial-detail");
       };
 
       // --- SAVE & LOAD SESSIONS ---
@@ -1101,7 +1308,7 @@
           setSessionName(`Archive ${data.session_name || data.label || summaryPayload._label || yearMonth}`);
           setActiveSessionId(null);
           setIsDirty(false);
-          setActiveTab(3);
+          setActiveTab("variance-summary");
         } catch (e) {
           alert("Lỗi tải báo cáo tháng: " + e.message);
         }
@@ -1780,10 +1987,25 @@
         return sortRows(rows, sortMain);
       }, [dfMainRows, filterMainMode, filterMainStatus, searchMain, sortMain]);
 
+      const handleShellSignOut = async () => {
+        const client = await getReadySupabaseClient();
+        await client?.auth.signOut();
+      };
+
+      const handlePasswordReset = async () => {
+        const email = session?.user?.email || profile?.email;
+        if (!email) return;
+        const client = await getReadySupabaseClient();
+        if (!client?.auth?.resetPasswordForEmail) return;
+        const { error } = await client.auth.resetPasswordForEmail(email, { redirectTo: window.location.href.split("#")[0] });
+        if (error) alert(error.message);
+        else alert("Email đổi mật khẩu đã được gửi.");
+      };
+
       return (
         <div className="flex h-screen overflow-hidden">
           {/* SIDEBAR */}
-          {!sidebarCollapsed && <aside className="w-80 shrink-0 bg-slate-900 text-slate-100 flex flex-col justify-between p-4 shadow-xl overflow-y-auto">
+          {isManager && !sidebarCollapsed && <aside className="w-80 shrink-0 bg-slate-900 text-slate-100 flex flex-col justify-between p-4 shadow-xl overflow-y-auto">
             <div>
               <div className="flex items-center gap-3 mb-6 pb-4 border-b border-slate-800">
                 <div className="w-10 h-10 rounded-xl bg-brand-500 flex items-center justify-center font-bold text-lg text-white shadow-lg">PV</div>
@@ -1903,7 +2125,7 @@
 
           {/* MAIN CONTENT AREA */}
           <main className="flex-1 min-w-0 flex flex-col overflow-hidden bg-slate-50 relative">
-            {sidebarCollapsed && (
+            {isManager && sidebarCollapsed && (
               <button
                 onClick={() => setSidebarCollapsed(false)}
                 className="absolute left-3 top-3 z-30 w-9 h-9 rounded-lg bg-slate-900 hover:bg-slate-800 text-white shadow-lg"
@@ -1913,39 +2135,44 @@
             )}
             {/* TOP NAVIGATION TABS */}
             <header className="bg-white border-b border-slate-200 px-6 pt-4 pb-0 shadow-sm">
-              <div className="mb-4">
+              <div className="mb-4 flex items-start justify-between gap-4">
                 <div>
                   <h2 className="text-xl font-bold text-slate-800">Hệ thống Tự động Xử lý & Đối soát Dữ liệu Kiểm kê</h2>
                   <p className="text-xs text-slate-500">Công ty Cổ phần Thương mại Dịch vụ Phong Vũ</p>
                 </div>
+                <div className="flex items-center gap-3 text-right">
+                  <div>
+                    <p className="text-sm font-bold text-slate-800">{legacyMode ? "Chế độ chuyển đổi" : (profile?.full_name || profile?.email)}</p>
+                    <p className="text-xs text-slate-500">{legacyMode ? "Legacy manager" : `${profile?.role || ""} · ${profile?.erp_name || ""}`}</p>
+                  </div>
+                  {!legacyMode && (
+                    <div className="flex gap-2">
+                      <button type="button" onClick={handlePasswordReset} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-600">Gửi email đổi mật khẩu</button>
+                      <button type="button" onClick={handleShellSignOut} className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white">Đăng xuất</button>
+                    </div>
+                  )}
+                </div>
               </div>
 
               {/* TABS HEADER */}
-              <div className="flex gap-2 border-b border-slate-200">
-                {[
-                  "1. Nhập dữ liệu",
-                  "2. Chi tiết Serial",
-                  "3. Kiểm đếm Lần 2",
-                  "4. Bảng tổng hợp chênh lệch",
-                  "5. Xuất báo cáo",
-                  "📅 6. Lưu trữ hàng tháng"
-                ].map((tabLabel, idx) => (
+              <nav aria-label="Điều hướng chính" className="flex gap-2 border-b border-slate-200">
+                {allowedTabs.map(tab => (
                   <button
-                    key={idx}
-                    onClick={() => setActiveTab(idx)}
-                    className={`px-4 py-2.5 text-xs font-semibold transition border-b-2 -mb-px ${activeTab === idx ? 'border-brand-600 text-brand-600 bg-brand-50/50' : 'border-transparent text-slate-600 hover:text-slate-900 hover:border-slate-300'}`}
+                    key={tab.id}
+                    onClick={() => setActiveTab(tab.id)}
+                    className={`px-4 py-2.5 text-xs font-semibold transition border-b-2 -mb-px ${activeTab === tab.id ? 'border-brand-600 text-brand-600 bg-brand-50/50' : 'border-transparent text-slate-600 hover:text-slate-900 hover:border-slate-300'}`}
                   >
-                    {tabLabel}
+                    {tab.label}
                   </button>
                 ))}
-              </div>
+              </nav>
             </header>
 
             {/* TAB CONTENTS */}
             <div className="flex-1 p-6 overflow-y-auto">
               
               {/* TAB 0: NHẬP DỮ LIỆU */}
-              {activeTab === 0 && (
+              {activeTab === "import" && (
                 <div className="space-y-6 max-w-4xl mx-auto">
                   <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-6">
                     <div>
@@ -2062,7 +2289,7 @@
               )}
 
               {/* TAB 1: CHI TIẾT SERIAL */}
-              {activeTab === 1 && (
+              {activeTab === "serial-detail" && (
                 <div className="space-y-4">
                   {/* FILTERS BAR */}
                   <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-wrap gap-4 items-center justify-between">
@@ -2229,7 +2456,7 @@
               )}
 
               {/* TAB 2: KIỂM ĐẾM LẦN 2 */}
-              {activeTab === 2 && (
+              {activeTab === "second-count" && (
                 <div className="space-y-4">
                   <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-wrap gap-4 items-center justify-between">
                     <div className="flex gap-4">
@@ -2350,8 +2577,18 @@
                 </div>
               )}
 
-              {/* TAB 3: BẢNG TỔNG HỢP CHÊNH LỆCH */}
-              {activeTab === 3 && (
+              {/* TAB 4: BÁO CÁO KIỂM LẦN 2 */}
+              {activeTab === "second-count-report" && (
+                <div className="space-y-4 max-w-4xl mx-auto">
+                  <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                    <h3 className="text-base font-bold text-slate-800">Báo cáo kiểm lần 2</h3>
+                    <p className="mt-2 text-xs text-slate-500">Báo cáo kết quả đếm lại sẽ hiển thị tại đây khi một đợt kiểm đếm được xác nhận.</p>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 5: BẢNG TỔNG HỢP CHÊNH LỆCH */}
+              {activeTab === "variance-summary" && (
                 <div className="space-y-4">
                   {/* FILTERS BAR */}
                   <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-wrap gap-4 items-center justify-between">
@@ -2459,8 +2696,8 @@
                 </div>
               )}
 
-              {/* TAB 4: XUẤT BÁO CÁO */}
-              {activeTab === 4 && (
+              {/* TAB 6: XUẤT BÁO CÁO */}
+              {activeTab === "export" && (
                 <div className="space-y-6 max-w-3xl mx-auto">
                   <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
                     <h3 className="text-base font-bold text-slate-800">Thông tin Biên bản Kiểm kê Hàng tồn kho</h3>
@@ -2527,8 +2764,8 @@
                 </div>
               )}
 
-              {/* TAB 5: LƯU TRỮ HÀNG THÁNG */}
-              {activeTab === 5 && (
+              {/* TAB 7: LƯU TRỮ HÀNG THÁNG */}
+              {activeTab === "monthly-archive" && (
                 <div className="space-y-4 max-w-4xl mx-auto">
                   <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
                     <h3 className="text-base font-bold text-slate-800 mb-2">📅 Danh sách Báo cáo Hàng tháng (Rolling 12 tháng)</h3>
@@ -2705,6 +2942,67 @@
           )}
         </div>
       );
+    }
+
+    function App() {
+      const { session, profile, loading, error } = useAuthState();
+      const legacyMode = window.ENABLE_LEGACY_ANONYMOUS === true;
+
+      if (loading) {
+        return (
+          <AuthCard>
+            <h1 className="text-lg font-bold text-slate-900">Đang tải tài khoản…</h1>
+            <p className="mt-2 text-sm text-slate-500">Hệ thống đang xác minh phiên đăng nhập và quyền truy cập.</p>
+          </AuthCard>
+        );
+      }
+
+      if (!session) {
+        return legacyMode ? <ApplicationShell session={null} profile={null} legacyMode={true} /> : <AuthForm />;
+      }
+
+      if (!profile) {
+        return (
+          <AccountStateScreen
+            title="Quyền truy cập đã bị vô hiệu hóa"
+            description={error || "Tài khoản chưa có hồ sơ truy cập hợp lệ. Vui lòng liên hệ quản trị viên."}
+            profile={{ email: session.user?.email }}
+          />
+        );
+      }
+
+      if (profile.status === "pending") {
+        return (
+          <AccountStateScreen
+            title="Chờ phê duyệt"
+            description="Tài khoản đã đăng ký thành công và đang chờ quản lý phê duyệt."
+            profile={profile}
+          />
+        );
+      }
+
+      if (profile.status === "locked" || profile.status === "deleted") {
+        return (
+          <AccountStateScreen
+            title="Quyền truy cập đã bị vô hiệu hóa"
+            description="Tài khoản này đã bị khóa hoặc xóa. Vui lòng liên hệ quản trị viên."
+            profile={profile}
+          />
+        );
+      }
+
+      const allowedRole = profile.role === "counter" || profile.role === "manager" || profile.role === "admin";
+      if (profile.status !== "active" || !allowedRole) {
+        return (
+          <AccountStateScreen
+            title="Quyền truy cập đã bị vô hiệu hóa"
+            description="Trạng thái hoặc vai trò tài khoản không hợp lệ. Vui lòng liên hệ quản trị viên."
+            profile={profile}
+          />
+        );
+      }
+
+      return <ApplicationShell session={session} profile={profile} />;
     }
 
     ReactDOM.render(<App />, document.getElementById('root'));

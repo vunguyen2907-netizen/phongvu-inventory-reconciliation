@@ -31,8 +31,45 @@ Không đưa secret/service-role key vào GitHub hoặc trình duyệt.
 > Supabase Auth + RLS và chỉ cấp anon key; nếu chưa có Auth, giữ thao tác Supabase
 > ở lớp Python `supabase_store.py`.
 
+## Cấu hình Supabase Auth và email
+
+Giao diện mặc định dùng tài khoản email/mật khẩu có tên. Vai trò và
+trạng thái truy cập luôn được đọc từ bảng `profiles`; metadata do người
+dùng nhập khi đăng ký chỉ gồm họ tên và tên nhân viên ERP.
+
+1. Vào **Authentication > Providers > Email** và bật nhà cung cấp **Email**
+   cùng tùy chọn đăng nhập bằng mật khẩu.
+2. Giữ **Confirm email** bật cho môi trường thật. Người dùng phải xác
+   nhận email, sau đó quản lý phê duyệt hồ sơ đang ở trạng thái
+   `pending` trước khi họ truy cập ứng dụng.
+3. Vào **Project Settings > Authentication > SMTP Settings**, bật **Custom
+   SMTP** và khai báo host, port, tài khoản, mật khẩu, tên và địa chỉ
+   người gửi của nhà cung cấp email. Gửi thử email xác nhận và email
+   đổi mật khẩu trước khi mời nhân viên.
+4. Vào **Authentication > URL Configuration**. Đặt **Site URL** là URL
+   Streamlit chính thức và thêm cùng URL (kèm các URL staging/local cần
+   thiết) vào **Redirect URLs** để link xác nhận và đổi mật khẩu quay
+   lại đúng ứng dụng.
+
+Trong giai đoạn chuyển đổi duy nhất, có thể hiện giao diện quản lý cũ
+không cần phiên có tên bằng cách đặt biến trình duyệt sau trước khi
+ứng dụng khởi tạo:
+
+```javascript
+window.ENABLE_LEGACY_ANONYMOUS = true;
+```
+
+Cờ này không tự đăng nhập anonymous và không được bật mặc định. Sau khi
+các tài khoản thí điểm đã được phê duyệt và kiểm tra, hãy xóa cờ
+`ENABLE_LEGACY_ANONYMOUS` khỏi mẫu nhúng/deploy vào **Authentication >
+Providers > Anonymous Sign-Ins** để tắt hoàn toàn đăng nhập anonymous.
+
 ## Lịch sử và bảo mật
 
 Mỗi đợt kiểm kê được lưu trong bảng `inventory_sessions` dưới dạng JSONB; sidebar cho phép tạo, lưu và mở lại các đợt đã có. Hai file dữ liệu nguồn (tồn kho và ERP) của từng đợt cũng được lưu một lần vào bucket private `inventory-source-files` trên Supabase Storage.
 
-Phiên bản hiện tại chưa có đăng nhập người dùng. Vì vậy chỉ chia sẻ URL app cho người được phép; nếu cần phân quyền theo nhân viên/chi nhánh, bước tiếp theo là thêm Supabase Auth và cột `owner_id` với RLS policy.
+Người chưa đăng nhập chỉ thấy màn hình đăng nhập/đăng ký. Tài khoản
+`pending`, `locked` hoặc `deleted` không thể mở dữ liệu nghiệp vụ. Nhân viên
+`counter` chỉ thấy khu vực **Kiểm đếm lần 2**; `manager` và `admin`
+thấy quy trình quản lý đầy đủ. RLS và RPC trong Supabase là biên bảo
+mật bắt buộc; việc ẩn tab trong trình duyệt không thay thế phân quyền phía server.
