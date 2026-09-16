@@ -3,11 +3,18 @@ import os
 import json
 
 
-def build_embedded_html(html_code: str, domain_code: str, public_url: str, public_key: str) -> str:
+def build_embedded_html(
+    html_code: str,
+    domain_code: str,
+    public_url: str,
+    public_key: str,
+    auth_redirect_url: str = "",
+) -> str:
     public_config = (
         "<script>"
         f"window.SUPABASE_URL={json.dumps(public_url)};"
         f"window.SUPABASE_KEY={json.dumps(public_key)};"
+        f"window.AUTH_REDIRECT_URL={json.dumps(auth_redirect_url)};"
         "</script>"
     )
     html_code = html_code.replace("</head>", f"{public_config}</head>", 1)
@@ -59,10 +66,20 @@ if os.path.exists(html_path):
         or os.getenv("SUPABASE_PUBLISHABLE_KEY", "")
         or os.getenv("SUPABASE_ANON_KEY", "")
     )
+    auth_redirect_url = (
+        st.secrets.get("AUTH_REDIRECT_URL", "")
+        or os.getenv("AUTH_REDIRECT_URL", "")
+    )
     domain_path = os.path.join(os.path.dirname(__file__), "recount_domain.js")
     with open(domain_path, "r", encoding="utf-8") as domain_file:
         domain_code = domain_file.read()
-    html_code = build_embedded_html(html_code, domain_code, public_url, public_key)
+    html_code = build_embedded_html(
+        html_code,
+        domain_code,
+        public_url,
+        public_key,
+        auth_redirect_url,
+    )
     st.components.v1.html(html_code, height=950, scrolling=True)
 else:
     st.error("Không tìm thấy file index.html!")

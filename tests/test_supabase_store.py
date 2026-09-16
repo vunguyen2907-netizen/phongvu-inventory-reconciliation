@@ -64,6 +64,21 @@ class SupabaseStoreHelpersTest(unittest.TestCase):
 
         self.assertIn("<\\/script>", rendered_html)
 
+    def test_build_embedded_html_injects_top_level_auth_redirect_url(self):
+        app = importlib.import_module("app")
+        rendered_html = app.build_embedded_html(
+            "<html><head></head><body><script type=\"text/babel\">app()</script></body></html>",
+            "window.InventoryRecountDomain = {};",
+            "https://project.supabase.co",
+            "public-key",
+            "https://inventory.example.com/auth",
+        )
+
+        self.assertIn(
+            'window.AUTH_REDIRECT_URL="https://inventory.example.com/auth";',
+            rendered_html,
+        )
+
     def test_compressed_dataframe_round_trip(self):
         original = pd.DataFrame(
             [{"sku": "00123", "qty": 1.5}, {"sku": "ABC", "qty": 2.0}]

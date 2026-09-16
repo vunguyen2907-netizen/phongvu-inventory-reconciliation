@@ -83,6 +83,24 @@ class SecureRecountSchemaContractTests(unittest.TestCase):
             self.assertNotRegex(sql, rf"create policy[^;]+on public\.{table}\b")
         self.assertFalse(protected_client_grants(sql))
 
+    def test_legacy_serial_payloads_require_an_active_manager_or_admin(self):
+        sql = self.migration().lower()
+        self.assertNotIn("create policy inventory_sessions_authenticated_all", sql)
+        self.assertNotIn("create policy monthly_archives_authenticated_all", sql)
+        for table in ("inventory_sessions", "monthly_archives"):
+            with self.subTest(table=table):
+                self.assertIn(
+                    f"revoke all on table public.{table} from public, anon, authenticated;",
+                    sql,
+                )
+                self.assertRegex(
+                    sql,
+                    rf"create policy {table}_active_managers\s+on public\.{table}\s+"
+                    rf"for all\s+to authenticated\s+using \(\s*\(select public\.current_profile_role\(\)\) "
+                    rf"in \('admin', 'manager'\)\s*\)\s+with check \(\s*"
+                    rf"\(select public\.current_profile_role\(\)\) in \('admin', 'manager'\)\s*\);",
+                )
+
     def test_definer_functions_pin_search_path_and_revoke_public_execute(self):
         sql = self.migration().lower()
         functions = re.findall(r"create or replace function ((?:public|private)\.\w+)\((.*?)\)(.*?)\$\$;", sql, re.S)

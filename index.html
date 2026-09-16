@@ -600,72 +600,141 @@
       { id: "second-count", label: "Kiểm đếm lần 2" }
     ]);
 
+    function getAuthRedirectUrl() {
+      const configured = String(window.AUTH_REDIRECT_URL || "").trim();
+      const candidates = [configured, document.referrer];
+      for (const candidate of candidates) {
+        if (!candidate) continue;
+        try {
+          const url = new URL(candidate, window.location.origin);
+          if (url.protocol === "https:" || url.protocol === "http:") {
+            url.hash = "";
+            return url.toString();
+          }
+        } catch (_error) {}
+      }
+      return window.location.origin;
+    }
+
+    function authErrorMessage(error, fallback = "Không thể xác thực tài khoản.") {
+      return error?.message || String(error || "").trim() || fallback;
+    }
+
     function useAuthState() {
+      const [attempt, setAttempt] = useState(0);
+      const [recovery, setRecovery] = useState(false);
       const [authState, setAuthState] = useState({
         session: null,
         profile: null,
         loading: true,
-        error: ""
+        error: "",
+        legacyMode: false
       });
 
       useEffect(() => {
         let mounted = true;
         let requestVersion = 0;
         let subscription = null;
+        const legacyEnabled = window.ENABLE_LEGACY_ANONYMOUS === true;
 
-        const loadAuthoritativeProfile = async (session) => {
-          const version = ++requestVersion;
-          if (!session?.user?.id) {
-            if (mounted) setAuthState({ session: null, profile: null, loading: false, error: "" });
-            return;
-          }
-
-          if (mounted) {
-            setAuthState({ session, profile: null, loading: true, error: "" });
-          }
-
-          const client = await getReadySupabaseClient();
-          if (!client) {
-            if (mounted && version === requestVersion) {
-              setAuthState({ session, profile: null, loading: false, error: "Chưa cấu hình Supabase Auth." });
-            }
-            return;
-          }
-
-          const { data, error } = await client
-            .from("profiles")
-            .select("id, email, full_name, erp_name, role, status")
-            .eq("id", session.user.id)
-            .maybeSingle();
-
-          if (!mounted || version !== requestVersion) return;
+        const setFailure = (error) => {
+          if (!mounted) return;
           setAuthState({
-            session,
-            profile: error ? null : data,
+            session: null,
+            profile: null,
             loading: false,
-            error: error ? error.message : (data ? "" : "Không tìm thấy hồ sơ tài khoản.")
+            error: authErrorMessage(error),
+            legacyMode: false
           });
         };
 
-        (async () => {
-          const client = await getReadySupabaseClient();
-          if (!mounted) return;
-          if (!client) {
-            setAuthState({ session: null, profile: null, loading: false, error: "" });
+        const loadAuthoritativeProfile = async (session) => {
+          const version = ++requestVersion;
+          try {
+            if (!session?.user?.id) {
+              if (mounted) setAuthState({ session: null, profile: null, loading: false, error: "", legacyMode: false });
+              return;
+            }
+
+            if (mounted) {
+              setAuthState({ session, profile: null, loading: true, error: "", legacyMode: false });
+            }
+
+            const client = await getReadySupabaseClient();
+            if (!client) throw new Error("Chưa cấu hình Supabase Auth.");
+            const { data, error } = await client
+              .from("profiles")
+              .select("id, email, full_name, erp_name, role, status")
+              .eq("id", session.user.id)
+              .maybeSingle();
+            if (error) throw error;
+
+            if (!mounted || version !== requestVersion) return;
+            setAuthState({
+              session,
+              profile: data,
+              loading: false,
+              error: data ? "" : "Không tìm thấy hồ sơ tài khoản.",
+              legacyMode: false
+            });
+          } catch (error) {
+            if (mounted && version === requestVersion) setFailure(error);
+          }
+        };
+
+        const acceptSession = async (client, session) => {
+          if (!session) {
+            if (!legacyEnabled) {
+              setAuthState({ session: null, profile: null, loading: false, error: "", legacyMode: false });
+              return;
+            }
+            const { data, error } = await client.auth.signInAnonymously();
+            if (error) throw error;
+            const anonymousSession = data?.session || null;
+            if (!anonymousSession) throw new Error("Không thể tạo phiên chuyển đổi.");
+            setAuthState({ session: anonymousSession, profile: null, loading: false, error: "", legacyMode: true });
             return;
           }
 
-          const { data, error } = await client.auth.getSession();
-          if (error) {
-            setAuthState({ session: null, profile: null, loading: false, error: error.message });
-          } else {
-            await loadAuthoritativeProfile(data?.session || null);
+          if (session.user?.is_anonymous === true) {
+            if (legacyEnabled) {
+              setAuthState({ session, profile: null, loading: false, error: "", legacyMode: true });
+              return;
+            }
+            const { error } = await client.auth.signOut();
+            if (error) throw error;
+            setAuthState({ session: null, profile: null, loading: false, error: "", legacyMode: false });
+            return;
           }
 
-          const listener = client.auth.onAuthStateChange((_event, nextSession) => {
-            Promise.resolve().then(() => loadAuthoritativeProfile(nextSession));
-          });
-          subscription = listener?.data?.subscription || null;
+          await loadAuthoritativeProfile(session);
+        };
+
+        (async () => {
+          try {
+            setRecovery(false);
+            setAuthState(current => ({ ...current, loading: true, error: "" }));
+            const client = await getReadySupabaseClient();
+            if (!client) throw new Error("Chưa cấu hình Supabase Auth.");
+            const { data, error } = await client.auth.getSession();
+            if (error) throw error;
+            await acceptSession(client, data?.session || null);
+            if (!mounted) return;
+
+            const listener = client.auth.onAuthStateChange((event, nextSession) => {
+              if (event === "PASSWORD_RECOVERY") {
+                setRecovery(true);
+                setAuthState({ session: nextSession, profile: null, loading: false, error: "", legacyMode: false });
+                return;
+              }
+              Promise.resolve()
+                .then(() => acceptSession(client, nextSession))
+                .catch(setFailure);
+            });
+            subscription = listener?.data?.subscription || null;
+          } catch (error) {
+            setFailure(error);
+          }
         })();
 
         return () => {
@@ -673,9 +742,17 @@
           requestVersion += 1;
           subscription?.unsubscribe();
         };
-      }, []);
+      }, [attempt]);
 
-      return authState;
+      return {
+        ...authState,
+        recovery,
+        retry: () => setAttempt(value => value + 1),
+        completeRecovery: () => {
+          setRecovery(false);
+          setAttempt(value => value + 1);
+        }
+      };
     }
 
     function AuthCard({ children }) {
@@ -692,6 +769,70 @@
             {children}
           </section>
         </main>
+      );
+    }
+
+    function AuthErrorScreen({ message, onRetry }) {
+      return (
+        <AuthCard>
+          <h1 className="text-xl font-extrabold text-slate-900">Không thể xác thực</h1>
+          <p role="alert" className="mt-3 rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{message}</p>
+          <button type="button" onClick={onRetry} className="mt-5 w-full rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white">Thử lại</button>
+        </AuthCard>
+      );
+    }
+
+    function UpdatePasswordForm({ onComplete }) {
+      const [password, setPassword] = useState("");
+      const [confirmation, setConfirmation] = useState("");
+      const [submitting, setSubmitting] = useState(false);
+      const [error, setError] = useState("");
+
+      const handleUpdate = async (event) => {
+        event.preventDefault();
+        setError("");
+        if (password.length < 6) {
+          setError("Mật khẩu mới phải có ít nhất 6 ký tự.");
+          return;
+        }
+        if (password !== confirmation) {
+          setError("Hai mật khẩu không khớp.");
+          return;
+        }
+
+        setSubmitting(true);
+        try {
+          const client = await getReadySupabaseClient();
+          if (!client) throw new Error("Chưa cấu hình Supabase Auth.");
+          const { error: updateError } = await client.auth.updateUser({ password });
+          if (updateError) throw updateError;
+          onComplete();
+        } catch (updateError) {
+          setError(authErrorMessage(updateError, "Không thể cập nhật mật khẩu."));
+        } finally {
+          setSubmitting(false);
+        }
+      };
+
+      return (
+        <AuthCard>
+          <h1 className="text-xl font-extrabold text-slate-900">Đặt mật khẩu mới</h1>
+          <p className="mt-2 text-sm text-slate-500">Hoàn tất yêu cầu khôi phục bằng một mật khẩu mới.</p>
+          <form className="mt-6 space-y-4" onSubmit={handleUpdate}>
+            <div>
+              <label htmlFor="recovery-password" className="block text-xs font-semibold text-slate-700 mb-1">Mật khẩu mới</label>
+              <input id="recovery-password" type="password" required minLength="6" autoComplete="new-password" value={password} onChange={event => setPassword(event.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label htmlFor="recovery-confirmation" className="block text-xs font-semibold text-slate-700 mb-1">Nhập lại mật khẩu mới</label>
+              <input id="recovery-confirmation" type="password" required minLength="6" autoComplete="new-password" value={confirmation} onChange={event => setConfirmation(event.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+            </div>
+            {error && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-xs text-rose-700">{error}</p>}
+            <button type="submit" disabled={submitting} className="w-full rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">
+              {submitting ? "Đang cập nhật…" : "Cập nhật mật khẩu"}
+            </button>
+          </form>
+        </AuthCard>
       );
     }
 
@@ -778,9 +919,21 @@
     }
 
     function AccountStateScreen({ title, description, profile }) {
+      const [signOutError, setSignOutError] = useState("");
+      const [signingOut, setSigningOut] = useState(false);
       const handleSignOut = async () => {
-        const client = await getReadySupabaseClient();
-        await client?.auth.signOut();
+        setSigningOut(true);
+        setSignOutError("");
+        try {
+          const client = await getReadySupabaseClient();
+          if (!client) throw new Error("Chưa cấu hình Supabase Auth.");
+          const { error } = await client.auth.signOut();
+          if (error) throw error;
+        } catch (error) {
+          setSignOutError(authErrorMessage(error, "Không thể đăng xuất."));
+        } finally {
+          setSigningOut(false);
+        }
       };
       return (
         <AuthCard>
@@ -790,7 +943,8 @@
             <dt className="text-xs font-semibold uppercase text-slate-500">Tài khoản</dt>
             <dd className="mt-1 font-semibold text-slate-800">{profile?.full_name || profile?.email || "—"}</dd>
           </dl>
-          <button type="button" onClick={handleSignOut} className="mt-5 w-full rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700">Đăng xuất</button>
+          {signOutError && <p role="alert" className="mt-4 rounded-lg bg-rose-50 p-3 text-xs text-rose-700">{signOutError}</p>}
+          <button type="button" onClick={handleSignOut} disabled={signingOut} className="mt-5 w-full rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 disabled:opacity-50">{signingOut ? "Đang đăng xuất…" : "Đăng xuất"}</button>
         </AuthCard>
       );
     }
@@ -807,6 +961,9 @@
       const [isDirty, setIsDirty] = useState(false);
       const [savedSessions, setSavedSessions] = useState([]);
       const [monthlyArchives, setMonthlyArchives] = useState([]);
+      const [authActionError, setAuthActionError] = useState("");
+      const [authActionMessage, setAuthActionMessage] = useState("");
+      const [authActionPending, setAuthActionPending] = useState(false);
 
       // Raw Uploaded Files States
       const [rawStockData, setRawStockData] = useState([]);
@@ -1988,18 +2145,38 @@
       }, [dfMainRows, filterMainMode, filterMainStatus, searchMain, sortMain]);
 
       const handleShellSignOut = async () => {
-        const client = await getReadySupabaseClient();
-        await client?.auth.signOut();
+        setAuthActionPending(true);
+        setAuthActionError("");
+        setAuthActionMessage("");
+        try {
+          const client = await getReadySupabaseClient();
+          if (!client) throw new Error("Chưa cấu hình Supabase Auth.");
+          const { error } = await client.auth.signOut();
+          if (error) throw error;
+        } catch (error) {
+          setAuthActionError(authErrorMessage(error, "Không thể đăng xuất."));
+        } finally {
+          setAuthActionPending(false);
+        }
       };
 
       const handlePasswordReset = async () => {
         const email = session?.user?.email || profile?.email;
         if (!email) return;
-        const client = await getReadySupabaseClient();
-        if (!client?.auth?.resetPasswordForEmail) return;
-        const { error } = await client.auth.resetPasswordForEmail(email, { redirectTo: window.location.href.split("#")[0] });
-        if (error) alert(error.message);
-        else alert("Email đổi mật khẩu đã được gửi.");
+        setAuthActionPending(true);
+        setAuthActionError("");
+        setAuthActionMessage("");
+        try {
+          const client = await getReadySupabaseClient();
+          if (!client?.auth?.resetPasswordForEmail) throw new Error("Không thể gửi email đổi mật khẩu.");
+          const { error } = await client.auth.resetPasswordForEmail(email, { redirectTo: getAuthRedirectUrl() });
+          if (error) throw error;
+          setAuthActionMessage("Email đổi mật khẩu đã được gửi.");
+        } catch (error) {
+          setAuthActionError(authErrorMessage(error, "Không thể gửi email đổi mật khẩu."));
+        } finally {
+          setAuthActionPending(false);
+        }
       };
 
       return (
@@ -2144,11 +2321,13 @@
                   <div>
                     <p className="text-sm font-bold text-slate-800">{legacyMode ? "Chế độ chuyển đổi" : (profile?.full_name || profile?.email)}</p>
                     <p className="text-xs text-slate-500">{legacyMode ? "Legacy manager" : `${profile?.role || ""} · ${profile?.erp_name || ""}`}</p>
+                    {authActionError && <p role="alert" className="mt-1 text-xs font-semibold text-rose-600">{authActionError}</p>}
+                    {authActionMessage && <p role="status" className="mt-1 text-xs font-semibold text-emerald-600">{authActionMessage}</p>}
                   </div>
                   {!legacyMode && (
                     <div className="flex gap-2">
-                      <button type="button" onClick={handlePasswordReset} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-600">Gửi email đổi mật khẩu</button>
-                      <button type="button" onClick={handleShellSignOut} className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white">Đăng xuất</button>
+                      <button type="button" onClick={handlePasswordReset} disabled={authActionPending} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-600 disabled:opacity-50">Gửi email đổi mật khẩu</button>
+                      <button type="button" onClick={handleShellSignOut} disabled={authActionPending} className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">Đăng xuất</button>
                     </div>
                   )}
                 </div>
@@ -2945,8 +3124,16 @@
     }
 
     function App() {
-      const { session, profile, loading, error } = useAuthState();
-      const legacyMode = window.ENABLE_LEGACY_ANONYMOUS === true;
+      const {
+        session,
+        profile,
+        loading,
+        error,
+        legacyMode,
+        recovery,
+        retry,
+        completeRecovery
+      } = useAuthState();
 
       if (loading) {
         return (
@@ -2957,8 +3144,20 @@
         );
       }
 
+      if (recovery) {
+        return <UpdatePasswordForm onComplete={completeRecovery} />;
+      }
+
+      if (error) {
+        return <AuthErrorScreen message={error} onRetry={retry} />;
+      }
+
       if (!session) {
-        return legacyMode ? <ApplicationShell session={null} profile={null} legacyMode={true} /> : <AuthForm />;
+        return <AuthForm />;
+      }
+
+      if (legacyMode) {
+        return <ApplicationShell session={session} profile={null} legacyMode={true} />;
       }
 
       if (!profile) {

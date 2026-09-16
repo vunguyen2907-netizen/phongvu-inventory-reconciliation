@@ -64,6 +64,8 @@ select throws_ok($$delete from auth.users where id = '10000000-0000-0000-0000-00
 select lives_ok($$update public.profiles set erp_name_normalized = 'ERP1' where id = '10000000-0000-0000-0000-000000000005'$$, 'deleted alias does not reserve assignment name');
 
 insert into public.inventory_sessions(id, session_name) values ('20000000-0000-0000-0000-000000000001', 'pgTAP fixture');
+insert into public.monthly_archives(id, year_month, label)
+values ('21000000-0000-0000-0000-000000000001', '2026-09', 'pgTAP archive');
 insert into public.recount_batches(id, inventory_session_id, status, created_by)
 values ('30000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000001', 'active', '10000000-0000-0000-0000-000000000006');
 insert into public.recount_batches(id, inventory_session_id, status, created_by)
@@ -110,6 +112,10 @@ select throws_ok($$update public.profiles set role = 'admin'$$, '42501');
 select throws_ok($$update public.recount_tasks set state = 'completed'$$, '42501');
 select throws_ok($$insert into public.audit_logs(actor_name_snapshot, action, entity_type, entity_id) values ('fake', 'fake', 'task', 'fake')$$, '42501');
 select is((select count(*) from public.audit_logs), 0::bigint, 'counter cannot read audit payloads');
+select is((select count(*) from public.inventory_sessions), 0::bigint, 'counter cannot read legacy sessions with complete serial payloads');
+select is((select count(*) from public.monthly_archives), 0::bigint, 'counter cannot read legacy monthly serial payloads');
+select throws_ok($$insert into public.inventory_sessions(session_name) values ('counter write')$$, '42501');
+select throws_ok($$insert into public.monthly_archives(year_month, label) values ('2026-10', 'counter write')$$, '42501');
 
 select set_config('request.jwt.claims', '{"sub":"10000000-0000-0000-0000-000000000002","role":"authenticated"}', true);
 select results_eq($$select source_detail_row_id from public.recount_tasks$$, $$values ('row-2'::text)$$, 'second counter cannot read first counter task');
@@ -121,13 +127,17 @@ select is((select count(*) from public.recount_tasks), 0::bigint, 'pending count
 select is((select count(*) from public.recount_batches), 0::bigint, 'pending counter cannot read batches');
 select is((select count(*) from public.profiles), 1::bigint, 'pending account can read own waiting status');
 select ok(not public.is_active_profile(), 'pending profile is inactive');
+select is((select count(*) from public.inventory_sessions), 0::bigint, 'pending account cannot read legacy sessions');
+select is((select count(*) from public.monthly_archives), 0::bigint, 'pending account cannot read legacy archives');
 select throws_ok($$select expected_serial_normalized from public.recount_task_secrets$$, '42501');
 select set_config('request.jwt.claims', '{"sub":"10000000-0000-0000-0000-000000000004","role":"authenticated"}', true);
 select is((select count(*) from public.recount_tasks), 0::bigint, 'locked counter has no operational access');
+select is((select count(*) from public.inventory_sessions), 0::bigint, 'locked counter cannot read legacy sessions');
 select ok(not public.is_active_profile(), 'locked profile is inactive');
 select throws_ok($$select expected_serial_normalized from public.recount_task_secrets$$, '42501');
 select set_config('request.jwt.claims', '{"sub":"10000000-0000-0000-0000-000000000005","role":"authenticated"}', true);
 select is((select count(*) from public.recount_tasks), 0::bigint, 'deleted counter has no operational access');
+select is((select count(*) from public.monthly_archives), 0::bigint, 'deleted counter cannot read legacy archives');
 select ok(not public.is_active_profile(), 'deleted profile is inactive');
 select throws_ok($$select expected_serial_normalized from public.recount_task_secrets$$, '42501');
 
@@ -135,12 +145,17 @@ select set_config('request.jwt.claims', '{"sub":"10000000-0000-0000-0000-0000000
 select is((select count(*) from public.recount_tasks), 6::bigint, 'active manager can read all safe tasks including unassigned');
 select is((select count(*) from public.profiles), 7::bigint, 'active manager can read account list');
 select is((select count(*) from public.audit_logs), 1::bigint, 'active manager can read audit');
+select is((select count(*) from public.inventory_sessions), 1::bigint, 'active manager can read existing legacy sessions');
+select is((select count(*) from public.monthly_archives), 1::bigint, 'active manager can read existing legacy archives');
+select lives_ok($$update public.inventory_sessions set session_name = 'manager update'$$, 'active manager can update legacy sessions');
 select throws_ok($$select expected_serial_normalized from public.recount_task_secrets$$, '42501');
 select throws_ok($$select serial_normalized from public.recount_serial_evidence$$, '42501');
 select throws_ok($$update public.profiles set role = 'admin'$$, '42501');
 select set_config('request.jwt.claims', '{"sub":"10000000-0000-0000-0000-000000000007","role":"authenticated"}', true);
 select is((select count(*) from public.recount_tasks), 6::bigint, 'active admin can read all safe tasks including unassigned');
 select is((select count(*) from public.profiles), 7::bigint, 'active admin can read account list');
+select is((select count(*) from public.inventory_sessions), 1::bigint, 'active admin can read existing legacy sessions');
+select is((select count(*) from public.monthly_archives), 1::bigint, 'active admin can read existing legacy archives');
 select throws_ok($$select expected_serial_normalized from public.recount_task_secrets$$, '42501');
 select throws_ok($$select serial_normalized from public.recount_serial_evidence$$, '42501');
 
@@ -150,6 +165,8 @@ set local role authenticated;
 select set_config('request.jwt.claims', '{"sub":"10000000-0000-0000-0000-000000000006","role":"authenticated"}', true);
 select is((select count(*) from public.recount_tasks), 0::bigint, 'locked manager loses all task access');
 select is((select count(*) from public.audit_logs), 0::bigint, 'locked manager loses audit access');
+select is((select count(*) from public.inventory_sessions), 0::bigint, 'locked manager loses legacy session access');
+select is((select count(*) from public.monthly_archives), 0::bigint, 'locked manager loses legacy archive access');
 select set_config('request.jwt.claims', '{"sub":"10000000-0000-0000-0000-000000000007","role":"authenticated"}', true);
 select is((select count(*) from public.recount_tasks), 0::bigint, 'locked admin loses all task access');
 select set_config('request.jwt.claims', '{"sub":"99999999-0000-0000-0000-000000000000","role":"authenticated","user_metadata":{"role":"admin","status":"active"}}', true);
@@ -165,6 +182,8 @@ select is((select count(*) from public.recount_batches), 0::bigint, 'anonymous i
 select is((select count(*) from public.recount_attempts), 0::bigint, 'anonymous identity cannot read attempts');
 select is((select count(*) from public.recount_code_resolutions), 0::bigint, 'anonymous identity cannot read resolutions');
 select is((select count(*) from public.audit_logs), 0::bigint, 'anonymous identity cannot read audit');
+select is((select count(*) from public.inventory_sessions), 0::bigint, 'anonymous identity cannot read legacy sessions');
+select is((select count(*) from public.monthly_archives), 0::bigint, 'anonymous identity cannot read legacy archives');
 select throws_ok($$select expected_serial_normalized from public.recount_task_secrets$$, '42501');
 select throws_ok($$select serial_normalized from public.recount_serial_evidence$$, '42501');
 select throws_ok($$update public.recount_tasks set state = 'completed'$$, '42501');

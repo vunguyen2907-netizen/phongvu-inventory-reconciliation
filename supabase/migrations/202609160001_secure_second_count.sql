@@ -31,12 +31,6 @@ for each row execute procedure public.set_updated_at_column();
 alter table public.inventory_sessions enable row level security;
 
 drop policy if exists inventory_sessions_authenticated_all on public.inventory_sessions;
-create policy inventory_sessions_authenticated_all
-on public.inventory_sessions
-for all
-to authenticated
-using (true)
-with check (true);
 
 -- ============================================================
 -- BẢNG 2: monthly_archives — lưu trữ báo cáo tổng hợp hàng tháng
@@ -66,19 +60,10 @@ for each row execute procedure public.set_updated_at_column();
 alter table public.monthly_archives enable row level security;
 
 drop policy if exists monthly_archives_authenticated_all on public.monthly_archives;
-create policy monthly_archives_authenticated_all
-on public.monthly_archives
-for all
-to authenticated
-using (true)
-with check (true);
-
--- SPA đăng nhập anonymous qua Supabase Auth và chỉ role authenticated được thao tác.
--- Bật Anonymous Sign-Ins trong Authentication > Providers > Anonymous.
 
 -- Secure second-count subsystem (202609160001).
 -- New objects are migration-managed; apply this section once.
--- Legacy anonymous session policies above remain unchanged until named-account rollout.
+-- Legacy payload policies are installed after the authoritative profile helpers.
 create schema if not exists private;
 revoke all on schema private from public, anon, authenticated;
 
@@ -313,6 +298,27 @@ as $$
     where p.id = (select auth.uid()) and p.status = 'active'
   );
 $$;
+
+-- Legacy JSON payloads contain complete serials. Only active managers/admins
+-- may read or mutate them; counters and inactive/anonymous identities get no rows.
+revoke all on table public.inventory_sessions from public, anon, authenticated;
+revoke all on table public.monthly_archives from public, anon, authenticated;
+grant select, insert, update, delete
+  on public.inventory_sessions, public.monthly_archives to authenticated;
+drop policy if exists inventory_sessions_active_managers on public.inventory_sessions;
+create policy inventory_sessions_active_managers
+on public.inventory_sessions
+for all
+to authenticated
+using ((select public.current_profile_role()) in ('admin', 'manager'))
+with check ((select public.current_profile_role()) in ('admin', 'manager'));
+drop policy if exists monthly_archives_active_managers on public.monthly_archives;
+create policy monthly_archives_active_managers
+on public.monthly_archives
+for all
+to authenticated
+using ((select public.current_profile_role()) in ('admin', 'manager'))
+with check ((select public.current_profile_role()) in ('admin', 'manager'));
 
 alter table public.profiles enable row level security;
 alter table public.recount_batches enable row level security;

@@ -22,54 +22,120 @@ MANAGER_TABS = [
 ]
 
 
-def _mock_supabase_script(session, profile, legacy=False):
-    fixture = {"session": session, "profile": profile, "legacy": legacy}
+def _mock_supabase_script(session, profile, legacy=False, behavior=None):
+    fixture = {
+        "session": session,
+        "profile": profile,
+        "legacy": legacy,
+        "behavior": behavior or {},
+    }
     return f"""
       window.SUPABASE_URL = "https://example.supabase.co";
       window.SUPABASE_KEY = "publishable-test-key";
       window.ENABLE_LEGACY_ANONYMOUS = {str(legacy).lower()};
       window.__AUTH_FIXTURE__ = {json.dumps(fixture)};
       window.__AUTH_CALLS__ = [];
+      window.__UNEXPECTED_CALLS__ = [];
+      if (window.__AUTH_FIXTURE__.behavior.authRedirectUrl) {{
+        window.AUTH_REDIRECT_URL = window.__AUTH_FIXTURE__.behavior.authRedirectUrl;
+      }}
 
       const fixture = window.__AUTH_FIXTURE__;
       const authListeners = [];
+      const record = (method, payload = undefined) => {{
+        const call = {{ method }};
+        if (payload !== undefined) call.payload = payload;
+        window.__AUTH_CALLS__.push(call);
+      }};
       const client = {{
         auth: {{
-          getSession: async () => ({{ data: {{ session: fixture.session }}, error: null }}),
+          getSession: async () => {{
+            record("getSession");
+            if ((fixture.behavior.getSessionFailures || 0) > 0) {{
+              fixture.behavior.getSessionFailures -= 1;
+              throw new Error("session network unavailable");
+            }}
+            return {{ data: {{ session: fixture.session }}, error: null }};
+          }},
           onAuthStateChange: (callback) => {{
+            record("onAuthStateChange");
             authListeners.push(callback);
             return {{ data: {{ subscription: {{ unsubscribe() {{}} }} }} }};
           }},
           signInWithPassword: async (payload) => {{
-            window.__AUTH_CALLS__.push({{ method: "signInWithPassword", payload }});
+            record("signInWithPassword", payload);
             return {{ data: {{}}, error: null }};
           }},
           signUp: async (payload) => {{
-            window.__AUTH_CALLS__.push({{ method: "signUp", payload }});
+            record("signUp", payload);
             return {{ data: {{ user: {{ id: "new-user" }}, session: null }}, error: null }};
           }},
+          signInAnonymously: async () => {{
+            record("signInAnonymously");
+            if (fixture.behavior.signInAnonymousError) {{
+              return {{ data: {{ session: null }}, error: {{ message: fixture.behavior.signInAnonymousError }} }};
+            }}
+            fixture.session = fixture.behavior.anonymousSession || {{
+              user: {{ id: "legacy-anonymous", email: null, is_anonymous: true }}
+            }};
+            return {{ data: {{ session: fixture.session }}, error: null }};
+          }},
           signOut: async () => {{
-            window.__AUTH_CALLS__.push({{ method: "signOut" }});
+            record("signOut");
+            if (fixture.behavior.signOutError) {{
+              return {{ error: {{ message: fixture.behavior.signOutError }} }};
+            }}
             fixture.session = null;
             for (const callback of authListeners) callback("SIGNED_OUT", null);
             return {{ error: null }};
+          }},
+          resetPasswordForEmail: async (email, options) => {{
+            record("resetPasswordForEmail", {{ email, options }});
+            return {{ data: {{}}, error: null }};
+          }},
+          updateUser: async (payload) => {{
+            record("updateUser", payload);
+            if (fixture.behavior.updateUserError) {{
+              return {{ data: null, error: {{ message: fixture.behavior.updateUserError }} }};
+            }}
+            return {{ data: {{ user: fixture.session?.user }}, error: null }};
           }}
         }},
         from: (table) => {{
-          if (table !== "profiles") throw new Error(`Unexpected table: ${{table}}`);
+          record("from", {{ table }});
+          if (!["profiles", "inventory_sessions", "monthly_archives"].includes(table)) {{
+            window.__UNEXPECTED_CALLS__.push(`Unexpected table: ${{table}}`);
+            throw new Error(`Unexpected table: ${{table}}`);
+          }}
           const query = {{
             select() {{ return query; }},
             eq(column, value) {{
-              if (column !== "id" || value !== fixture.session?.user?.id) {{
+              if (table === "profiles" && (column !== "id" || value !== fixture.session?.user?.id)) {{
                 throw new Error("Profile query must use the authenticated user id");
               }}
               return query;
             }},
-            maybeSingle: async () => ({{ data: fixture.profile, error: null }}),
+            order: async () => ({{
+              data: table === "inventory_sessions"
+                ? [{{ id: "saved-1", session_name: "Saved session", updated_at: "2026-09-16T00:00:00Z" }}]
+                : [{{ id: "archive-1", year_month: "2026-09", session_name: "Saved archive", updated_at: "2026-09-16T00:00:00Z" }}],
+              error: null
+            }}),
+            maybeSingle: async () => {{
+              if ((fixture.behavior.profileFailures || 0) > 0) {{
+                fixture.behavior.profileFailures -= 1;
+                throw new Error("profile network unavailable");
+              }}
+              return {{ data: fixture.profile, error: null }};
+            }},
             single: async () => ({{ data: fixture.profile, error: null }})
           }};
           return query;
         }}
+      }};
+      window.__TRIGGER_AUTH__ = async (event, nextSession = fixture.session) => {{
+        fixture.session = nextSession;
+        for (const callback of authListeners) await callback(event, nextSession);
       }};
       window.supabase = {{ createClient: () => client }};
     """
@@ -88,10 +154,11 @@ class AuthUiTest(unittest.TestCase):
         cls.browser.close()
         cls.playwright.stop()
 
-    def open_auth_page(self, session=None, profile=None, legacy=False):
+    def open_auth_page(self, session=None, profile=None, legacy=False, behavior=None):
         page = self.browser.new_page()
         self.addCleanup(page.close)
-        page.add_init_script(_mock_supabase_script(session, profile, legacy))
+        page.set_default_timeout(7000)
+        page.add_init_script(_mock_supabase_script(session, profile, legacy, behavior))
         page.route("**/*", lambda route: self._route_asset(route))
         page.goto(INDEX_URL, wait_until="domcontentloaded")
         page.locator("#root").wait_for(state="attached")
@@ -207,11 +274,155 @@ class AuthUiTest(unittest.TestCase):
     def test_auth_legacy_shell_requires_explicit_migration_flag(self):
         without_flag = self.open_auth_page()
         self.assertEqual(without_flag.get_by_role("navigation").count(), 0)
+        self.assertNotIn(
+            "signInAnonymously",
+            [call["method"] for call in without_flag.evaluate("window.__AUTH_CALLS__")],
+        )
+        self.assertEqual(without_flag.evaluate("window.__UNEXPECTED_CALLS__"), [])
         without_flag.close()
 
         with_flag = self.open_auth_page(legacy=True)
         tabs = with_flag.get_by_role("navigation").get_by_role("button").all_inner_texts()
         self.assertEqual(tabs, MANAGER_TABS)
+
+    def test_auth_flagged_legacy_mode_authenticates_before_saved_session_reads(self):
+        page = self.open_auth_page(legacy=True)
+        page.get_by_role("navigation").wait_for()
+
+        calls = page.evaluate("window.__AUTH_CALLS__")
+        methods = [call["method"] for call in calls]
+        self.assertIn("signInAnonymously", methods)
+        anonymous_index = methods.index("signInAnonymously")
+        saved_read_index = next(
+            index
+            for index, call in enumerate(calls)
+            if call["method"] == "from" and call["payload"]["table"] == "inventory_sessions"
+        )
+        self.assertLess(anonymous_index, saved_read_index)
+        self.assertEqual(page.evaluate("window.__UNEXPECTED_CALLS__"), [])
+
+    def test_auth_flagged_legacy_mode_reuses_preexisting_anonymous_session(self):
+        anonymous_session = {
+            "user": {"id": "existing-anonymous", "email": None, "is_anonymous": True}
+        }
+        page = self.open_auth_page(session=anonymous_session, legacy=True)
+        page.get_by_role("navigation").wait_for()
+
+        calls = page.evaluate("window.__AUTH_CALLS__")
+        self.assertNotIn("signInAnonymously", [call["method"] for call in calls])
+        self.assertTrue(
+            any(
+                call["method"] == "from" and call["payload"]["table"] == "inventory_sessions"
+                for call in calls
+            )
+        )
+        self.assertEqual(page.evaluate("window.__UNEXPECTED_CALLS__"), [])
+
+    def test_auth_session_network_error_renders_retry_and_recovers(self):
+        page = self.open_auth_page(behavior={"getSessionFailures": 1})
+        page.get_by_role("heading", name="Không thể xác thực").wait_for()
+        self.assertIn("session network unavailable", page.get_by_role("alert").inner_text())
+
+        page.get_by_role("button", name="Thử lại").click()
+        page.get_by_role("heading", name="Đăng nhập").wait_for()
+
+    def test_auth_profile_network_error_renders_retry_and_recovers(self):
+        session = {"user": {"id": "manager-user", "email": "manager@example.com"}}
+        profile = {
+            "id": "manager-user",
+            "email": "manager@example.com",
+            "full_name": "Manager User",
+            "erp_name": "ERP Manager",
+            "role": "manager",
+            "status": "active",
+        }
+        page = self.open_auth_page(session, profile, behavior={"profileFailures": 1})
+        page.get_by_role("heading", name="Không thể xác thực").wait_for()
+        self.assertIn("profile network unavailable", page.get_by_role("alert").inner_text())
+
+        page.get_by_role("button", name="Thử lại").click()
+        page.get_by_role("navigation").wait_for()
+        self.assertEqual(page.get_by_role("navigation").get_by_role("button").all_inner_texts(), MANAGER_TABS)
+
+    def test_auth_sign_out_failure_is_visible(self):
+        session = {"user": {"id": "pending-user", "email": "pending@example.com"}}
+        profile = {
+            "id": "pending-user",
+            "email": "pending@example.com",
+            "full_name": "Pending User",
+            "erp_name": "ERP Pending",
+            "role": "counter",
+            "status": "pending",
+        }
+        page = self.open_auth_page(session, profile, behavior={"signOutError": "sign out unavailable"})
+        page.get_by_role("button", name="Đăng xuất").click()
+
+        page.get_by_role("alert").wait_for()
+        self.assertIn("sign out unavailable", page.get_by_role("alert").inner_text())
+
+    def test_auth_manager_sign_out_failure_is_visible(self):
+        session = {"user": {"id": "manager-user", "email": "manager@example.com"}}
+        profile = {
+            "id": "manager-user",
+            "email": "manager@example.com",
+            "full_name": "Manager User",
+            "erp_name": "ERP Manager",
+            "role": "manager",
+            "status": "active",
+        }
+        page = self.open_auth_page(session, profile, behavior={"signOutError": "sign out unavailable"})
+        page.get_by_role("button", name="Đăng xuất").click()
+
+        page.get_by_role("alert").wait_for()
+        self.assertIn("sign out unavailable", page.get_by_role("alert").inner_text())
+
+    def test_auth_password_reset_uses_configured_top_level_redirect(self):
+        session = {"user": {"id": "manager-user", "email": "manager@example.com"}}
+        profile = {
+            "id": "manager-user",
+            "email": "manager@example.com",
+            "full_name": "Manager User",
+            "erp_name": "ERP Manager",
+            "role": "manager",
+            "status": "active",
+        }
+        page = self.open_auth_page(
+            session,
+            profile,
+            behavior={"authRedirectUrl": "https://inventory.example.com/auth"},
+        )
+        page.get_by_role("button", name="Gửi email đổi mật khẩu").click()
+
+        call = page.evaluate("window.__AUTH_CALLS__.find(call => call.method === 'resetPasswordForEmail')")
+        self.assertEqual(
+            call["payload"],
+            {
+                "email": "manager@example.com",
+                "options": {"redirectTo": "https://inventory.example.com/auth"},
+            },
+        )
+
+    def test_auth_password_recovery_event_updates_password(self):
+        session = {"user": {"id": "manager-user", "email": "manager@example.com"}}
+        profile = {
+            "id": "manager-user",
+            "email": "manager@example.com",
+            "full_name": "Manager User",
+            "erp_name": "ERP Manager",
+            "role": "manager",
+            "status": "active",
+        }
+        page = self.open_auth_page(session, profile)
+        page.get_by_role("navigation").wait_for()
+        page.evaluate("window.__TRIGGER_AUTH__('PASSWORD_RECOVERY')")
+        page.get_by_role("heading", name="Đặt mật khẩu mới").wait_for()
+        page.get_by_label("Mật khẩu mới", exact=True).fill("new-safe-password")
+        page.get_by_label("Nhập lại mật khẩu mới").fill("new-safe-password")
+        page.get_by_role("button", name="Cập nhật mật khẩu").click()
+
+        page.get_by_role("navigation").wait_for()
+        call = page.evaluate("window.__AUTH_CALLS__.find(call => call.method === 'updateUser')")
+        self.assertEqual(call["payload"], {"password": "new-safe-password"})
 
 
 if __name__ == "__main__":

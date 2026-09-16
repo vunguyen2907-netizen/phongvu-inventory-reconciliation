@@ -20,6 +20,7 @@
 SUPABASE_URL = "https://<project-ref>.supabase.co"
 SUPABASE_KEY = "<service_role_key>"
 SUPABASE_PUBLISHABLE_KEY = "<sb_publishable_...>"
+AUTH_REDIRECT_URL = "https://<your-app>.streamlit.app"
 ```
 
 Lấy các khóa ở Supabase **Project Settings > API**. `SUPABASE_KEY` chỉ dùng phía
@@ -49,7 +50,10 @@ dùng nhập khi đăng ký chỉ gồm họ tên và tên nhân viên ERP.
 4. Vào **Authentication > URL Configuration**. Đặt **Site URL** là URL
    Streamlit chính thức và thêm cùng URL (kèm các URL staging/local cần
    thiết) vào **Redirect URLs** để link xác nhận và đổi mật khẩu quay
-   lại đúng ứng dụng.
+   lại đúng ứng dụng. Đặt secret `AUTH_REDIRECT_URL` thành URL đó;
+   Streamlit sẽ truyền nó thành `window.AUTH_REDIRECT_URL` cho giao diện.
+   Nếu không cấu hình, giao diện dùng URL trang cha từ
+   `document.referrer`, sau đó mới rơi về origin hiện tại.
 
 Trong giai đoạn chuyển đổi duy nhất, có thể hiện giao diện quản lý cũ
 không cần phiên có tên bằng cách đặt biến trình duyệt sau trước khi
@@ -59,10 +63,18 @@ không cần phiên có tên bằng cách đặt biến trình duyệt sau trư�
 window.ENABLE_LEGACY_ANONYMOUS = true;
 ```
 
-Cờ này không tự đăng nhập anonymous và không được bật mặc định. Sau khi
-các tài khoản thí điểm đã được phê duyệt và kiểm tra, hãy xóa cờ
-`ENABLE_LEGACY_ANONYMOUS` khỏi mẫu nhúng/deploy vào **Authentication >
-Providers > Anonymous Sign-Ins** để tắt hoàn toàn đăng nhập anonymous.
+Cờ này không được bật mặc định. Khi bật, giao diện tạo hoặc dùng lại
+phiên Supabase anonymous trước khi mở giao diện cũ. Phiên anonymous chỉ
+phục vụ chuyển đổi giao diện/local: RLS vẫn chặn nó đọc hoặc ghi
+`inventory_sessions` và `monthly_archives` vì hai bảng này chứa serial đầy
+đủ. Muốn mở các phiên cloud đã lưu, hãy đăng nhập bằng tài khoản
+`manager` hoặc `admin` đang `active`.
+
+Sau khi các tài khoản thí điểm đã được phê duyệt và kiểm tra:
+
+1. Xóa cờ `ENABLE_LEGACY_ANONYMOUS` khỏi mẫu nhúng/deploy.
+2. Vào **Authentication > Providers > Anonymous Sign-Ins** và tắt Anonymous
+   Sign-Ins.
 
 ## Lịch sử và bảo mật
 
