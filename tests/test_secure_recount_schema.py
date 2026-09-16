@@ -115,6 +115,18 @@ class SecureRecountSchemaContractTests(unittest.TestCase):
         self.assertIn("where is_excluded = false", sql)
         self.assertIn("(select auth.uid())", sql)
 
+    def test_normalization_uses_locale_independent_ascii_casing_and_explicit_removal_set(self):
+        sql = self.migration()
+        body = sql.split("function public.normalize_inventory_code(p_value text)", 1)[1].split("$$;", 1)[0]
+        self.assertIn("translate(", body.lower())
+        self.assertNotRegex(body.lower(), r"\bupper\s*\(")
+        self.assertIn("abcdefghijklmnopqrstuvwxyz", body)
+        self.assertIn("ABCDEFGHIJKLMNOPQRSTUVWXYZ", body)
+        for escape in (r"\0009-\000D", r"\0020", r"\0085", r"\00A0", r"\1680",
+                       r"\2000-\200D", r"\2028", r"\2029", r"\202F", r"\205F",
+                       r"\2060", r"\3000", r"\FEFF"):
+            self.assertIn(escape, body)
+
 
 if __name__ == "__main__":
     unittest.main()

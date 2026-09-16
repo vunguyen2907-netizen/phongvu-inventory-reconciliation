@@ -96,8 +96,14 @@ language sql immutable
 set search_path = ''
 as $$
   select regexp_replace(
-    upper(normalize(coalesce(p_value, ''), NFKC)),
-    U&'[[:space:]\200B\200C\200D\2060\FEFF]', '', 'g'
+    translate(
+      normalize(coalesce(p_value, ''), NFKC),
+      'abcdefghijklmnopqrstuvwxyz',
+      'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    ),
+    U&'[\0009-\000D\0020\0085\00A0\1680\2000-\200D\2028\2029\202F\205F\2060\3000\FEFF]',
+    '',
+    'g'
   );
 $$;
 

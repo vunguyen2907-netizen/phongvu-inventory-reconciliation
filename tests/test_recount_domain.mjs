@@ -20,11 +20,18 @@ const {
   applyConfirmedRecounts
 } = domain;
 
-// A broken normalizer would miss aliases and fail server-side serial comparisons.
+// A locale-sensitive normalizer would disagree between the browser and PostgreSQL.
 assert.equal(
   normalizeInventoryCode(" ab\u200b １２\u200cCd\u2060 \ufeff"),
   "AB12CD",
-  "normalization must match the SQL NFKC/uppercase/whitespace contract"
+  "normalization applies NFKC, ASCII-only casing, and the explicit removal set"
+);
+assert.equal(normalizeInventoryCode("ßiıİ"), "ßIıİ", "non-ASCII casing remains stable");
+assert.equal(normalizeInventoryCode("ａｂ１２"), "AB12", "fullwidth ASCII folds before ASCII casing");
+assert.equal(
+  normalizeInventoryCode("A\u0085\u1680\u2007\u202f\u3000B"),
+  "AB",
+  "the explicit Unicode whitespace set is removed"
 );
 assert.equal(normalizeInventoryCode(null), "");
 
@@ -60,11 +67,39 @@ assert.equal(
   "mask positions count Unicode characters the same way as PostgreSQL char_length"
 );
 
+const shortCodeDraft = buildRecountDraft([{
+  rowId: "SHORT::A",
+  sku: "A-SKU",
+  name: "A product",
+  stockSerial: "A",
+  scannedSerial: "",
+  bin: "A-BIN",
+  performedBy: "",
+  checked: 0,
+  status: "Bắn thiếu (Chưa quét)"
+}], []);
+assert.equal(shortCodeDraft.tasks[0].masked_reference, "*", "short secrets remain fully masked in a usable task");
+assert.throws(
+  () => buildRecountDraft([{
+    rowId: "PROTOCOL::1",
+    sku: "PROTOCOL-SKU",
+    name: "Protocol collision",
+    stockSerial: "ASSIGNED",
+    scannedSerial: "",
+    bin: "PROTOCOL-BIN",
+    performedBy: "counter",
+    checked: 0,
+    status: "Bắn thiếu (Chưa quét)"
+  }], [{ id: "protocol-user", erp_name: "counter", full_name: "Counter", status: "active" }]),
+  /Unable to construct a task without protected inventory code leakage/,
+  "a protected code matching a required protocol value fails closed"
+);
+
 const detailRows = [
   {
     rowId: "SKU-A::0",
     sku: "SKU-A",
-    name: "Missing unit",
+    name: "Missing unit 0 cái",
     stockSerial: "ab 12\u200bcd",
     scannedSerial: "",
     bin: "STOCK-A",
@@ -128,6 +163,18 @@ const detailRows = [
     checked: 0,
     status: "Bắn thiếu 2 hàng (0/2)",
     isNonSerial: true
+  },
+  {
+    rowId: "SKU-G::6",
+    sku: "SKU-G",
+    name: "Excluded alternate code",
+    stockSerial: "",
+    scannedSerial: "EXCLUDED-1",
+    bin: "DONE-G",
+    performedBy: "counter one",
+    checked: 1,
+    status: "Đã loại bỏ Serial dư",
+    excludedFromActual: true
   }
 ];
 
@@ -155,28 +202,54 @@ assert.deepEqual(
 assert.equal(draft.tasks[0].masked_reference, "**12CD");
 assert.equal(draft.tasks[1].masked_reference, "********ZZ99");
 assert.equal(draft.tasks[2].masked_reference, "***RA99");
+assert.equal(draft.tasks[0].product_name, "Missing unit 0 cái", "non-serial quantity markers are not protected serial evidence");
 assert.equal(draft.tasks[0].first_counter_name_snapshot, "Counter One");
-assert.equal(draft.evidence.length, 3, "every generated task retains protected source evidence");
+assert.equal(draft.evidence.length, 8, "protected evidence covers active, matched, resolved, and excluded serial rows");
+
+const wrongSerialEvidence = draft.evidence.filter(item => item.source_detail_row_id === "SKU-B::1");
 assert.deepEqual(
-  draft.evidence.map(({ source_detail_row_id, expected_serial_normalized, first_scanned_code_normalized }) => ({
-    source_detail_row_id,
-    expected_serial_normalized,
-    first_scanned_code_normalized
+  wrongSerialEvidence.map(({ serial_normalized, is_counted, is_excluded }) => ({
+    serial_normalized,
+    is_counted,
+    is_excluded
   })),
   [
-    { source_detail_row_id: "SKU-A::0", expected_serial_normalized: "AB12CD", first_scanned_code_normalized: "" },
-    { source_detail_row_id: "SKU-B::1", expected_serial_normalized: "1111AAAAZZ99", first_scanned_code_normalized: "FIRST7788" },
-    { source_detail_row_id: "SKU-C::2", expected_serial_normalized: "", first_scanned_code_normalized: "EXTRA99" }
-  ]
+    { serial_normalized: "1111AAAAZZ99", is_counted: false, is_excluded: false },
+    { serial_normalized: "FIRST7788", is_counted: true, is_excluded: false }
+  ],
+  "alternate-code evidence distinguishes the expected stock code from the counted first-scan code"
 );
-assert.equal(
-  draft.evidence[1].serial_normalized,
-  "FIRST7788",
-  "wrong-serial evidence records the code counted in round one, not the expected code"
+assert.ok(
+  wrongSerialEvidence.every(item => item.expected_serial_normalized === "1111AAAAZZ99"
+    && item.first_scanned_code_normalized === "FIRST7788"),
+  "flat registry entries retain the task-secret pair for the later protected insert"
+);
+
+assert.deepEqual(
+  draft.evidence.filter(item => item.source_detail_row_id === "SKU-D::3")
+    .map(({ serial_normalized, is_counted, is_excluded }) => ({ serial_normalized, is_counted, is_excluded })),
+  [{ serial_normalized: "RESOLVED99", is_counted: true, is_excluded: false }],
+  "an already-matched row contributes one counted registry entry even though it creates no task"
+);
+assert.deepEqual(
+  draft.evidence.filter(item => item.source_detail_row_id === "SKU-E::4")
+    .map(({ serial_normalized, is_counted }) => ({ serial_normalized, is_counted })),
+  [
+    { serial_normalized: "RESOLVED-E", is_counted: false },
+    { serial_normalized: "EXTRA-E", is_counted: true }
+  ],
+  "a resolved alternate-code row remains available to duplicate and wrong-SKU validation"
+);
+assert.deepEqual(
+  draft.evidence.filter(item => item.source_detail_row_id === "SKU-G::6")
+    .map(({ serial_normalized, is_counted, is_excluded }) => ({ serial_normalized, is_counted, is_excluded })),
+  [{ serial_normalized: "EXCLUDED-1", is_counted: true, is_excluded: true }],
+  "logical exclusion is retained in protected evidence"
 );
 assert.equal(draft.tasks.some(task => task.source_detail_row_id === "SKU-D::3"), false, "resolved rows create no active task");
 assert.equal(draft.tasks.some(task => task.source_detail_row_id === "SKU-E::4"), false, "rows with a confirmed recount resolution stay resolved");
 assert.equal(draft.tasks.some(task => task.source_detail_row_id === "SKU-F::5"), false, "non-serial quantity shortages do not become serial tasks");
+assert.equal(draft.tasks.some(task => task.source_detail_row_id === "SKU-G::6"), false, "excluded rows create no active task");
 assert.equal(JSON.stringify(draft.tasks).includes("AB12CD"), false, "public tasks never contain expected serials");
 assert.equal(JSON.stringify(draft.tasks).includes("FIRST7788"), false, "public tasks never contain first-scanned serials");
 assert.equal(JSON.stringify(draft.tasks).includes("EXTRA99"), false, "public tasks never contain first-scanned surplus codes");
@@ -223,6 +296,84 @@ assert.deepEqual(
   ["DUP::0", "DUP::1"]
 );
 
+const aliasShapeDraft = buildRecountDraft([
+  {
+    source_detail_row_id: "SNAKE::1",
+    sku: "SNAKE",
+    product_name: "Snake row",
+    stock_serial: "snake 1234",
+    scanned_serial: "",
+    stock_bin: "STOCK-S",
+    first_count_bin: "COUNT-S",
+    performed_by: "snake counter",
+    checked: 0,
+    first_count_status: "Bắn thiếu (Chưa quét)"
+  },
+  {
+    sourceDetailRowId: "CAMEL::2",
+    sku: "CAMEL",
+    productName: "Camel row",
+    expectedSerial: "camel 5678",
+    firstScannedCode: "wrong 5678",
+    stockBin: "STOCK-C",
+    firstCountBin: "COUNT-C",
+    firstCounterErpName: "camel counter",
+    checked: 1,
+    firstCountStatus: "Bắn sai serial"
+  }
+], [
+  { id: "snake-user", erp_name: "snake counter", full_name: "Snake Counter", status: "active" },
+  { id: "camel-user", erpName: "camel counter", fullName: "Camel Counter", status: "active" }
+]);
+assert.deepEqual(
+  aliasShapeDraft.tasks.map(task => ({
+    id: task.source_detail_row_id,
+    type: task.task_type,
+    assignee: task.assigned_user_id,
+    stockBin: task.stock_bin,
+    firstCountBin: task.first_count_bin
+  })),
+  [
+    { id: "SNAKE::1", type: "missing_serial", assignee: "snake-user", stockBin: "STOCK-S", firstCountBin: "COUNT-S" },
+    { id: "CAMEL::2", type: "wrong_serial", assignee: "camel-user", stockBin: "STOCK-C", firstCountBin: "COUNT-C" }
+  ],
+  "snake, camel, and current detail-row fields share one explicit input contract"
+);
+assert.equal(aliasShapeDraft.evidence.length, 3);
+
+assert.throws(
+  () => buildRecountDraft([{ sku: "NO-ID", stockSerial: "NOID1234", status: "Bắn thiếu (Chưa quét)" }], []),
+  /Missing stable source detail row ID/
+);
+assert.throws(
+  () => buildRecountDraft([{ rowId: "  ", sku: "EMPTY-ID", stockSerial: "EMPTY1234", status: "Bắn thiếu (Chưa quét)" }], []),
+  /Missing stable source detail row ID/
+);
+assert.throws(
+  () => buildRecountDraft([
+    { rowId: "DUPLICATE-ID", sku: "ONE", stockSerial: "ONE12345", status: "Bắn thiếu (Chưa quét)" },
+    { source_detail_row_id: "DUPLICATE-ID", sku: "TWO", stockSerial: "TWO12345", status: "Bắn thiếu (Chưa quét)" }
+  ], []),
+  /Duplicate source detail row ID: DUPLICATE-ID/
+);
+assert.throws(
+  () => buildRecountDraft([{
+    rowId: "INVALID-SHAPE",
+    sku: "INVALID",
+    stock_serial_number: "UNSUPPORTED123",
+    status: "Bắn thiếu (Chưa quét)"
+  }], []),
+  /Missing expected or first-scanned inventory code at INVALID-SHAPE/
+);
+
+const reorderRows = [
+  { rowId: "row::ORDER-CODE-1", sku: "ORDER-1", name: "One", stockSerial: "ORDER-CODE-1", status: "Bắn thiếu (Chưa quét)" },
+  { rowId: "ORDER::SAFE", sku: "ORDER-2", name: "Two", stockSerial: "ORDER-CODE-2", status: "Bắn thiếu (Chưa quét)" }
+];
+const firstOrderIds = buildRecountDraft(reorderRows, []).tasks.map(task => task.source_detail_row_id).sort();
+const reversedOrderIds = buildRecountDraft(reorderRows.slice().reverse(), []).tasks.map(task => task.source_detail_row_id).sort();
+assert.deepEqual(firstOrderIds, reversedOrderIds, "source identity remains stable when input order changes");
+
 const secretSnapshotDraft = buildRecountDraft([{
   rowId: "SAFE::0",
   sku: "SAFE-SKU",
@@ -249,6 +400,67 @@ assert.equal(
   "counter-facing snapshot fields must not provide a normalized full secret"
 );
 
+const globallySanitizedDraft = buildRecountDraft([
+  {
+    rowId: "row::current\u200b 999900",
+    sku: "SKU current\u3000999900",
+    name: "Product current 999900",
+    stockSerial: "current 999900",
+    scannedSerial: "",
+    bin: "BIN-current\u200b999900",
+    performedBy: "safe counter",
+    checked: 0,
+    status: "Bắn thiếu (Chưa quét)"
+  },
+  {
+    rowId: "SAFE::2",
+    sku: "SAFE-SKU-2",
+    name: "Useful safe product",
+    stockSerial: "SECOND7777",
+    scannedSerial: "",
+    bin: "SAFE-BIN-2",
+    performedBy: "cross\u3000123456",
+    checked: 0,
+    status: "Bắn thiếu (Chưa quét)"
+  },
+  {
+    rowId: "EVIDENCE::3",
+    sku: "SAFE-EVIDENCE-SKU",
+    name: "Resolved cross-row evidence",
+    stockSerial: "CROSS123456",
+    scannedSerial: "cross 123456",
+    bin: "EVIDENCE-BIN",
+    performedBy: "safe counter",
+    checked: 1,
+    status: "Đã quét đủ"
+  }
+], [
+  { id: "safe-user", erp_name: "safe counter", full_name: "Safe Counter", status: "active" },
+  { id: "cross-user", erp_name: "cross 123456", full_name: "Lead CROSS\u200b123456", status: "active" }
+]);
+assert.equal(globallySanitizedDraft.tasks.length, 2);
+assert.notEqual(globallySanitizedDraft.tasks[0].source_detail_row_id, "row::current\u200b 999900");
+assert.match(globallySanitizedDraft.tasks[0].source_detail_row_id, /^row-[0-9a-f]{16}(?:-[0-9]+)?$/);
+assert.equal(globallySanitizedDraft.tasks[0].sku, "[redacted]");
+assert.equal(globallySanitizedDraft.tasks[0].product_name, "[redacted]");
+assert.equal(globallySanitizedDraft.tasks[0].stock_bin, null);
+assert.equal(globallySanitizedDraft.tasks[0].first_count_bin, null);
+assert.equal(globallySanitizedDraft.tasks[1].sku, "SAFE-SKU-2", "safe metadata remains useful");
+assert.equal(globallySanitizedDraft.tasks[1].product_name, "Useful safe product");
+assert.equal(globallySanitizedDraft.tasks[1].stock_bin, "SAFE-BIN-2");
+assert.equal(globallySanitizedDraft.tasks[1].assigned_user_id, "cross-user");
+assert.equal(globallySanitizedDraft.tasks[1].first_counter_erp_name, null);
+assert.equal(globallySanitizedDraft.tasks[1].first_counter_name_snapshot, null);
+assert.equal(globallySanitizedDraft.tasks[1].assigned_name_snapshot, null);
+const normalizedPublicTasks = normalizeInventoryCode(JSON.stringify(globallySanitizedDraft.tasks));
+for (const protectedCode of ["CURRENT999900", "SECOND7777", "CROSS123456"]) {
+  assert.equal(
+    normalizedPublicTasks.includes(protectedCode),
+    false,
+    `no public task field may expose protected code ${protectedCode}`
+  );
+}
+
 const mergeRows = [
   { rowId: "SKU::0", stockSerial: "STOCK0", scannedSerial: "OLD0", checked: 1, diff: 0, status: "Bắn sai serial" },
   { rowId: "SKU::1", stockSerial: "STOCK1", scannedSerial: "OLD1", checked: 1, diff: 1, status: "Bắn dư serial" },
@@ -259,8 +471,8 @@ const mergeRows = [
 
 const merged = applyConfirmedRecounts(mergeRows, [
   { sourceDetailRowId: "SKU::0", resolution: "corrected_serial", confirmed: true, correctedSerial: "FIXED0" },
-  { sourceDetailRowId: "SKU::1", resolution: "genuine_surplus", state: "completed", scannedSerial: "OLD1" },
-  { sourceDetailRowId: "SKU::7", resolution: "same_product_multiple_codes" },
+  { sourceDetailRowId: "SKU::1", resolution: "genuine_surplus", confirmed: true, managerApproved: true, state: "completed", scannedSerial: "OLD1" },
+  { sourceDetailRowId: "SKU::7", resolution: "same_product_multiple_codes", confirmed: true },
   { sourceDetailRowId: "SKU::8", resolution: "not_found", confirmed: true, reason: "not on shelf" },
   { sourceDetailRowId: "SKU::9", resolution: "corrected_serial", confirmed: true, correctedSerial: "FOUND9" }
 ]);
@@ -289,5 +501,39 @@ const pending = applyConfirmedRecounts(mergeRows, [
   { sourceDetailRowId: "SKU::8", resolution: "genuine_surplus", confirmed: true, managerApproved: false, scannedSerial: "UNAPPROVED" }
 ]);
 assert.deepEqual(pending, mergeRows, "unconfirmed or unapproved results leave raw detail rows unchanged");
+
+const strictlyPending = applyConfirmedRecounts(mergeRows, [
+  { sourceDetailRowId: "SKU::7", resolution: "same_product_multiple_codes" },
+  {
+    sourceDetailRowId: "SKU::8",
+    resolution: "corrected_serial",
+    confirmed: true,
+    state: "reopened",
+    completed_at: "2026-09-15T00:00:00Z",
+    correctedSerial: "STALE8"
+  },
+  {
+    sourceDetailRowId: "SKU::9",
+    resolution: "corrected_serial",
+    confirmed: true,
+    state: "completed",
+    status: "in_progress",
+    correctedSerial: "CONFLICT9"
+  },
+  {
+    sourceDetailRowId: "SKU::1",
+    resolution: "genuine_surplus",
+    confirmed: true,
+    managerApproved: true,
+    state: "reopened",
+    completed_at: "2026-09-15T00:00:00Z",
+    scannedSerial: "STALE-SURPLUS"
+  }
+]);
+assert.deepEqual(
+  strictlyPending,
+  mergeRows,
+  "missing confirmation, reopened state, conflicting state/status, and stale surplus completion all fail closed"
+);
 
 console.log("Recount domain tests passed");

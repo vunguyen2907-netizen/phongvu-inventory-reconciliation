@@ -13,8 +13,11 @@ select has_table('public', 'recount_attempts', 'attempts table exists');
 select has_table('public', 'recount_code_resolutions', 'resolutions table exists');
 select has_table('public', 'audit_logs', 'audit table exists');
 
--- Literal outcomes also define the normalization/masking contract for clients.
-select is(public.normalize_inventory_code(E' ａｂ\t12 ' || chr(8203) || chr(65279)), 'AB12', 'NFKC, case, whitespace and zero-width normalization');
+-- Literal outcomes define the locale-independent normalization contract for clients.
+select is(public.normalize_inventory_code(E' ａｂ\t12 ' || chr(8203) || chr(65279)), 'AB12', 'NFKC, ASCII casing, whitespace and zero-width normalization');
+select is(public.normalize_inventory_code(U&'\00DFi\0131\0130'), U&'\00DFI\0131\0130', 'only ASCII lowercase letters are uppercased');
+select is(public.normalize_inventory_code(U&'\FF41\FF42\FF11\FF12'), 'AB12', 'fullwidth ASCII folds before ASCII casing');
+select is(public.normalize_inventory_code('A' || chr(133) || chr(5760) || chr(8199) || chr(8239) || chr(12288) || 'B'), 'AB', 'explicit Unicode whitespace set is removed');
 select is(public.normalize_inventory_code(null), '', 'null normalizes to empty');
 select is(public.mask_inventory_code('12345678AB12', null, 4), '********AB12', 'default final-four masking');
 select is(public.mask_inventory_code('AAAA7X9QZZZZ', 5, 4), '****7X9Q****', 'one-based middle window');
