@@ -38,7 +38,8 @@ site_url = "http://127.0.0.1:8501"
 additional_redirect_urls = ["http://localhost:8501"]
 jwt_expiry = 3600
 enable_signup = true
-enable_anonymous_sign_ins = false
+# Preserve legacy anonymous entry during pilot; named counters still require profiles.
+enable_anonymous_sign_ins = true
 minimum_password_length = 8
 
 [auth.email]

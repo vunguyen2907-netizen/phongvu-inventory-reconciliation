@@ -10,6 +10,20 @@ TABLES = ("profiles", "recount_batches", "recount_tasks", "recount_task_secrets"
           "recount_serial_evidence", "recount_attempts", "recount_code_resolutions", "audit_logs")
 
 
+def protected_client_grants(sql):
+    """Static warning only: database ACL checks remain authoritative."""
+    sql = re.sub(r"--[^\n]*", "", sql.lower()).replace('"', '')
+    unsafe = []
+    for match in re.finditer(r"\bgrant\b[^;]+?\bon\s+([^;]+?)\s+to\s+([^;]+);", sql):
+        targets, grantees = match.groups()
+        client_role = re.search(r"\b(public|anon|authenticated)\b", grantees)
+        protected_table = re.search(r"\bpublic\s*\.\s*(recount_task_secrets|recount_serial_evidence)\b", targets)
+        public_schema = re.search(r"\ball\s+tables\s+in\s+schema\s+[^;]*\bpublic\b", targets)
+        if client_role and (protected_table or public_schema):
+            unsafe.append(match.group())
+    return unsafe
+
+
 class SecureRecountSchemaContractTests(unittest.TestCase):
     def migration(self):
         self.assertTrue(MIGRATION.exists(), "secure recount migration is missing")
@@ -23,7 +37,37 @@ class SecureRecountSchemaContractTests(unittest.TestCase):
         self.assertEqual(settings["db"]["major_version"], 15)
         self.assertTrue(settings["db"]["migrations"]["enabled"])
         self.assertNotIn("private", settings["api"]["schemas"])
-        self.assertFalse(settings["auth"]["enable_anonymous_sign_ins"])
+        self.assertTrue(settings["auth"]["enable_anonymous_sign_ins"])
+
+    def test_anonymous_auth_bypasses_named_profile_creation(self):
+        sql = self.migration().lower()
+        body = sql.split("function private.handle_registered_user()", 1)[1].split("$$;", 1)[0]
+        self.assertRegex(body, r"if new\.is_anonymous then\s+return new;\s+end if;")
+        self.assertLess(body.index("if new.is_anonymous"), body.index("insert into public.profiles"))
+        self.assertIn("email text not null", sql)
+        self.assertIn("role public.app_role not null default 'counter'", sql)
+        self.assertIn("status public.profile_status not null default 'pending'", sql)
+
+    def test_pgtap_schema_assertions_are_unambiguous(self):
+        sql = (ROOT / "supabase/tests/secure_second_count_test.sql").read_text()
+        for name, count in (("has_table", 3), ("hasnt_column", 4), ("col_not_null", 4)):
+            calls = re.findall(rf"\b{name}\(([^;]+)\);", sql)
+            self.assertTrue(calls, name)
+            for args in calls:
+                self.assertEqual(len(re.findall(r"'(?:[^']|'')*'", args)), count, args)
+
+    def test_grant_scanner_detects_grouped_and_public_grants(self):
+        unsafe = (
+            "grant select on public.recount_tasks, public.recount_task_secrets to authenticated;",
+            "grant select on table public.profiles, public.recount_serial_evidence to service_role, anon;",
+            'GRANT SELECT ON "public"."recount_task_secrets" TO PUBLIC;',
+            "grant all on all tables in schema public to authenticated;",
+        )
+        for sql in unsafe:
+            with self.subTest(sql=sql):
+                self.assertTrue(protected_client_grants(sql), sql)
+        self.assertFalse(protected_client_grants("grant select on public.recount_tasks to authenticated;"))
+        self.assertFalse(protected_client_grants("grant select on public.recount_task_secrets to service_role;"))
 
     def test_all_new_tables_enable_rls(self):
         sql = self.migration().lower()
@@ -37,7 +81,7 @@ class SecureRecountSchemaContractTests(unittest.TestCase):
         for table in ("recount_task_secrets", "recount_serial_evidence"):
             self.assertIn(f"revoke all on table public.{table} from public, anon, authenticated;", sql)
             self.assertNotRegex(sql, rf"create policy[^;]+on public\.{table}\b")
-            self.assertNotRegex(sql, rf"grant[^;]+on (?:table )?public\.{table}\b[^;]+to (?:anon|authenticated)")
+        self.assertFalse(protected_client_grants(sql))
 
     def test_definer_functions_pin_search_path_and_revoke_public_execute(self):
         sql = self.migration().lower()

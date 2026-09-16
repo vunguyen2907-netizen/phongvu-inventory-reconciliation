@@ -269,6 +269,10 @@ language plpgsql security definer
 set search_path = ''
 as $$
 begin
+  -- Pilot compatibility: only Auth-owned state may bypass named registration.
+  if new.is_anonymous then
+    return new;
+  end if;
   -- Never trust user-editable role/status metadata.
   insert into public.profiles (id, email, full_name, erp_name, erp_name_normalized)
   values (

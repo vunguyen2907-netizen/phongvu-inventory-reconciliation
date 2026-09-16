@@ -4,14 +4,14 @@ create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions;
 select no_plan();
 
-select has_table('public', 'profiles');
-select has_table('public', 'recount_tasks');
-select has_table('public', 'recount_task_secrets');
-select has_table('public', 'recount_serial_evidence');
-select has_table('public', 'recount_batches');
-select has_table('public', 'recount_attempts');
-select has_table('public', 'recount_code_resolutions');
-select has_table('public', 'audit_logs');
+select has_table('public', 'profiles', 'profiles table exists');
+select has_table('public', 'recount_tasks', 'safe tasks table exists');
+select has_table('public', 'recount_task_secrets', 'protected secrets table exists');
+select has_table('public', 'recount_serial_evidence', 'protected evidence table exists');
+select has_table('public', 'recount_batches', 'batches table exists');
+select has_table('public', 'recount_attempts', 'attempts table exists');
+select has_table('public', 'recount_code_resolutions', 'resolutions table exists');
+select has_table('public', 'audit_logs', 'audit table exists');
 
 -- Literal outcomes also define the normalization/masking contract for clients.
 select is(public.normalize_inventory_code(E' ａｂ\t12 ' || chr(8203) || chr(65279)), 'AB12', 'NFKC, case, whitespace and zero-width normalization');
@@ -25,11 +25,19 @@ select is(public.mask_inventory_code('A', null, 4), '*', 'single-character code 
 select is(public.mask_inventory_code(null, null, 4), '', 'null masking is safe');
 select is(public.mask_inventory_code('ABCDEF', 1, 0), '******', 'zero-width masks everything');
 
-insert into auth.users (id, email, raw_user_meta_data)
+-- Auth owns is_anonymous. A pilot anonymous account has no email or named profile.
+select lives_ok($$insert into auth.users (id, email, is_anonymous, raw_user_meta_data)
+values ('10000000-0000-0000-0000-000000000008', null, true,
+        '{"role":"admin","status":"active","is_anonymous":false}')$$,
+  'legacy anonymous registration succeeds without a named profile');
+select is((select count(*) from auth.users where id = '10000000-0000-0000-0000-000000000008'), 1::bigint, 'anonymous Auth identity retained');
+select is((select count(*) from public.profiles where id = '10000000-0000-0000-0000-000000000008'), 0::bigint, 'anonymous Auth identity has no profile');
+
+insert into auth.users (id, email, is_anonymous, raw_user_meta_data)
 select ('10000000-0000-0000-0000-' || lpad(i::text, 12, '0'))::uuid,
-       'User' || i || '@Example.test',
+       'User' || i || '@Example.test', false,
        jsonb_build_object('full_name', ' User ' || i || ' ', 'erp_name', ' ERP ' || i || ' ',
-                          'role', 'admin', 'status', 'active')
+                          'role', 'admin', 'status', 'active', 'is_anonymous', true)
 from generate_series(1, 7) i;
 select is((select count(*) from public.profiles where role = 'counter' and status = 'pending'), 7::bigint, 'registration metadata cannot grant privileges');
 select is((select email from public.profiles where id = '10000000-0000-0000-0000-000000000001'), 'user1@example.test', 'registration lowercases email');
@@ -55,19 +63,24 @@ select lives_ok($$update public.profiles set erp_name_normalized = 'ERP1' where 
 insert into public.inventory_sessions(id, session_name) values ('20000000-0000-0000-0000-000000000001', 'pgTAP fixture');
 insert into public.recount_batches(id, inventory_session_id, status, created_by)
 values ('30000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000001', 'active', '10000000-0000-0000-0000-000000000006');
+insert into public.recount_batches(id, inventory_session_id, status, created_by)
+values ('30000000-0000-0000-0000-000000000002', '20000000-0000-0000-0000-000000000001', 'active', '10000000-0000-0000-0000-000000000006');
 insert into public.recount_tasks(id, batch_id, source_detail_row_id, sku, product_name, first_count_status, assigned_user_id, task_type, masked_reference, state)
 select ('40000000-0000-0000-0000-' || lpad(i::text, 12, '0'))::uuid,
        '30000000-0000-0000-0000-000000000001', 'row-' || i, 'SKU1', 'Product', 'Bắn thiếu (Chưa quét)',
        ('10000000-0000-0000-0000-' || lpad(i::text, 12, '0'))::uuid, 'missing_serial', '********AB12', 'assigned'
 from generate_series(1, 5) i;
+insert into public.recount_tasks(id, batch_id, source_detail_row_id, sku, product_name, first_count_status, task_type, masked_reference, state)
+values ('40000000-0000-0000-0000-000000000006', '30000000-0000-0000-0000-000000000001', 'row-unassigned', 'SKU1', 'Product', 'Bắn thiếu (Chưa quét)', 'missing_serial', '********AB12', 'unassigned');
 insert into public.recount_task_secrets(task_id, expected_serial_normalized)
 select id, 'SECRET12AB12' from public.recount_tasks;
 insert into public.recount_serial_evidence(batch_id, source_detail_row_id, sku, serial_normalized)
 values ('30000000-0000-0000-0000-000000000001', 'row-evidence', 'SKU1', 'SECRET12AB12');
 select throws_ok($$insert into public.recount_serial_evidence(batch_id, source_detail_row_id, sku, serial_normalized) values ('30000000-0000-0000-0000-000000000001', 'row-evidence', 'SKU1', 'SECRET12AB12')$$, '23505');
-select hasnt_column('public', 'recount_tasks', 'expected_serial_normalized');
-select hasnt_column('public', 'recount_tasks', 'first_scanned_code_normalized');
-select col_not_null('public', 'recount_tasks', 'version');
+select hasnt_column('public', 'recount_tasks', 'expected_serial_normalized', 'safe tasks omit complete expected serial');
+select hasnt_column('public', 'recount_tasks', 'first_scanned_code_normalized', 'safe tasks omit complete scanned code');
+select col_not_null('public', 'recount_tasks', 'version', 'task version cannot be null');
+select col_not_null('public', 'profiles', 'email', 'named profiles still require email');
 select is((select version from public.recount_tasks limit 1), 1, 'task version supports later optimistic concurrency');
 update public.recount_tasks set updated_at = '2000-01-01' where id = '40000000-0000-0000-0000-000000000001';
 select is((select updated_at from public.recount_tasks where id = '40000000-0000-0000-0000-000000000001'), now(), 'task update timestamp is server-maintained');
@@ -85,6 +98,8 @@ select is(public.current_profile_role()::text, 'counter', 'active role comes fro
 select ok(public.is_active_profile(), 'active account recognized');
 select results_eq($$select source_detail_row_id from public.recount_tasks order by source_detail_row_id$$, $$values ('row-1'::text)$$, 'counter reads only own assigned safe task');
 select is((select count(*) from public.recount_batches), 1::bigint, 'counter can read assigned batch metadata');
+select is((select count(*) from public.recount_batches where id = '30000000-0000-0000-0000-000000000002'), 0::bigint, 'counter cannot read a batch without assigned work');
+select is((select count(*) from public.recount_tasks where id = '40000000-0000-0000-0000-000000000006'), 0::bigint, 'counter cannot read unassigned work in an accessible batch');
 select is((select count(*) from public.profiles), 1::bigint, 'counter reads only own profile');
 select throws_ok($$select expected_serial_normalized from public.recount_task_secrets$$, '42501');
 select throws_ok($$select serial_normalized from public.recount_serial_evidence$$, '42501');
@@ -114,14 +129,14 @@ select ok(not public.is_active_profile(), 'deleted profile is inactive');
 select throws_ok($$select expected_serial_normalized from public.recount_task_secrets$$, '42501');
 
 select set_config('request.jwt.claims', '{"sub":"10000000-0000-0000-0000-000000000006","role":"authenticated"}', true);
-select is((select count(*) from public.recount_tasks), 5::bigint, 'active manager can read all safe tasks');
+select is((select count(*) from public.recount_tasks), 6::bigint, 'active manager can read all safe tasks including unassigned');
 select is((select count(*) from public.profiles), 7::bigint, 'active manager can read account list');
 select is((select count(*) from public.audit_logs), 1::bigint, 'active manager can read audit');
 select throws_ok($$select expected_serial_normalized from public.recount_task_secrets$$, '42501');
 select throws_ok($$select serial_normalized from public.recount_serial_evidence$$, '42501');
 select throws_ok($$update public.profiles set role = 'admin'$$, '42501');
 select set_config('request.jwt.claims', '{"sub":"10000000-0000-0000-0000-000000000007","role":"authenticated"}', true);
-select is((select count(*) from public.recount_tasks), 5::bigint, 'active admin can read all safe tasks');
+select is((select count(*) from public.recount_tasks), 6::bigint, 'active admin can read all safe tasks including unassigned');
 select is((select count(*) from public.profiles), 7::bigint, 'active admin can read account list');
 select throws_ok($$select expected_serial_normalized from public.recount_task_secrets$$, '42501');
 select throws_ok($$select serial_normalized from public.recount_serial_evidence$$, '42501');
@@ -137,6 +152,19 @@ select is((select count(*) from public.recount_tasks), 0::bigint, 'locked admin 
 select set_config('request.jwt.claims', '{"sub":"99999999-0000-0000-0000-000000000000","role":"authenticated","user_metadata":{"role":"admin","status":"active"}}', true);
 select is((select count(*) from public.recount_tasks), 0::bigint, 'missing profile cannot authorize from metadata');
 select ok(not public.is_active_profile(), 'missing profile is inactive');
+-- Signed-in anonymous Auth users assume authenticated, not the anon SQL role.
+select set_config('request.jwt.claims', '{"sub":"10000000-0000-0000-0000-000000000008","role":"authenticated","is_anonymous":true,"user_metadata":{"role":"admin","status":"active"}}', true);
+select ok(not public.is_active_profile(), 'signed-in anonymous identity has no active profile');
+select is(public.current_profile_role(), null::public.app_role, 'anonymous identity has no application role');
+select is((select count(*) from public.profiles), 0::bigint, 'anonymous identity cannot read profiles');
+select is((select count(*) from public.recount_tasks), 0::bigint, 'anonymous identity cannot read new tasks');
+select is((select count(*) from public.recount_batches), 0::bigint, 'anonymous identity cannot read new batches');
+select is((select count(*) from public.recount_attempts), 0::bigint, 'anonymous identity cannot read attempts');
+select is((select count(*) from public.recount_code_resolutions), 0::bigint, 'anonymous identity cannot read resolutions');
+select is((select count(*) from public.audit_logs), 0::bigint, 'anonymous identity cannot read audit');
+select throws_ok($$select expected_serial_normalized from public.recount_task_secrets$$, '42501');
+select throws_ok($$select serial_normalized from public.recount_serial_evidence$$, '42501');
+select throws_ok($$update public.recount_tasks set state = 'completed'$$, '42501');
 reset role;
 select throws_ok($$select private.bootstrap_initial_admin('10000000-0000-0000-0000-000000000007')$$, '42501');
 set local role anon;
