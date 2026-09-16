@@ -2,6 +2,23 @@ import streamlit as st
 import os
 import json
 
+
+def build_embedded_html(html_code: str, domain_code: str, public_url: str, public_key: str) -> str:
+    public_config = (
+        "<script>"
+        f"window.SUPABASE_URL={json.dumps(public_url)};"
+        f"window.SUPABASE_KEY={json.dumps(public_key)};"
+        "</script>"
+    )
+    html_code = html_code.replace("</head>", f"{public_config}</head>", 1)
+    domain_script = f"<script>{domain_code.replace('</script', '<\\/script')}</script>"
+    return html_code.replace(
+        '<script type="text/babel">',
+        f'{domain_script}<script type="text/babel">',
+        1,
+    )
+
+
 st.set_page_config(
     page_title="Hệ thống Tự động Xử lý & Đối soát Dữ liệu Kiểm kê - Phong Vũ",
     layout="wide",
@@ -42,13 +59,10 @@ if os.path.exists(html_path):
         or os.getenv("SUPABASE_PUBLISHABLE_KEY", "")
         or os.getenv("SUPABASE_ANON_KEY", "")
     )
-    public_config = (
-        "<script>"
-        f"window.SUPABASE_URL={json.dumps(public_url)};"
-        f"window.SUPABASE_KEY={json.dumps(public_key)};"
-        "</script>"
-    )
-    html_code = html_code.replace("</head>", f"{public_config}</head>", 1)
+    domain_path = os.path.join(os.path.dirname(__file__), "recount_domain.js")
+    with open(domain_path, "r", encoding="utf-8") as domain_file:
+        domain_code = domain_file.read()
+    html_code = build_embedded_html(html_code, domain_code, public_url, public_key)
     st.components.v1.html(html_code, height=950, scrolling=True)
 else:
     st.error("Không tìm thấy file index.html!")

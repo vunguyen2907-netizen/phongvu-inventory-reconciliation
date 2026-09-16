@@ -1,6 +1,7 @@
 import unittest
 import sys
 import types
+import importlib
 
 import pandas as pd
 
@@ -17,6 +18,12 @@ streamlit_stub = types.ModuleType("streamlit")
 streamlit_stub.cache_resource = _cache_decorator
 streamlit_stub.cache_data = _cache_decorator
 streamlit_stub.secrets = {}
+streamlit_stub.set_page_config = lambda *args, **kwargs: None
+streamlit_stub.markdown = lambda *args, **kwargs: None
+streamlit_stub.error = lambda *args, **kwargs: None
+streamlit_stub.components = types.SimpleNamespace(
+    v1=types.SimpleNamespace(html=lambda *args, **kwargs: None)
+)
 supabase_stub = types.ModuleType("supabase")
 supabase_stub.create_client = lambda *args, **kwargs: None
 sys.modules.setdefault("streamlit", streamlit_stub)
@@ -26,6 +33,37 @@ import supabase_store
 
 
 class SupabaseStoreHelpersTest(unittest.TestCase):
+    def test_build_embedded_html_injects_recount_domain_before_babel_app(self):
+        app = importlib.import_module("app")
+        build_embedded_html = getattr(app, "build_embedded_html", None)
+        self.assertIsNotNone(build_embedded_html)
+
+        rendered_html = build_embedded_html(
+            "<html><head></head><body><script type=\"text/babel\">app()</script></body></html>",
+            "window.InventoryRecountDomain = {};",
+            "https://project.supabase.co",
+            "public-key",
+        )
+
+        self.assertLess(
+            rendered_html.index("window.InventoryRecountDomain"),
+            rendered_html.index('<script type="text/babel">'),
+        )
+
+    def test_build_embedded_html_escapes_domain_script_end_tags(self):
+        app = importlib.import_module("app")
+        build_embedded_html = getattr(app, "build_embedded_html", None)
+        self.assertIsNotNone(build_embedded_html)
+
+        rendered_html = build_embedded_html(
+            "<html><head></head><body><script type=\"text/babel\">app()</script></body></html>",
+            "const example = '</script>';",
+            "",
+            "",
+        )
+
+        self.assertIn("<\\/script>", rendered_html)
+
     def test_compressed_dataframe_round_trip(self):
         original = pd.DataFrame(
             [{"sku": "00123", "qty": 1.5}, {"sku": "ABC", "qty": 2.0}]
