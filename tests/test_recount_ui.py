@@ -37,6 +37,7 @@ def _mock_supabase_script(session, profile, legacy=False, behavior=None):
       window.__AUTH_FIXTURE__ = {json.dumps(fixture)};
       window.__AUTH_CALLS__ = [];
       window.__UNEXPECTED_CALLS__ = [];
+      window.__PROFILE_READ_DURING_AUTH_CALLBACK__ = false;
       if (window.__AUTH_FIXTURE__.behavior.authRedirectUrl) {{
         window.AUTH_REDIRECT_URL = window.__AUTH_FIXTURE__.behavior.authRedirectUrl;
       }}
@@ -55,6 +56,15 @@ def _mock_supabase_script(session, profile, legacy=False, behavior=None):
             if ((fixture.behavior.getSessionFailures || 0) > 0) {{
               fixture.behavior.getSessionFailures -= 1;
               throw new Error("session network unavailable");
+            }}
+            if (fixture.behavior.getSessionDeferred) {{
+              const sessionAtRequest = fixture.session;
+              return await new Promise(resolve => {{
+                window.__RESOLVE_SESSION__ = () => {{
+                  resolve({{ data: {{ session: sessionAtRequest }}, error: null }});
+                  setTimeout(() => {{ window.__GET_SESSION_SETTLED__ = true; }}, 0);
+                }};
+              }});
             }}
             return {{ data: {{ session: fixture.session }}, error: null }};
           }},
@@ -120,6 +130,9 @@ def _mock_supabase_script(session, profile, legacy=False, behavior=None):
         }},
         from: (table) => {{
           record("from", {{ table }});
+          if (table === "profiles" && window.__IN_AUTH_CALLBACK__) {{
+            window.__PROFILE_READ_DURING_AUTH_CALLBACK__ = true;
+          }}
           if (!["profiles", "inventory_sessions", "monthly_archives"].includes(table)) {{
             window.__UNEXPECTED_CALLS__.push(`Unexpected table: ${{table}}`);
             throw new Error(`Unexpected table: ${{table}}`);
@@ -158,6 +171,18 @@ def _mock_supabase_script(session, profile, legacy=False, behavior=None):
       window.__TRIGGER_AUTH__ = async (event, nextSession = fixture.session) => {{
         fixture.session = nextSession;
         for (const callback of authListeners) await callback(event, nextSession);
+      }};
+      window.__EMIT_AUTH_SYNC__ = (event, nextSession = fixture.session) => {{
+        fixture.session = nextSession;
+        window.__IN_AUTH_CALLBACK__ = true;
+        try {{
+          return authListeners.map(callback => {{
+            const result = callback(event, nextSession);
+            return Boolean(result && typeof result.then === "function");
+          }});
+        }} finally {{
+          window.__IN_AUTH_CALLBACK__ = false;
+        }}
       }};
       window.supabase = {{ createClient: () => client }};
     """
@@ -495,6 +520,60 @@ class AuthUiTest(unittest.TestCase):
 
         page.get_by_role("heading", name="Đăng nhập").wait_for()
         self.assertEqual(page.get_by_role("navigation").count(), 0)
+
+    def test_auth_event_callback_returns_before_signed_in_profile_load(self):
+        session = {"user": {"id": "manager-user", "email": "manager@example.com"}}
+        profile = {
+            "id": "manager-user",
+            "email": "manager@example.com",
+            "full_name": "Manager User",
+            "erp_name": "ERP Manager",
+            "role": "manager",
+            "status": "active",
+        }
+        page = self.open_auth_page(None, profile, behavior={"profileDeferred": True})
+        page.get_by_role("heading", name="Đăng nhập").wait_for()
+
+        returned_promises = page.evaluate(
+            "session => window.__EMIT_AUTH_SYNC__('SIGNED_IN', session)", session
+        )
+
+        self.assertEqual(returned_promises, [False])
+        self.assertFalse(page.evaluate("window.__PROFILE_READ_DURING_AUTH_CALLBACK__"))
+        page.wait_for_function("window.__RESOLVE_PROFILE__ !== undefined")
+        page.evaluate("window.__RESOLVE_PROFILE__()")
+        page.get_by_role("navigation").wait_for()
+
+    def test_auth_stale_get_session_result_cannot_override_signed_out_event(self):
+        session = {"user": {"id": "manager-user", "email": "manager@example.com"}}
+        profile = {
+            "id": "manager-user",
+            "email": "manager@example.com",
+            "full_name": "Manager User",
+            "erp_name": "ERP Manager",
+            "role": "manager",
+            "status": "active",
+        }
+        page = self.open_auth_page(
+            session,
+            profile,
+            behavior={"getSessionDeferred": True},
+        )
+        page.wait_for_function("window.__RESOLVE_SESSION__ !== undefined")
+        page.evaluate("window.__TRIGGER_AUTH__('SIGNED_OUT', null)")
+        page.get_by_role("heading", name="Đăng nhập").wait_for()
+
+        page.evaluate("window.__RESOLVE_SESSION__()")
+        page.wait_for_function("window.__GET_SESSION_SETTLED__ === true")
+
+        self.assertTrue(page.get_by_role("heading", name="Đăng nhập").is_visible())
+        self.assertEqual(page.get_by_role("navigation").count(), 0)
+        self.assertEqual(
+            page.evaluate(
+                "window.__AUTH_CALLS__.filter(call => call.method === 'from' && call.payload.table === 'profiles').length"
+            ),
+            0,
+        )
 
     def test_auth_missing_profile_shows_sign_out_and_retry_without_shell(self):
         session = {"user": {"id": "orphan-user", "email": "orphan@example.com"}}

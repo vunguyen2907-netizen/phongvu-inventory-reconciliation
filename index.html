@@ -701,6 +701,7 @@
         let subscription = null;
         let unsubscribeAuthLocation = () => {};
         let recoveryInProgress = false;
+        const scheduledAuthTasks = new Set();
         const handledRecoveryLocations = new Set();
         const legacyEnabled = window.ENABLE_LEGACY_ANONYMOUS === true;
 
@@ -804,6 +805,16 @@
           setAuthState({ session, profile: null, loading: false, error: "", legacyMode: false, profileMissing: false });
         };
 
+        const scheduleSessionAcceptance = (client, session, version) => {
+          const task = window.setTimeout(() => {
+            scheduledAuthTasks.delete(task);
+            if (!mounted || version !== requestVersion) return;
+            acceptSession(client, session, version)
+              .catch(error => setFailure(error, version));
+          }, 0);
+          scheduledAuthTasks.add(task);
+        };
+
         const processRecoveryLocation = async (client, location) => {
           if (!location || handledRecoveryLocations.has(location.href)) return false;
           handledRecoveryLocations.add(location.href);
@@ -846,9 +857,7 @@
               }
               if (recoveryInProgress && event !== "SIGNED_OUT") return;
               const version = invalidateProfileRequests();
-              return Promise.resolve()
-                .then(() => acceptSession(client, nextSession, version))
-                .catch(error => setFailure(error, version));
+              scheduleSessionAcceptance(client, nextSession, version);
             });
             subscription = listener?.data?.subscription || null;
 
@@ -864,9 +873,11 @@
               ? await processRecoveryLocation(client, pendingAuthLocation)
               : false;
             if (!recovered && !recoveryInProgress) {
+              const bootstrapVersion = requestVersion;
               const { data, error } = await client.auth.getSession();
               if (error) throw error;
-              await acceptSession(client, data?.session || null);
+              if (!mounted || bootstrapVersion !== requestVersion) return;
+              await acceptSession(client, data?.session || null, bootstrapVersion);
             }
           } catch (error) {
             recoveryInProgress = false;
@@ -879,6 +890,8 @@
           invalidateProfileRequests();
           subscription?.unsubscribe();
           unsubscribeAuthLocation();
+          scheduledAuthTasks.forEach(task => window.clearTimeout(task));
+          scheduledAuthTasks.clear();
         };
       }, [attempt]);
 
