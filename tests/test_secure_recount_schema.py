@@ -158,6 +158,41 @@ class SecureRecountSchemaContractTests(unittest.TestCase):
         self.assertIn('ban_duration: INDEFINITE_BAN_DURATION', source)
         self.assertNotIn(".deleteUser(", source)
 
+    def test_unlock_is_authoritative_before_auth_unban_and_rechecks_afterward(self):
+        source = LIFECYCLE_FUNCTION.read_text()
+        unlock = source.split('case "unlock_user":', 1)[1].split('return response(400, { error: "invalid_request" });', 1)[0]
+        self.assertIn("profileById(userClient, targetUserId)", unlock)
+        self.assertIn("restoreLifecycleBan", unlock)
+        rpc = unlock.index('rpc("manager_unlock_profile"')
+        unban = unlock.index('ban_duration: "none"')
+        recheck = unlock.rindex("profileById(userClient, targetUserId)")
+        self.assertLess(rpc, unban)
+        self.assertLess(unban, recheck)
+
+    def test_edge_rejects_null_json_and_readme_uses_supported_deploy_command(self):
+        source = LIFECYCLE_FUNCTION.read_text()
+        self.assertRegex(source, r"payload\s*&&\s*typeof payload === \"object\"")
+        readme = (ROOT / "README.md").read_text()
+        self.assertIn("supabase functions deploy admin-user-lifecycle", readme)
+        self.assertNotIn("--verify-jwt", readme)
+
+    def test_lifecycle_pgtap_fixtures_and_error_overloads_are_executable(self):
+        sql = (ROOT / "supabase/tests/secure_second_count_test.sql").read_text()
+        setup = "update public.recount_tasks\nset state = 'in_progress', assigned_name_snapshot = 'User 3'"
+        self.assertLess(sql.index(setup), sql.index("set local role authenticated;"))
+        lifecycle = sql.split("-- Account lifecycle RPCs authorize", 1)[1].split("reset role;", 1)[0]
+        calls = re.findall(
+            r"select throws_ok\(\s*\$\$.*?\$\$,\s*'[^']+',\s*null,\s*'[^']+'\s*\);",
+            lifecycle,
+            re.S,
+        )
+        self.assertEqual(len(calls), 5)
+        inactive = sql.split("'locked manager loses legacy archive access'", 1)[1]
+        self.assertRegex(
+            inactive,
+            r"select throws_ok\(\s*\$\$.*?\$\$,\s*'42501',\s*null,\s*'locked manager cannot call lifecycle RPCs'\s*\);",
+        )
+
     def test_manager_account_panel_exposes_all_lifecycle_controls_without_service_credentials(self):
         source = INDEX_HTML.read_text()
         for label in ("Quản lý tài khoản", "Chờ duyệt", "Hoạt động", "Đã khóa", "Đã xóa",

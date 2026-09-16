@@ -176,6 +176,9 @@ def _mock_supabase_script(session, profile, legacy=False, behavior=None):
         functions: {{
           invoke: async (name, options) => {{
             record("function.invoke", {{ name, body: options?.body }});
+            if (fixture.behavior.functionInvokeError) {{
+              return {{ data: null, error: {{ message: fixture.behavior.functionInvokeError }} }};
+            }}
             return {{ data: {{ ok: true }}, error: null }};
           }}
         }}
@@ -390,6 +393,27 @@ class AuthUiTest(unittest.TestCase):
         page.get_by_role("button", name="Xác nhận xóa").click()
         call = page.evaluate("window.__AUTH_CALLS__.find(call => call.method === 'function.invoke')")
         self.assertEqual(call["payload"]["body"], {"action": "delete_user", "target_user_id": "pending-user"})
+
+    def test_manager_account_panel_keeps_typed_delete_confirmation_after_failure(self):
+        session = {"user": {"id": "manager-user", "email": "manager@example.com"}}
+        profile = {"id": "manager-user", "email": "manager@example.com", "full_name": "Manager User", "erp_name": "ERP Manager", "role": "manager", "status": "active"}
+        active = {"id": "active-user", "email": "active@example.com", "full_name": "Active User", "erp_name": "ERP Active", "role": "counter", "status": "active"}
+        page = self.open_auth_page(
+            session,
+            profile,
+            behavior={"accountProfiles": [active], "functionInvokeError": "lifecycle unavailable"},
+        )
+        page.get_by_role("button", name="Quản lý tài khoản").click()
+        page.get_by_role("button", name="Hoạt động", exact=True).click()
+        page.get_by_role("button", name="Xóa Active User").click()
+        confirmation = page.get_by_label("Nhập email để xác nhận")
+        confirmation.fill("active@example.com")
+        page.get_by_role("button", name="Xác nhận xóa").click()
+
+        page.get_by_role("alert").wait_for()
+        self.assertIn("lifecycle unavailable", page.get_by_role("alert").inner_text())
+        self.assertEqual(confirmation.input_value(), "active@example.com")
+        self.assertTrue(page.get_by_role("heading", name="Xóa quyền đăng nhập").is_visible())
 
     def test_manager_account_panel_locks_unlocks_and_requires_typed_delete_confirmation(self):
         session = {"user": {"id": "manager-user", "email": "manager@example.com"}}

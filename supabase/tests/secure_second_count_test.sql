@@ -101,6 +101,9 @@ update public.recount_tasks set updated_at = '2000-01-01' where id = '40000000-0
 select is((select updated_at from public.recount_tasks where id = '40000000-0000-0000-0000-000000000001'), now(), 'task update timestamp is server-maintained');
 select throws_ok($$update public.recount_tasks set version = 0 where id = '40000000-0000-0000-0000-000000000001'$$, '23514');
 select throws_ok($$update public.recount_tasks set source_detail_row_id = 'row-1' where id = '40000000-0000-0000-0000-000000000002'$$, '23505');
+update public.recount_tasks
+set state = 'in_progress', assigned_name_snapshot = 'User 3'
+where id = '40000000-0000-0000-0000-000000000003';
 select ok(not has_table_privilege('authenticated', 'public.' || name, 'INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'), name || ': no direct client mutation')
 from unnest(array['profiles', 'recount_batches', 'recount_tasks', 'recount_task_secrets', 'recount_serial_evidence', 'recount_attempts', 'recount_code_resolutions', 'audit_logs']) as names(name);
 
@@ -175,6 +178,7 @@ select set_config('request.jwt.claims', '{"sub":"10000000-0000-0000-0000-0000000
 select throws_ok(
   $$select public.manager_approve_profile('10000000-0000-0000-0000-000000000003', 'ERP NEW')$$,
   '42501',
+  null,
   'counter cannot approve a profile'
 );
 
@@ -182,6 +186,7 @@ select set_config('request.jwt.claims', '{"sub":"10000000-0000-0000-0000-0000000
 select throws_ok(
   $$select public.manager_approve_profile('10000000-0000-0000-0000-000000000003', ' ERP 1 ')$$,
   '23505',
+  null,
   'approval rejects a normalized ERP alias already held by a non-deleted profile'
 );
 select lives_ok(
@@ -202,15 +207,14 @@ select is((select count(*) from public.audit_logs where action = 'approve_profil
 select throws_ok(
   $$select public.manager_approve_profile('10000000-0000-0000-0000-000000000007', 'ADMIN')$$,
   '42501',
+  null,
   'manager cannot operate on an admin'
 );
 
-update public.recount_tasks
-set state = 'in_progress', assigned_name_snapshot = 'User 3'
-where id = '40000000-0000-0000-0000-000000000003';
 select throws_ok(
   $$select public.manager_lock_profile('10000000-0000-0000-0000-000000000003', '   ')$$,
   '22023',
+  null,
   'locking requires a reason'
 );
 select lives_ok(
@@ -232,6 +236,7 @@ select is((select count(*) from public.audit_logs where action = 'lock_profile' 
 select throws_ok(
   $$select public.manager_lock_profile('10000000-0000-0000-0000-000000000007', 'forbidden')$$,
   '42501',
+  null,
   'manager cannot lock an admin'
 );
 
@@ -246,6 +251,7 @@ select is((select count(*) from public.monthly_archives), 0::bigint, 'locked man
 select throws_ok(
   $$select public.manager_lock_profile('10000000-0000-0000-0000-000000000001', 'forbidden while inactive')$$,
   '42501',
+  null,
   'locked manager cannot call lifecycle RPCs'
 );
 select set_config('request.jwt.claims', '{"sub":"10000000-0000-0000-0000-000000000007","role":"authenticated"}', true);

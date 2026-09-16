@@ -96,7 +96,7 @@ dùng cascade.
 Triển khai Edge Function sau khi áp dụng migration:
 
 ```bash
-supabase functions deploy admin-user-lifecycle --verify-jwt
+supabase functions deploy admin-user-lifecycle
 ```
 
 Thiết lập `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` (hoặc

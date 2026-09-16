@@ -51,6 +51,20 @@ async function profileById(client: UserClient, id: string) {
   return await client.from("profiles").select("id, role, status").eq("id", id).maybeSingle();
 }
 
+async function restoreLifecycleBan(serviceClient: ServiceClient, targetUserId: string) {
+  const { error } = await serviceClient.auth.admin.updateUserById(targetUserId, {
+    ban_duration: INDEFINITE_BAN_DURATION,
+  });
+  return error && !userNotFound(error) ? error : null;
+}
+
+async function restoreDatabaseLock(userClient: UserClient, targetUserId: string) {
+  return await userClient.rpc("manager_lock_profile", {
+    p_user_id: targetUserId,
+    p_reason: "Auth unlock failed; restored lock",
+  });
+}
+
 export function createLifecycleHandler(dependencies: LifecycleDependencies) {
   return async (request: Request): Promise<Response> => {
     if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -60,14 +74,17 @@ export function createLifecycleHandler(dependencies: LifecycleDependencies) {
     const token = bearerToken(authorization);
     if (!token || !authorization) return response(401, { error: "missing_jwt" });
 
-    let payload: { action?: unknown; target_user_id?: unknown };
+    let payload: unknown;
     try {
       payload = await request.json();
     } catch (_error) {
       return response(400, { error: "invalid_json" });
     }
-    const action = typeof payload.action === "string" ? payload.action : "";
-    const targetUserId = typeof payload.target_user_id === "string" ? payload.target_user_id.trim() : "";
+    const body = payload && typeof payload === "object" && !Array.isArray(payload)
+      ? payload as { action?: unknown; target_user_id?: unknown }
+      : null;
+    const action = typeof body?.action === "string" ? body.action : "";
+    const targetUserId = typeof body?.target_user_id === "string" ? body.target_user_id.trim() : "";
     if (!targetUserId || !["delete_user", "unlock_user"].includes(action)) {
       return response(400, { error: "invalid_request" });
     }
@@ -108,10 +125,36 @@ export function createLifecycleHandler(dependencies: LifecycleDependencies) {
         }
         case "unlock_user": {
           if (target.status !== "locked") return response(409, { error: "target_not_locked" });
-          const { error: authError } = await serviceClient.auth.admin.updateUserById(targetUserId, { ban_duration: "none" });
-          if (authError) return response(502, { error: "auth_unban_failed" });
-          const { error } = await userClient.rpc("manager_unlock_profile", { p_user_id: targetUserId });
-          if (error) return response(error.code === "42501" ? 403 : 409, { error: "profile_unlock_failed", message: error.message || "" });
+          const { data: transition, error: transitionError } = await userClient.rpc("manager_unlock_profile", {
+            p_user_id: targetUserId,
+          });
+          if (transitionError || !transition || typeof transition !== "object" || (transition as { status?: unknown }).status !== "active") {
+            await restoreLifecycleBan(serviceClient, targetUserId);
+            return response(transitionError?.code === "42501" ? 403 : 409, {
+              error: "profile_unlock_failed",
+              message: transitionError?.message || "",
+            });
+          }
+
+          const { error: authError } = await serviceClient.auth.admin.updateUserById(targetUserId, {
+            ban_duration: "none",
+          });
+          if (authError) {
+            await restoreDatabaseLock(userClient, targetUserId);
+            await restoreLifecycleBan(serviceClient, targetUserId);
+            return response(502, { error: "auth_unban_failed" });
+          }
+
+          const { data: currentTarget, error: currentTargetError } = await profileById(userClient, targetUserId);
+          if (currentTargetError || !currentTarget) {
+            await restoreDatabaseLock(userClient, targetUserId);
+            await restoreLifecycleBan(serviceClient, targetUserId);
+            return response(502, { error: "unlock_confirmation_failed" });
+          }
+          if (currentTarget.status !== "active") {
+            await restoreLifecycleBan(serviceClient, targetUserId);
+            return response(409, { error: "unlock_superseded", status: currentTarget.status });
+          }
           return response(200, { ok: true, action, target_user_id: targetUserId });
         }
       }

@@ -11,9 +11,16 @@ function assertEquals(actual: unknown, expected: unknown) {
 }
 
 type Profile = { id: string; role: "admin" | "manager" | "counter"; status: "pending" | "active" | "locked" | "deleted" };
+type TestError = { message: string; code?: string; status?: number };
+type FixtureOptions = {
+  rpcErrors?: Record<string, TestError>;
+  authErrors?: Record<string, TestError>;
+  onRpc?: (name: string, target: Profile) => void;
+  onAuthUpdate?: (duration: string, target: Profile) => void;
+};
 
-function fixture(caller: Profile, target: Profile) {
-  const calls = { rpc: [] as unknown[], deleted: [] as unknown[], unbanned: [] as unknown[], userTokens: [] as string[] };
+function fixture(caller: Profile, target: Profile, options: FixtureOptions = {}) {
+  const calls = { rpc: [] as unknown[], authUpdates: [] as unknown[], userTokens: [] as string[], events: [] as string[] };
   const userClient = {
     auth: {
       getUser: async (token: string) => {
@@ -27,24 +34,32 @@ function fixture(caller: Profile, target: Profile) {
       const query = {
         select: () => query,
         eq: (_column: string, value: string) => { id = value; return query; },
-        maybeSingle: async () => ({ data: id === caller.id ? caller : id === target.id ? target : null, error: null }),
+        maybeSingle: async () => {
+          calls.events.push(`profile:${id}`);
+          return { data: id === caller.id ? caller : id === target.id ? target : null, error: null };
+        },
       };
       return query;
     },
     rpc: async (name: string, args: unknown) => {
       calls.rpc.push({ name, args });
-      return { data: null, error: null };
+      calls.events.push(`rpc:${name}`);
+      const error = options.rpcErrors?.[name];
+      if (error) return { data: null, error };
+      if (name === "manager_unlock_profile") target.status = "active";
+      if (name === "manager_lock_profile") target.status = "locked";
+      if (name === "manager_delete_profile") target.status = "deleted";
+      options.onRpc?.(name, target);
+      return { data: { user_id: target.id, status: target.status }, error: null };
     },
   };
   const serviceClient = {
     auth: { admin: {
-      deleteUser: async (id: string, soft: boolean) => {
-        calls.deleted.push({ id, soft });
-        return { data: {}, error: null };
-      },
-      updateUserById: async (id: string, attributes: unknown) => {
-        calls.unbanned.push({ id, attributes });
-        return { data: {}, error: null };
+      updateUserById: async (id: string, attributes: { ban_duration: string }) => {
+        calls.authUpdates.push({ id, attributes });
+        calls.events.push(`auth:${attributes.ban_duration}`);
+        options.onAuthUpdate?.(attributes.ban_duration, target);
+        return { data: {}, error: options.authErrors?.[attributes.ban_duration] || null };
       },
     } },
   };
@@ -74,6 +89,21 @@ Deno.test("rejects a request without a caller JWT", async () => {
   assertEquals(created, false);
 });
 
+Deno.test("rejects a JSON null payload with a CORS JSON 400", async () => {
+  const { handler } = fixture(
+    { id: "manager-1", role: "manager", status: "active" },
+    { id: "counter-1", role: "counter", status: "active" },
+  );
+  const response = await handler(new Request("http://localhost/admin-user-lifecycle", {
+    method: "POST",
+    headers: { authorization: "Bearer valid-jwt", "content-type": "application/json" },
+    body: "null",
+  }));
+  assertEquals(response.status, 400);
+  assertEquals(response.headers.get("access-control-allow-origin"), "*");
+  assertEquals(await response.json(), { error: "invalid_request" });
+});
+
 Deno.test("rejects an active counter caller", async () => {
   const { handler, calls } = fixture(
     { id: "caller", role: "counter", status: "active" },
@@ -82,10 +112,10 @@ Deno.test("rejects an active counter caller", async () => {
   const response = await handler(request("delete_user"));
   assertEquals(response.status, 403);
   assertEquals(calls.rpc, []);
-  assertEquals(calls.deleted, []);
+  assertEquals(calls.authUpdates, []);
 });
 
-Deno.test("manager soft-deletes Auth and database access for a counter", async () => {
+Deno.test("manager soft-deletes the profile and bans Auth for a counter", async () => {
   const { handler, calls } = fixture(
     { id: "manager-1", role: "manager", status: "active" },
     { id: "counter-1", role: "counter", status: "active" },
@@ -94,8 +124,7 @@ Deno.test("manager soft-deletes Auth and database access for a counter", async (
   assertEquals(response.status, 200);
   assertEquals(calls.userTokens, ["valid-jwt"]);
   assertEquals(calls.rpc, [{ name: "manager_delete_profile", args: { p_user_id: "counter-1" } }]);
-  assertEquals(calls.unbanned, [{ id: "counter-1", attributes: { ban_duration: "876000h" } }]);
-  assertEquals(calls.deleted, []);
+  assertEquals(calls.authUpdates, [{ id: "counter-1", attributes: { ban_duration: "876000h" } }]);
 });
 
 Deno.test("manager cannot delete an admin", async () => {
@@ -106,7 +135,7 @@ Deno.test("manager cannot delete an admin", async () => {
   const response = await handler(request("delete_user", "admin-1"));
   assertEquals(response.status, 403);
   assertEquals(calls.rpc, []);
-  assertEquals(calls.deleted, []);
+  assertEquals(calls.authUpdates, []);
 });
 
 Deno.test("deleting an already-deleted profile is idempotent", async () => {
@@ -118,18 +147,64 @@ Deno.test("deleting an already-deleted profile is idempotent", async () => {
   assertEquals(response.status, 200);
   assertEquals(await response.json(), { ok: true, action: "delete_user", target_user_id: "counter-1", already_deleted: true });
   assertEquals(calls.rpc, []);
-  assertEquals(calls.unbanned, [{ id: "counter-1", attributes: { ban_duration: "876000h" } }]);
-  assertEquals(calls.deleted, []);
+  assertEquals(calls.authUpdates, [{ id: "counter-1", attributes: { ban_duration: "876000h" } }]);
 });
 
-Deno.test("manager unbans Auth before activating a locked counter", async () => {
+Deno.test("manager activates the locked profile before unbanning Auth", async () => {
   const { handler, calls } = fixture(
     { id: "manager-1", role: "manager", status: "active" },
     { id: "counter-1", role: "counter", status: "locked" },
   );
   const response = await handler(request("unlock_user"));
   assertEquals(response.status, 200);
-  assertEquals(calls.unbanned, [{ id: "counter-1", attributes: { ban_duration: "none" } }]);
+  assertEquals(calls.authUpdates, [{ id: "counter-1", attributes: { ban_duration: "none" } }]);
   assertEquals(calls.rpc, [{ name: "manager_unlock_profile", args: { p_user_id: "counter-1" } }]);
-  assertEquals(calls.deleted, []);
+  assert(calls.events.indexOf("rpc:manager_unlock_profile") < calls.events.indexOf("auth:none"));
+  assert(calls.events.lastIndexOf("profile:counter-1") > calls.events.indexOf("auth:none"));
+});
+
+Deno.test("an unlock RPC failure leaves Auth banned", async () => {
+  const { handler, calls } = fixture(
+    { id: "manager-1", role: "manager", status: "active" },
+    { id: "counter-1", role: "counter", status: "locked" },
+    { rpcErrors: { manager_unlock_profile: { message: "target was deleted", code: "55000" } } },
+  );
+  const response = await handler(request("unlock_user"));
+  assertEquals(response.status, 409);
+  assertEquals(calls.authUpdates, [
+    { id: "counter-1", attributes: { ban_duration: "876000h" } },
+  ]);
+});
+
+Deno.test("a delete racing after unlock activation restores the Auth ban", async () => {
+  const { handler, calls } = fixture(
+    { id: "manager-1", role: "manager", status: "active" },
+    { id: "counter-1", role: "counter", status: "locked" },
+    { onAuthUpdate: (duration, target) => { if (duration === "none") target.status = "deleted"; } },
+  );
+  const response = await handler(request("unlock_user"));
+  assertEquals(response.status, 409);
+  assertEquals(calls.authUpdates, [
+    { id: "counter-1", attributes: { ban_duration: "none" } },
+    { id: "counter-1", attributes: { ban_duration: "876000h" } },
+  ]);
+  assert(calls.events.lastIndexOf("profile:counter-1") > calls.events.indexOf("auth:none"));
+});
+
+Deno.test("an Auth unban failure restores locked database and Auth state", async () => {
+  const { handler, calls } = fixture(
+    { id: "manager-1", role: "manager", status: "active" },
+    { id: "counter-1", role: "counter", status: "locked" },
+    { authErrors: { none: { message: "Auth unavailable", status: 503 } } },
+  );
+  const response = await handler(request("unlock_user"));
+  assertEquals(response.status, 502);
+  assertEquals(calls.rpc, [
+    { name: "manager_unlock_profile", args: { p_user_id: "counter-1" } },
+    { name: "manager_lock_profile", args: { p_user_id: "counter-1", p_reason: "Auth unlock failed; restored lock" } },
+  ]);
+  assertEquals(calls.authUpdates, [
+    { id: "counter-1", attributes: { ban_duration: "none" } },
+    { id: "counter-1", attributes: { ban_duration: "876000h" } },
+  ]);
 });
