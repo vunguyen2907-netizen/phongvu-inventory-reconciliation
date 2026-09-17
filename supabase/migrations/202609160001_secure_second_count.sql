@@ -576,8 +576,18 @@ begin
   where target_user_id = p_user_id
   for update;
   if found then
+    if v_existing.operation_id = p_operation_id then
+      if v_existing.requested_by <> v_actor.id then
+        raise exception 'Unlock operation belongs to another manager' using errcode = '42501';
+      end if;
+      return jsonb_build_object(
+        'user_id', p_user_id, 'operation_id', p_operation_id, 'requested_by', v_existing.requested_by,
+        'status', 'locked', 'outcome', 'acquired', 'owns_transition', true
+      );
+    end if;
     return jsonb_build_object(
-      'user_id', p_user_id, 'status', 'locked', 'outcome', 'in_progress', 'owns_transition', false
+      'user_id', p_user_id, 'operation_id', v_existing.operation_id, 'requested_by', v_existing.requested_by,
+      'status', 'locked', 'outcome', 'in_progress', 'owns_transition', false
     );
   end if;
 
@@ -587,7 +597,62 @@ begin
     p_operation_id, p_user_id, v_actor.id, v_actor.full_name
   );
   return jsonb_build_object(
-    'user_id', p_user_id, 'status', 'locked', 'outcome', 'acquired', 'owns_transition', true
+    'user_id', p_user_id, 'operation_id', p_operation_id, 'requested_by', v_actor.id,
+    'status', 'locked', 'outcome', 'acquired', 'owns_transition', true
+  );
+end;
+$$;
+
+-- Reconcile an ambiguous manager begin response using the exact operation ID.
+-- This remains service-role-only; the Edge Function checks the operation owner
+-- against the already verified manager JWT before touching Auth.
+create or replace function public.service_reconcile_profile_unlock(
+  p_user_id uuid,
+  p_operation_id uuid
+)
+returns jsonb
+language plpgsql security definer
+set search_path = ''
+as $$
+declare
+  v_target public.profiles%rowtype;
+  v_operation private.profile_unlock_operations%rowtype;
+begin
+  select * into v_target from public.profiles where id = p_user_id for update;
+  if not found then
+    return jsonb_build_object(
+      'user_id', p_user_id, 'operation_id', p_operation_id, 'status', null,
+      'outcome', 'not_found', 'owns_transition', false
+    );
+  end if;
+
+  select * into v_operation
+  from private.profile_unlock_operations
+  where operation_id = p_operation_id and target_user_id = p_user_id
+  for update;
+  if not found then
+    return jsonb_build_object(
+      'user_id', p_user_id, 'operation_id', p_operation_id, 'status', v_target.status,
+      'outcome', 'not_found', 'owns_transition', false
+    );
+  end if;
+  if v_target.status = 'active' then
+    delete from private.profile_unlock_operations where operation_id = p_operation_id;
+    return jsonb_build_object(
+      'user_id', p_user_id, 'operation_id', p_operation_id, 'requested_by', v_operation.requested_by,
+      'status', 'active', 'outcome', 'already_active', 'owns_transition', false
+    );
+  end if;
+  if v_target.status <> 'locked' then
+    delete from private.profile_unlock_operations where operation_id = p_operation_id;
+    return jsonb_build_object(
+      'user_id', p_user_id, 'operation_id', p_operation_id, 'requested_by', v_operation.requested_by,
+      'status', v_target.status, 'outcome', 'superseded', 'owns_transition', false
+    );
+  end if;
+  return jsonb_build_object(
+    'user_id', p_user_id, 'operation_id', p_operation_id, 'requested_by', v_operation.requested_by,
+    'status', 'locked', 'outcome', 'acquired', 'owns_transition', true
   );
 end;
 $$;
@@ -789,6 +854,7 @@ revoke all on function private.bootstrap_initial_admin(uuid) from public, anon, 
 revoke all on function public.manager_approve_profile(uuid, text) from public, anon, authenticated;
 revoke all on function public.manager_lock_profile(uuid, text) from public, anon, authenticated;
 revoke all on function public.manager_begin_profile_unlock(uuid, uuid) from public, anon, authenticated;
+revoke all on function public.service_reconcile_profile_unlock(uuid, uuid) from public, anon, authenticated;
 revoke all on function public.service_finish_profile_unlock(uuid, uuid, boolean) from public, anon, authenticated;
 revoke all on function public.service_release_profile_unlock(uuid, uuid) from public, anon, authenticated;
 revoke all on function public.manager_delete_profile(uuid) from public, anon, authenticated;
@@ -799,6 +865,7 @@ grant execute on function public.is_active_profile() to authenticated;
 grant execute on function public.manager_approve_profile(uuid, text) to authenticated;
 grant execute on function public.manager_lock_profile(uuid, text) to authenticated;
 grant execute on function public.manager_begin_profile_unlock(uuid, uuid) to authenticated;
+grant execute on function public.service_reconcile_profile_unlock(uuid, uuid) to service_role;
 grant execute on function public.service_finish_profile_unlock(uuid, uuid, boolean) to service_role;
 grant execute on function public.service_release_profile_unlock(uuid, uuid) to service_role;
 grant execute on function public.manager_delete_profile(uuid) to authenticated;

@@ -14,6 +14,7 @@ type Profile = { id: string; role: "admin" | "manager" | "counter"; status: "pen
 type TestError = { message: string; code?: string; status?: number };
 type FixtureOptions = {
   userRpcErrors?: Record<string, TestError | TestError[]>;
+  commitThenErrorRpc?: Record<string, TestError | TestError[]>;
   serviceRpcErrors?: Record<string, TestError | TestError[]>;
   authErrors?: Record<string, TestError | TestError[]>;
   onRpc?: (name: string, target: Profile) => void;
@@ -69,7 +70,8 @@ function fixture(caller: Profile, target: Profile, options: FixtureOptions = {})
       calls.rpc.push({ name, args });
       calls.events.push(`rpc:${name}`);
       const error = nextError(options.userRpcErrors, name);
-      if (error) return { data: null, error };
+      const committedError = nextError(options.commitThenErrorRpc, name);
+      if (error && !committedError) return { data: null, error };
       if (name === "manager_lock_profile") target.status = "locked";
       if (name === "manager_delete_profile") {
         target.status = "deleted";
@@ -84,11 +86,27 @@ function fixture(caller: Profile, target: Profile, options: FixtureOptions = {})
           return { data: { user_id: target.id, status: target.status, outcome: "rejected", owns_transition: false }, error: null };
         }
         if (unlockOperationId) {
+          // A transport failure can repeat even after the database committed
+          // the lease. Keep that failure injectable so the reconciliation
+          // path is tested separately from the ordinary idempotent retry.
+          if (committedError) {
+            return { data: null, error: committedError };
+          }
+          if (unlockOperationId === operationId) {
+            return { data: { user_id: target.id, status: target.status, outcome: "acquired", owns_transition: true }, error: null };
+          }
           return { data: { user_id: target.id, status: target.status, outcome: "in_progress", owns_transition: false }, error: null };
         }
         unlockOperationId = operationId;
+        if (committedError) {
+          return { data: null, error: committedError };
+        }
         return { data: { user_id: target.id, status: target.status, outcome: "acquired", owns_transition: true }, error: null };
       }
+      if (committedError) {
+        return { data: null, error: committedError };
+      }
+      if (error) return { data: null, error };
       options.onRpc?.(name, target);
       return { data: { user_id: target.id, status: target.status }, error: null };
     },
@@ -111,6 +129,13 @@ function fixture(caller: Profile, target: Profile, options: FixtureOptions = {})
       calls.events.push(`service-rpc:${name}`);
       const error = nextError(options.serviceRpcErrors, name);
       if (error) return { data: null, error };
+      if (name === "service_reconcile_profile_unlock") {
+        const payload = args as { p_operation_id: string };
+        if (unlockOperationId !== payload.p_operation_id) {
+          return { data: { user_id: target.id, operation_id: payload.p_operation_id, status: target.status, outcome: "not_found", owns_transition: false }, error: null };
+        }
+        return { data: { user_id: target.id, operation_id: payload.p_operation_id, requested_by: caller.id, status: target.status, outcome: "acquired", owns_transition: true }, error: null };
+      }
       if (name === "service_release_profile_unlock") {
         const payload = args as { p_operation_id: string };
         if (unlockOperationId === payload.p_operation_id) unlockOperationId = null;
@@ -251,6 +276,22 @@ Deno.test("a delete retries and surfaces an Auth ban failure while the profile s
   assertEquals(state.authBanned, false);
 });
 
+Deno.test("a lost delete response reconciles the deleted profile before banning Auth", async () => {
+  const target: Profile = { id: "counter-1", role: "counter", status: "active" };
+  const { handler, calls, state } = fixture(
+    { id: "manager-1", role: "manager", status: "active" },
+    target,
+    { commitThenErrorRpc: { manager_delete_profile: { message: "response lost", status: 503 } } },
+  );
+  const response = await handler(request("delete_user"));
+  assertEquals(response.status, 200);
+  assertEquals(await response.json(), { ok: true, action: "delete_user", target_user_id: "counter-1", already_deleted: false });
+  assertEquals(target.status, "deleted");
+  assertEquals(state.authBanned, true);
+  assertEquals(calls.authUpdates, [{ id: "counter-1", attributes: { ban_duration: "876000h" } }]);
+  assertEquals(calls.rpc, [{ name: "manager_delete_profile", args: { p_user_id: "counter-1" } }]);
+});
+
 Deno.test("manager owns a locked lease, unbans Auth, then activates the profile", async () => {
   const target: Profile = { id: "counter-1", role: "counter", status: "locked" };
   const { handler, calls, state } = fixture(
@@ -293,6 +334,49 @@ Deno.test("an unlock reservation RPC failure does not change Auth", async () => 
   assertEquals(calls.authUpdates, []);
 });
 
+Deno.test("a lost begin response is retried with the same operation and completes unlock", async () => {
+  const target: Profile = { id: "counter-1", role: "counter", status: "locked" };
+  const { handler, calls, state } = fixture(
+    { id: "manager-1", role: "manager", status: "active" },
+    target,
+    { commitThenErrorRpc: { manager_begin_profile_unlock: [{ message: "response lost", status: 503 }] } },
+  );
+  const response = await handler(request("unlock_user"));
+  assertEquals(response.status, 200);
+  assertEquals(target.status, "active");
+  assertEquals(state.authBanned, false);
+  assertEquals(calls.authUpdates, [{ id: "counter-1", attributes: { ban_duration: "none" } }]);
+  assertEquals(calls.rpc.filter((call) => (call as { name: string }).name === "manager_begin_profile_unlock").length, 2);
+  assertEquals(
+    (calls.rpc[0] as { args: { p_operation_id: string } }).args.p_operation_id,
+    (calls.rpc[1] as { args: { p_operation_id: string } }).args.p_operation_id,
+  );
+});
+
+Deno.test("a repeated lost begin response reconciles the durable lease", async () => {
+  const target: Profile = { id: "counter-1", role: "counter", status: "locked" };
+  const lostResponse = { message: "response lost", status: 503 };
+  const { handler, calls, state } = fixture(
+    { id: "manager-1", role: "manager", status: "active" },
+    target,
+    { commitThenErrorRpc: { manager_begin_profile_unlock: [lostResponse, lostResponse] } },
+  );
+  const response = await handler(request("unlock_user"));
+  assertEquals(response.status, 200);
+  assertEquals(target.status, "active");
+  assertEquals(state.authBanned, false);
+  assertEquals(calls.authUpdates, [{ id: "counter-1", attributes: { ban_duration: "none" } }]);
+  assertEquals((calls.serviceRpc[0] as { name: string }).name, "service_reconcile_profile_unlock");
+  assertEquals(
+    (calls.rpc[0] as { args: { p_operation_id: string } }).args.p_operation_id,
+    (calls.rpc[1] as { args: { p_operation_id: string } }).args.p_operation_id,
+  );
+  assertEquals(
+    (calls.serviceRpc[0] as { args: { p_operation_id: string } }).args.p_operation_id,
+    (calls.rpc[0] as { args: { p_operation_id: string } }).args.p_operation_id,
+  );
+});
+
 Deno.test("a delete racing after Auth unban wins finalization and restores the Auth ban", async () => {
   const { handler, calls } = fixture(
     { id: "manager-1", role: "manager", status: "active" },
@@ -329,7 +413,13 @@ Deno.test("an Auth unban failure releases the lease and preserves locked banned 
     { authErrors: { none: { message: "Auth unavailable", status: 503 } } },
   );
   const response = await handler(request("unlock_user"));
+  const body = await response.json();
   assertEquals(response.status, 502);
+  assertEquals(body.recovery_required, false);
+  assertEquals(
+    body.operation_id,
+    (calls.rpc[0] as { args: { p_operation_id: string } }).args.p_operation_id,
+  );
   assertEquals((calls.serviceRpc[0] as { args: { p_succeeded: boolean } }).args.p_succeeded, false);
   assertEquals(calls.authUpdates, [
     { id: "counter-1", attributes: { ban_duration: "none" } },
@@ -379,7 +469,7 @@ Deno.test("a failed stale Auth call does not re-ban an authoritative active winn
 Deno.test("failed Auth unban and failed lease compensation never expose an active profile", async () => {
   const target: Profile = { id: "counter-1", role: "counter", status: "locked" };
   const compensationError = { message: "database unavailable", code: "57000" };
-  const { handler, state } = fixture(
+  const { handler, calls, state } = fixture(
     { id: "manager-1", role: "manager", status: "active" },
     target,
     {
@@ -391,6 +481,10 @@ Deno.test("failed Auth unban and failed lease compensation never expose an activ
   const body = await response.json();
   assertEquals(response.status, 502);
   assertEquals(body.recovery_required, true);
+  assertEquals(
+    body.operation_id,
+    (calls.rpc[0] as { args: { p_operation_id: string } }).args.p_operation_id,
+  );
   assertEquals(target.status, "locked");
   assertEquals(state.authBanned, true);
 });

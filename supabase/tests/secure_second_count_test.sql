@@ -256,10 +256,27 @@ select is(
 select is(
   (public.manager_begin_profile_unlock(
     '10000000-0000-0000-0000-000000000003',
+    '50000000-0000-0000-0000-000000000001'
+  ) ->> 'outcome'),
+  'acquired',
+  'retrying the same unlock operation is idempotent and retains ownership'
+);
+select is(
+  (public.manager_begin_profile_unlock(
+    '10000000-0000-0000-0000-000000000003',
     '50000000-0000-0000-0000-000000000002'
   ) ->> 'outcome'),
   'in_progress',
   'a concurrent unlock request cannot take ownership'
+);
+reset role;
+select is(
+  (public.service_reconcile_profile_unlock(
+    '10000000-0000-0000-0000-000000000003',
+    '50000000-0000-0000-0000-000000000001'
+  ) ->> 'outcome'),
+  'acquired',
+  'service reconciliation recovers a durable lease after an ambiguous begin response'
 );
 select ok(
   not has_function_privilege('authenticated', 'public.service_finish_profile_unlock(uuid,uuid,boolean)', 'EXECUTE'),
@@ -276,6 +293,14 @@ select ok(
 select ok(
   has_function_privilege('service_role', 'public.service_release_profile_unlock(uuid,uuid)', 'EXECUTE'),
   'only the server service role can release an unlock lease'
+);
+select ok(
+  not has_function_privilege('authenticated', 'public.service_reconcile_profile_unlock(uuid,uuid)', 'EXECUTE'),
+  'authenticated clients cannot reconcile an unlock lease'
+);
+select ok(
+  has_function_privilege('service_role', 'public.service_reconcile_profile_unlock(uuid,uuid)', 'EXECUTE'),
+  'only the server service role can reconcile an unlock lease'
 );
 
 reset role;

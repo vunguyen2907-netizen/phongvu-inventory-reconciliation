@@ -5,6 +5,8 @@ type ProfileStatus = "pending" | "active" | "locked" | "deleted";
 type Profile = { id: string; role: ProfileRole; status: ProfileStatus };
 type LifecycleOutcome = {
   user_id?: unknown;
+  operation_id?: unknown;
+  requested_by?: unknown;
   status?: unknown;
   outcome?: unknown;
   owns_transition?: unknown;
@@ -110,6 +112,23 @@ async function releaseProfileUnlock(
   return { data: null, error: lastError };
 }
 
+async function reconcileProfileUnlock(
+  serviceClient: ServiceClient,
+  targetUserId: string,
+  operationId: string,
+) {
+  let lastError: ClientError | null = null;
+  for (let attempt = 0; attempt < RECOVERY_ATTEMPTS; attempt += 1) {
+    const result = await serviceClient.rpc("service_reconcile_profile_unlock", {
+      p_user_id: targetUserId,
+      p_operation_id: operationId,
+    });
+    if (!result.error) return result;
+    lastError = result.error;
+  }
+  return { data: null, error: lastError };
+}
+
 function lifecycleOutcome(data: unknown): LifecycleOutcome | null {
   return data && typeof data === "object" && !Array.isArray(data)
     ? data as LifecycleOutcome
@@ -147,10 +166,16 @@ async function releaseFailedUnlock(
 }
 
 async function beginProfileUnlock(userClient: UserClient, targetUserId: string, operationId: string) {
-  return await userClient.rpc("manager_begin_profile_unlock", {
-    p_user_id: targetUserId,
-    p_operation_id: operationId,
-  });
+  let lastError: ClientError | null = null;
+  for (let attempt = 0; attempt < RECOVERY_ATTEMPTS; attempt += 1) {
+    const result = await userClient.rpc("manager_begin_profile_unlock", {
+      p_user_id: targetUserId,
+      p_operation_id: operationId,
+    });
+    if (!result.error) return result;
+    lastError = result.error;
+  }
+  return { data: null, error: lastError };
 }
 
 export function createLifecycleHandler(dependencies: LifecycleDependencies) {
@@ -169,7 +194,7 @@ export function createLifecycleHandler(dependencies: LifecycleDependencies) {
       return response(400, { error: "invalid_json" });
     }
     const body = payload && typeof payload === "object" && !Array.isArray(payload)
-      ? payload as { action?: unknown; target_user_id?: unknown }
+      ? payload as { action?: unknown; target_user_id?: unknown; operation_id?: unknown }
       : null;
     const action = typeof body?.action === "string" ? body.action : "";
     const targetUserId = typeof body?.target_user_id === "string" ? body.target_user_id.trim() : "";
@@ -201,7 +226,22 @@ export function createLifecycleHandler(dependencies: LifecycleDependencies) {
           const alreadyDeleted = target.status === "deleted";
           if (!alreadyDeleted) {
             const { error } = await userClient.rpc("manager_delete_profile", { p_user_id: targetUserId });
-            if (error) return response(error.code === "42501" ? 403 : 409, { error: "profile_delete_failed", message: error.message || "" });
+            if (error) {
+              // The RPC may have committed the soft-delete before its response
+              // was lost. Read the service-owned profile before deciding that
+              // deletion failed, then always finish the Auth ban if deleted.
+              const { data: reconciledTarget, error: reconcileError } = await profileById(serviceClient, targetUserId);
+              if (reconcileError) {
+                return response(502, {
+                  error: "profile_delete_confirmation_failed",
+                  recovery_required: true,
+                  message: reconcileError.message || "",
+                });
+              }
+              if (!reconciledTarget || reconciledTarget.status !== "deleted") {
+                return response(error.code === "42501" ? 403 : 409, { error: "profile_delete_failed", message: error.message || "" });
+              }
+            }
           }
           const banError = await restoreLifecycleBan(serviceClient, targetUserId);
           if (banError) {
@@ -219,15 +259,37 @@ export function createLifecycleHandler(dependencies: LifecycleDependencies) {
           if (target.status === "active") return unlockSuccess(action, targetUserId, "already_active");
           if (target.status !== "locked") return response(409, { error: "target_not_locked" });
 
-          const operationId = crypto.randomUUID();
-          const { data: transitionData, error: transitionError } = await beginProfileUnlock(
+          const requestedOperationId = typeof body?.operation_id === "string" ? body.operation_id.trim() : "";
+          let operationId = requestedOperationId || crypto.randomUUID();
+          let { data: transitionData, error: transitionError } = await beginProfileUnlock(
             userClient,
             targetUserId,
             operationId,
           );
           if (transitionError) {
+            if (transitionError.code !== "42501") {
+              const reconciliation = await reconcileProfileUnlock(serviceClient, targetUserId, operationId);
+              const reconciled = lifecycleOutcome(reconciliation.data);
+              if (!reconciliation.error && reconciled?.requested_by === authData.user.id
+                && reconciled?.outcome === "acquired" && reconciled?.owns_transition === true
+                && reconciled?.status === "locked") {
+                transitionData = reconciliation.data;
+                transitionError = null;
+                operationId = typeof reconciled.operation_id === "string" ? reconciled.operation_id : operationId;
+              } else if (reconciliation.error) {
+                return response(502, {
+                  error: "profile_unlock_recovery_failed",
+                  recovery_required: true,
+                  operation_id: operationId,
+                  message: reconciliation.error.message || transitionError.message || "",
+                });
+              }
+            }
+          }
+          if (transitionError) {
             return response(transitionError?.code === "42501" ? 403 : 409, {
               error: "profile_unlock_failed",
+              operation_id: operationId,
               message: transitionError?.message || "",
             });
           }
@@ -255,6 +317,7 @@ export function createLifecycleHandler(dependencies: LifecycleDependencies) {
             return response(502, {
               error: "auth_unban_failed",
               recovery_required: Boolean(recovery.releaseError || recovery.banError || recovery.cleanupError),
+              operation_id: operationId,
             });
           }
 
@@ -287,6 +350,7 @@ export function createLifecycleHandler(dependencies: LifecycleDependencies) {
             return response(502, {
               error: "auth_reban_failed",
               recovery_required: true,
+              operation_id: operationId,
               status: completed?.status || null,
               message: recovery.banError.message || "",
             });
@@ -295,6 +359,7 @@ export function createLifecycleHandler(dependencies: LifecycleDependencies) {
             return response(502, {
               error: "unlock_confirmation_failed",
               recovery_required: Boolean(recovery.releaseError || recovery.cleanupError),
+              operation_id: operationId,
             });
           }
           return response(409, {
