@@ -135,6 +135,18 @@ create index profiles_status_role_idx on public.profiles (status, role);
 create unique index profiles_erp_name_normalized_key
   on public.profiles (erp_name_normalized) where status <> 'deleted';
 
+-- Unlock spans PostgreSQL and Auth. Keep a durable, server-owned lease while
+-- the profile remains locked so only one request may touch Auth and any failed
+-- or interrupted request remains denied by RLS.
+create table private.profile_unlock_operations (
+  operation_id uuid primary key,
+  target_user_id uuid not null unique references public.profiles(id),
+  requested_by uuid not null references public.profiles(id),
+  requested_by_name_snapshot text not null,
+  created_at timestamptz not null default now()
+);
+revoke all on table private.profile_unlock_operations from public, anon, authenticated, service_role;
+
 create table public.recount_batches (
   id uuid primary key default gen_random_uuid(),
   inventory_session_id uuid not null references public.inventory_sessions(id),
@@ -524,7 +536,7 @@ begin
 end;
 $$;
 
-create or replace function public.manager_unlock_profile(p_user_id uuid)
+create or replace function public.manager_begin_profile_unlock(p_user_id uuid, p_operation_id uuid)
 returns jsonb
 language plpgsql security definer
 set search_path = ''
@@ -532,6 +544,7 @@ as $$
 declare
   v_actor public.profiles%rowtype;
   v_target public.profiles%rowtype;
+  v_existing private.profile_unlock_operations%rowtype;
 begin
   select * into v_actor from public.profiles where id = (select auth.uid()) for update;
   if not found or v_actor.status <> 'active' or v_actor.role not in ('manager', 'admin') then
@@ -544,19 +557,172 @@ begin
   if v_target.role = 'admin' or (v_actor.role = 'manager' and v_target.role <> 'counter') then
     raise exception 'Caller cannot manage this profile role' using errcode = '42501';
   end if;
+  if p_operation_id is null then
+    raise exception 'Unlock operation ID is required' using errcode = '22023';
+  end if;
+  if v_target.status = 'active' then
+    return jsonb_build_object(
+      'user_id', p_user_id, 'status', 'active', 'outcome', 'already_active', 'owns_transition', false
+    );
+  end if;
   if v_target.status <> 'locked' then
-    raise exception 'Only locked profiles can be unlocked' using errcode = '55000';
+    return jsonb_build_object(
+      'user_id', p_user_id, 'status', v_target.status, 'outcome', 'rejected', 'owns_transition', false
+    );
+  end if;
+
+  select * into v_existing
+  from private.profile_unlock_operations
+  where target_user_id = p_user_id
+  for update;
+  if found then
+    return jsonb_build_object(
+      'user_id', p_user_id, 'status', 'locked', 'outcome', 'in_progress', 'owns_transition', false
+    );
+  end if;
+
+  insert into private.profile_unlock_operations (
+    operation_id, target_user_id, requested_by, requested_by_name_snapshot
+  ) values (
+    p_operation_id, p_user_id, v_actor.id, v_actor.full_name
+  );
+  return jsonb_build_object(
+    'user_id', p_user_id, 'status', 'locked', 'outcome', 'acquired', 'owns_transition', true
+  );
+end;
+$$;
+
+create or replace function public.service_finish_profile_unlock(
+  p_user_id uuid,
+  p_operation_id uuid,
+  p_succeeded boolean
+)
+returns jsonb
+language plpgsql security definer
+set search_path = ''
+as $$
+declare
+  v_target public.profiles%rowtype;
+  v_operation private.profile_unlock_operations%rowtype;
+  v_unassigned integer := 0;
+begin
+  select * into v_target from public.profiles where id = p_user_id for update;
+  if not found then
+    return jsonb_build_object(
+      'user_id', p_user_id, 'status', null, 'outcome', 'not_found', 'owns_transition', false
+    );
+  end if;
+
+  select * into v_operation
+  from private.profile_unlock_operations
+  where operation_id = p_operation_id
+    and target_user_id = p_user_id
+  for update;
+  if not found then
+    return jsonb_build_object(
+      'user_id', p_user_id,
+      'status', v_target.status,
+      'outcome', case when v_target.status = 'active' then 'already_active' else 'superseded' end,
+      'owns_transition', false
+    );
+  end if;
+
+  if p_succeeded is not true then
+    -- Keep the operation lease until Auth has been re-banned. This closes the
+    -- gap where a new unlock could unban Auth while the failed request was
+    -- still compensating its own unban.
+    if v_target.status = 'active' then
+      update public.profiles
+      set status = 'locked', locked_at = coalesce(locked_at, now())
+      where id = p_user_id;
+      update public.recount_tasks
+      set assigned_user_id = null,
+          assigned_name_snapshot = null,
+          state = 'unassigned',
+          resolution = null,
+          reason = null,
+          completed_by = null,
+          completed_by_name_snapshot = null,
+          completed_at = null,
+          version = version + 1
+      where assigned_user_id = p_user_id and state <> 'completed';
+      get diagnostics v_unassigned = row_count;
+      insert into public.audit_logs (
+        actor_user_id, actor_name_snapshot, action, entity_type, entity_id, before_data, after_data, reason
+      ) values (
+        v_operation.requested_by, v_operation.requested_by_name_snapshot, 'lock_profile', 'profile', p_user_id::text,
+        jsonb_build_object('role', v_target.role, 'status', 'active'),
+        jsonb_build_object('role', v_target.role, 'status', 'locked', 'unassigned_tasks', v_unassigned),
+        'Auth unlock failed; restored lock'
+      );
+    elsif v_target.status <> 'locked' then
+      return jsonb_build_object(
+        'user_id', p_user_id,
+        'status', v_target.status,
+        'outcome', 'superseded',
+        'owns_transition', false
+      );
+    end if;
+    return jsonb_build_object(
+      'user_id', p_user_id, 'status', 'locked', 'outcome', 'recovery_pending', 'owns_transition', true
+    );
+  end if;
+
+  if v_target.status <> 'locked' then
+    delete from private.profile_unlock_operations where operation_id = p_operation_id;
+    return jsonb_build_object(
+      'user_id', p_user_id,
+      'status', v_target.status,
+      'outcome', case when v_target.status = 'active' then 'already_active' else 'superseded' end,
+      'owns_transition', false
+    );
   end if;
 
   update public.profiles set status = 'active', locked_at = null where id = p_user_id;
+  delete from private.profile_unlock_operations where operation_id = p_operation_id;
   insert into public.audit_logs (
     actor_user_id, actor_name_snapshot, action, entity_type, entity_id, before_data, after_data
   ) values (
-    v_actor.id, v_actor.full_name, 'unlock_profile', 'profile', p_user_id::text,
+    v_operation.requested_by, v_operation.requested_by_name_snapshot, 'unlock_profile', 'profile', p_user_id::text,
     jsonb_build_object('role', v_target.role, 'status', v_target.status),
     jsonb_build_object('role', v_target.role, 'status', 'active')
   );
-  return jsonb_build_object('user_id', p_user_id, 'status', 'active');
+  return jsonb_build_object(
+    'user_id', p_user_id, 'status', 'active', 'outcome', 'activated', 'owns_transition', true
+  );
+end;
+$$;
+
+create or replace function public.service_release_profile_unlock(
+  p_user_id uuid,
+  p_operation_id uuid
+)
+returns jsonb
+language plpgsql security definer
+set search_path = ''
+as $$
+declare
+  v_target public.profiles%rowtype;
+  v_operation private.profile_unlock_operations%rowtype;
+begin
+  select * into v_target from public.profiles where id = p_user_id for update;
+  if not found then
+    return jsonb_build_object('user_id', p_user_id, 'outcome', 'not_found', 'owns_transition', false);
+  end if;
+  select * into v_operation
+  from private.profile_unlock_operations
+  where operation_id = p_operation_id and target_user_id = p_user_id
+  for update;
+  if not found then
+    return jsonb_build_object(
+      'user_id', p_user_id, 'status', v_target.status, 'outcome', 'already_released', 'owns_transition', false
+    );
+  end if;
+  delete from private.profile_unlock_operations
+  where operation_id = p_operation_id and target_user_id = p_user_id;
+  return jsonb_build_object(
+    'user_id', p_user_id, 'status', v_target.status, 'outcome', 'released', 'owns_transition', true
+  );
 end;
 $$;
 
@@ -581,6 +747,7 @@ begin
   if v_target.role = 'admin' or (v_actor.role = 'manager' and v_target.role <> 'counter') then
     raise exception 'Caller cannot manage this profile role' using errcode = '42501';
   end if;
+  delete from private.profile_unlock_operations where target_user_id = p_user_id;
   if v_target.status = 'deleted' then
     return jsonb_build_object('user_id', p_user_id, 'status', 'deleted', 'already_deleted', true);
   end if;
@@ -621,7 +788,9 @@ revoke all on function private.set_recount_updated_at() from public, anon, authe
 revoke all on function private.bootstrap_initial_admin(uuid) from public, anon, authenticated;
 revoke all on function public.manager_approve_profile(uuid, text) from public, anon, authenticated;
 revoke all on function public.manager_lock_profile(uuid, text) from public, anon, authenticated;
-revoke all on function public.manager_unlock_profile(uuid) from public, anon, authenticated;
+revoke all on function public.manager_begin_profile_unlock(uuid, uuid) from public, anon, authenticated;
+revoke all on function public.service_finish_profile_unlock(uuid, uuid, boolean) from public, anon, authenticated;
+revoke all on function public.service_release_profile_unlock(uuid, uuid) from public, anon, authenticated;
 revoke all on function public.manager_delete_profile(uuid) from public, anon, authenticated;
 grant execute on function public.normalize_inventory_code(text) to authenticated;
 grant execute on function public.mask_inventory_code(text, integer, integer) to authenticated;
@@ -629,6 +798,8 @@ grant execute on function public.current_profile_role() to authenticated;
 grant execute on function public.is_active_profile() to authenticated;
 grant execute on function public.manager_approve_profile(uuid, text) to authenticated;
 grant execute on function public.manager_lock_profile(uuid, text) to authenticated;
-grant execute on function public.manager_unlock_profile(uuid) to authenticated;
+grant execute on function public.manager_begin_profile_unlock(uuid, uuid) to authenticated;
+grant execute on function public.service_finish_profile_unlock(uuid, uuid, boolean) to service_role;
+grant execute on function public.service_release_profile_unlock(uuid, uuid) to service_role;
 grant execute on function public.manager_delete_profile(uuid) to authenticated;
 -- Bootstrap is SQL-Editor/operator-only. Never expose private through the Data API.

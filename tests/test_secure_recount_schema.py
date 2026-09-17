@@ -130,7 +130,7 @@ class SecureRecountSchemaContractTests(unittest.TestCase):
         for name, signature in (
             ("manager_approve_profile", "uuid, text"),
             ("manager_lock_profile", "uuid, text"),
-            ("manager_unlock_profile", "uuid"),
+            ("manager_begin_profile_unlock", "uuid, uuid"),
             ("manager_delete_profile", "uuid"),
         ):
             with self.subTest(name=name):
@@ -147,6 +147,24 @@ class SecureRecountSchemaContractTests(unittest.TestCase):
                     sql,
                 )
 
+        finalizer = "service_finish_profile_unlock"
+        signature = "uuid, uuid, boolean"
+        self.assertIn(f"function public.{finalizer}", sql)
+        body = sql.split(f"function public.{finalizer}", 1)[1].split("$$;", 1)[0]
+        self.assertIn("security definer", body)
+        self.assertIn("set search_path = ''", body)
+        self.assertIn(
+            f"revoke all on function public.{finalizer}({signature}) from public, anon, authenticated;",
+            sql,
+        )
+        self.assertIn(
+            f"grant execute on function public.{finalizer}({signature}) to service_role;",
+            sql,
+        )
+        self.assertNotIn(
+            f"grant execute on function public.{finalizer}({signature}) to authenticated;",
+            sql,
+        )
     def test_account_lifecycle_edge_contract_preserves_the_auth_user_row(self):
         self.assertTrue(LIFECYCLE_FUNCTION.exists(), "account lifecycle Edge Function is missing")
         source = LIFECYCLE_FUNCTION.read_text()
@@ -154,20 +172,38 @@ class SecureRecountSchemaContractTests(unittest.TestCase):
         self.assertIn('case "unlock_user"', source)
         self.assertIn("auth.getUser", source)
         self.assertIn("manager_delete_profile", source)
-        self.assertIn("manager_unlock_profile", source)
+        self.assertIn("manager_begin_profile_unlock", source)
+        self.assertIn("service_finish_profile_unlock", source)
+        self.assertIn("service_release_profile_unlock", source)
         self.assertIn('ban_duration: INDEFINITE_BAN_DURATION', source)
         self.assertNotIn(".deleteUser(", source)
 
-    def test_unlock_is_authoritative_before_auth_unban_and_rechecks_afterward(self):
+    def test_unlock_uses_a_locked_lease_before_auth_and_service_only_finalization(self):
         source = LIFECYCLE_FUNCTION.read_text()
         unlock = source.split('case "unlock_user":', 1)[1].split('return response(400, { error: "invalid_request" });', 1)[0]
-        self.assertIn("profileById(userClient, targetUserId)", unlock)
-        self.assertIn("restoreLifecycleBan", unlock)
-        rpc = unlock.index('rpc("manager_unlock_profile"')
+        self.assertIn('rpc("manager_begin_profile_unlock"', source)
+        self.assertIn('rpc("service_finish_profile_unlock"', source)
+        begin = unlock.index("beginProfileUnlock(")
         unban = unlock.index('ban_duration: "none"')
-        recheck = unlock.rindex("profileById(userClient, targetUserId)")
-        self.assertLess(rpc, unban)
-        self.assertLess(unban, recheck)
+        finish = unlock.index("finishProfileUnlock(")
+        self.assertLess(begin, unban)
+        self.assertLess(unban, finish)
+        self.assertRegex(unlock, r'outcome\s*!==\s*"acquired"')
+        self.assertIn('outcome === "already_active"', unlock)
+        self.assertIn("owns_transition", unlock)
+        self.assertIn("profileById(serviceClient, targetUserId)", unlock)
+        self.assertNotIn('rpc("manager_lock_profile"', unlock)
+
+        sql = self.migration().lower()
+        begin_body = sql.split("function public.manager_begin_profile_unlock", 1)[1].split("$$;", 1)[0]
+        self.assertIn("private.profile_unlock_operations", begin_body)
+        self.assertNotRegex(begin_body, r"update public\.profiles\s+set status = 'active'")
+        finish_body = sql.split("function public.service_finish_profile_unlock", 1)[1].split("$$;", 1)[0]
+        self.assertRegex(finish_body, r"where operation_id = p_operation_id\s+and target_user_id = p_user_id")
+        self.assertLess(finish_body.index("if p_succeeded is not true then"), finish_body.index("set status = 'active'"))
+        self.assertIn("recovery_pending", finish_body)
+        release_body = sql.split("function public.service_release_profile_unlock", 1)[1].split("$$;", 1)[0]
+        self.assertIn("delete from private.profile_unlock_operations", release_body)
 
     def test_edge_rejects_null_json_and_readme_uses_supported_deploy_command(self):
         source = LIFECYCLE_FUNCTION.read_text()

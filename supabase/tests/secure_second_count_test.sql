@@ -240,6 +240,112 @@ select throws_ok(
   'manager cannot lock an admin'
 );
 
+select is(
+  (public.manager_begin_profile_unlock(
+    '10000000-0000-0000-0000-000000000003',
+    '50000000-0000-0000-0000-000000000001'
+  ) ->> 'outcome'),
+  'acquired',
+  'first unlock request acquires the locked-profile lease'
+);
+select is(
+  (select status::text from public.profiles where id = '10000000-0000-0000-0000-000000000003'),
+  'locked',
+  'acquiring an unlock lease keeps RLS fail closed'
+);
+select is(
+  (public.manager_begin_profile_unlock(
+    '10000000-0000-0000-0000-000000000003',
+    '50000000-0000-0000-0000-000000000002'
+  ) ->> 'outcome'),
+  'in_progress',
+  'a concurrent unlock request cannot take ownership'
+);
+select ok(
+  not has_function_privilege('authenticated', 'public.service_finish_profile_unlock(uuid,uuid,boolean)', 'EXECUTE'),
+  'authenticated clients cannot finalize an unlock lease'
+);
+select ok(
+  has_function_privilege('service_role', 'public.service_finish_profile_unlock(uuid,uuid,boolean)', 'EXECUTE'),
+  'only the server service role can finalize an unlock lease'
+);
+select ok(
+  not has_function_privilege('authenticated', 'public.service_release_profile_unlock(uuid,uuid)', 'EXECUTE'),
+  'authenticated clients cannot release an unlock lease'
+);
+select ok(
+  has_function_privilege('service_role', 'public.service_release_profile_unlock(uuid,uuid)', 'EXECUTE'),
+  'only the server service role can release an unlock lease'
+);
+
+reset role;
+update public.profiles
+set status = 'active', locked_at = null
+where id = '10000000-0000-0000-0000-000000000003';
+select is(
+  (public.service_finish_profile_unlock(
+    '10000000-0000-0000-0000-000000000003',
+    '50000000-0000-0000-0000-000000000001',
+    false
+  ) ->> 'outcome'),
+  'recovery_pending',
+  'failed Auth unban force-locks an active target still owned by the lease'
+);
+select is(
+  (select status::text from public.profiles where id = '10000000-0000-0000-0000-000000000003'),
+  'locked',
+  'failed Auth unban leaves the database profile locked'
+);
+select is(
+  (public.service_release_profile_unlock(
+    '10000000-0000-0000-0000-000000000003',
+    '50000000-0000-0000-0000-000000000001'
+  ) ->> 'outcome'),
+  'released',
+  'successful Auth re-ban releases the recovery lease'
+);
+
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"10000000-0000-0000-0000-000000000006","role":"authenticated"}', true);
+select is(
+  (public.manager_begin_profile_unlock(
+    '10000000-0000-0000-0000-000000000003',
+    '50000000-0000-0000-0000-000000000003'
+  ) ->> 'outcome'),
+  'acquired',
+  'a later unlock can acquire the released lease'
+);
+reset role;
+select is(
+  (public.service_finish_profile_unlock(
+    '10000000-0000-0000-0000-000000000003',
+    '50000000-0000-0000-0000-000000000003',
+    true
+  ) ->> 'outcome'),
+  'activated',
+  'service finalization activates only the owning lease'
+);
+select is(
+  (select status::text from public.profiles where id = '10000000-0000-0000-0000-000000000003'),
+  'active',
+  'successful Auth completion activates the profile'
+);
+select is(
+  (select count(*) from public.audit_logs where action = 'unlock_profile' and entity_id = '10000000-0000-0000-0000-000000000003'),
+  1::bigint,
+  'successful unlock finalization is audited once'
+);
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"10000000-0000-0000-0000-000000000006","role":"authenticated"}', true);
+select is(
+  (public.manager_begin_profile_unlock(
+    '10000000-0000-0000-0000-000000000003',
+    '50000000-0000-0000-0000-000000000004'
+  ) ->> 'outcome'),
+  'already_active',
+  'a stale duplicate observes active state without taking ownership'
+);
+
 reset role;
 update public.profiles set status = 'locked' where role in ('manager', 'admin');
 set local role authenticated;
