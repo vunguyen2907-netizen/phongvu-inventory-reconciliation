@@ -42,6 +42,7 @@
 
   <!-- Supabase JS -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="./recount_domain.js"></script>
 
   <!-- Font Inter -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -1356,6 +1357,21 @@
       const [dfCountL2, setDfCountL2] = useState([]);
       const [dfCheckDetail, setDfCheckDetail] = useState([]);
 
+      // Secure second-count manager workspace. The legacy SKU recount table is
+      // retained as a fallback until a manager creates the normalized batch.
+      const [recountBatch, setRecountBatch] = useState(null);
+      const [recountTasks, setRecountTasks] = useState([]);
+      const [recountCounters, setRecountCounters] = useState([]);
+      const [recountPage, setRecountPage] = useState(1);
+      const [recountLoading, setRecountLoading] = useState(false);
+      const [recountSelectedIds, setRecountSelectedIds] = useState([]);
+      const [recountAssignee, setRecountAssignee] = useState("");
+      const [recountFilters, setRecountFilters] = useState({ assignee: "", state: "", taskType: "", sku: "", bin: "" });
+      const [recountSummary, setRecountSummary] = useState({ total: 0, unassigned: 0, in_progress: 0, completed: 0 });
+      const [recountReopenTarget, setRecountReopenTarget] = useState(null);
+      const [recountReopenReason, setRecountReopenReason] = useState("");
+      const [recountReopenConfirmation, setRecountReopenConfirmation] = useState("");
+
       // Export Metadata State
       const [reportDate, setReportDate] = useState(new Date().toISOString().slice(0, 10));
       const [locationName, setLocationName] = useState("CP74 - KHÁNH HỘI | Địa chỉ: 162 - 164 Khánh Hội, Phường Khánh Hội, TPHCM");
@@ -1443,7 +1459,144 @@
         if (!isManager) return;
         fetchSavedSessions();
         fetchMonthlyArchives();
+        fetchRecountCounters();
       }, [isManager]);
+
+      const fetchRecountCounters = async () => {
+        if (!isManager || !supabaseClient) return;
+        try {
+          const client = await getReadySupabaseClient();
+          if (!client) return;
+          const { data, error } = await client
+            .from('profiles')
+            .select('id, full_name, erp_name, status, role')
+            .eq('role', 'counter')
+            .order('full_name');
+          if (!error && data) setRecountCounters(data);
+        } catch (e) { console.error(e); }
+      };
+
+      const recountRpcFilters = () => ({
+        p_assignee_id: recountFilters.assignee || null,
+        p_state: recountFilters.state || null,
+        p_task_type: recountFilters.taskType || null,
+        p_sku: recountFilters.sku.trim() || null,
+        p_bin: recountFilters.bin.trim() || null
+      });
+
+      const fetchRecountTasks = async (page = recountPage, batchId = recountBatch?.batch_id) => {
+        if (!isManager || !supabaseClient || !batchId) return;
+        setRecountLoading(true);
+        try {
+          const client = await getReadySupabaseClient();
+          if (!client) return;
+          const { data, error } = await client.rpc('manager_list_recount_tasks', {
+            p_batch_id: batchId,
+            p_page: page,
+            p_page_size: 100,
+            ...recountRpcFilters()
+          });
+          if (error) throw error;
+          setRecountTasks(Array.isArray(data) ? data : []);
+          setRecountPage(page);
+          setRecountSelectedIds([]);
+        } catch (e) { alert('Lỗi tải danh sách kiểm lần 2: ' + e.message); }
+        finally { setRecountLoading(false); }
+      };
+
+      const refreshRecountSummary = async (batchId = recountBatch?.batch_id) => {
+        if (!isManager || !supabaseClient || !batchId) return;
+        try {
+          const client = await getReadySupabaseClient();
+          if (!client) return;
+          const countRows = async (state = null) => {
+            let query = client.from('recount_tasks').select('id', { count: 'exact', head: true }).eq('batch_id', batchId);
+            if (state) query = query.eq('state', state);
+            const { count, error } = await query;
+            if (error) throw error;
+            return count || 0;
+          };
+          const [total, unassigned, inProgress, completed] = await Promise.all([
+            countRows(), countRows('unassigned'), countRows('in_progress'), countRows('completed')
+          ]);
+          setRecountSummary({ total, unassigned, in_progress: inProgress, completed });
+        } catch (e) { console.error('Không thể tải tổng quan kiểm lần 2:', e); }
+      };
+
+      const handleCreateRecountBatch = async () => {
+        if (!supabaseClient || !activeSessionId || dfCheckDetail.length === 0) {
+          alert('Vui lòng lưu đợt kiểm kê lên Supabase trước khi tạo danh sách kiểm lần 2.');
+          return;
+        }
+        setRecountLoading(true);
+        try {
+          const client = await getReadySupabaseClient();
+          if (!client) throw new Error('Chưa cấu hình Supabase.');
+          const profileRows = recountCounters.filter(counter => counter.status === 'active');
+          const domain = window.InventoryRecountDomain;
+          if (!domain?.buildRecountDraft) throw new Error('Chưa tải mô-đun kiểm đếm an toàn.');
+          const draft = domain.buildRecountDraft(dfCheckDetail, profileRows);
+          const { data, error } = await client.rpc('manager_create_recount_batch', {
+            p_inventory_session_id: activeSessionId,
+            p_tasks: draft.tasks,
+            p_evidence: draft.evidence
+          });
+          if (error) throw error;
+          const summary = data && typeof data === 'object' ? data : {};
+          setRecountBatch(summary);
+          setRecountPage(1);
+          await fetchRecountTasks(1, summary.batch_id);
+          await refreshRecountSummary(summary.batch_id);
+          alert(`✅ Đã tạo danh sách kiểm lần 2 (${summary.task_count || draft.tasks.length} task).`);
+        } catch (e) { alert('Lỗi tạo danh sách kiểm lần 2: ' + e.message); }
+        finally { setRecountLoading(false); }
+      };
+
+      const handleBulkAssignRecount = async () => {
+        if (!recountBatch?.batch_id || !recountAssignee || recountSelectedIds.length === 0) return;
+        setRecountLoading(true);
+        try {
+          const client = await getReadySupabaseClient();
+          for (let start = 0; start < recountSelectedIds.length; start += 500) {
+            const chunk = recountSelectedIds.slice(start, start + 500);
+            const { error } = await client.rpc('manager_bulk_assign_recount_tasks', {
+              p_task_ids: chunk,
+              p_user_id: recountAssignee
+            });
+            if (error) throw error;
+          }
+          await fetchRecountTasks(recountPage);
+          await refreshRecountSummary();
+          setRecountAssignee("");
+          alert('✅ Đã phân công các dòng đã chọn.');
+        } catch (e) { alert('Lỗi phân công kiểm lần 2: ' + e.message); }
+        finally { setRecountLoading(false); }
+      };
+
+      const confirmReopenRecount = async () => {
+        if (!recountReopenTarget || recountReopenConfirmation !== 'MO LAI' || !recountReopenReason.trim()) return;
+        setRecountLoading(true);
+        try {
+          const client = await getReadySupabaseClient();
+          const { error } = await client.rpc('manager_reopen_recount_tasks', {
+            p_task_ids: [recountReopenTarget.id],
+            p_reason: recountReopenReason
+          });
+          if (error) throw error;
+          setRecountReopenTarget(null);
+          setRecountReopenReason("");
+          setRecountReopenConfirmation("");
+          await fetchRecountTasks(recountPage);
+          await refreshRecountSummary();
+        } catch (e) { alert('Lỗi mở lại task: ' + e.message); }
+        finally { setRecountLoading(false); }
+      };
+
+      useEffect(() => {
+        if (!recountBatch?.batch_id || activeTab !== 'second-count') return;
+        fetchRecountTasks(1);
+        refreshRecountSummary();
+      }, [recountBatch?.batch_id, recountFilters, activeTab]);
 
       // Auto-save debounce (10s)
       useEffect(() => {
@@ -3027,6 +3180,31 @@
               {/* TAB 2: KIỂM ĐẾM LẦN 2 */}
               {activeTab === "second-count" && (
                 <div className="space-y-4">
+                  {isManager && (
+                    <div className="bg-white p-4 rounded-xl border border-brand-200 shadow-sm space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <h3 className="font-bold text-slate-800">Danh sách kiểm lần 2 an toàn</h3>
+                          <p className="text-xs text-slate-500">Tạo snapshot chênh lệch và phân công mà không lộ serial đầy đủ.</p>
+                        </div>
+                        <button type="button" onClick={handleCreateRecountBatch} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white">Tạo danh sách kiểm lần 2</button>
+                      </div>
+                      <div className="grid grid-cols-4 gap-2 text-xs">
+                        <div className="rounded-lg bg-slate-50 p-2"><b>Tổng</b><div>{recountSummary.total}</div></div>
+                        <div className="rounded-lg bg-amber-50 p-2"><b>Chưa phân công</b><div>{recountSummary.unassigned}</div></div>
+                        <div className="rounded-lg bg-blue-50 p-2"><b>Đang thực hiện</b><div>{recountSummary.in_progress}</div></div>
+                        <div className="rounded-lg bg-emerald-50 p-2"><b>Hoàn tất</b><div>{recountSummary.completed}</div></div>
+                      </div>
+                      {recountTasks.length > 0 && (
+                        <div className="overflow-x-auto rounded-lg border border-slate-200">
+                          <table className="w-full text-left text-xs"><thead className="bg-slate-100"><tr><th className="p-2">SKU</th><th className="p-2">BIN</th><th className="p-2">Trạng thái</th><th className="p-2">Phân công cho</th><th className="p-2">Hành động</th></tr></thead><tbody>
+                            {recountTasks.map(task => <tr key={task.id} className="border-t border-slate-100"><td className="p-2">{task.sku}</td><td className="p-2">{task.stock_bin || "—"}</td><td className="p-2">{task.state === "unassigned" ? "Chưa phân công" : task.state === "in_progress" ? "Đang thực hiện" : task.state === "completed" ? "Hoàn tất" : task.state}</td><td className="p-2">{task.assigned_user_name || "—"}</td><td className="p-2"><button type="button" onClick={() => setRecountReopenTarget(task)} className="text-rose-700 font-bold">MỞ LẠI</button></td></tr>)}
+                          </tbody></table>
+                        </div>
+                      )}
+                      <div className="flex flex-wrap items-center gap-2"><select value={recountAssignee} onChange={e => setRecountAssignee(e.target.value)} className="rounded border px-2 py-1 text-xs"><option value="">Phân công cho</option>{recountCounters.filter(c => c.status === "active").map(c => <option key={c.id} value={c.id}>{c.full_name || c.erp_name}</option>)}</select><button type="button" onClick={handleBulkAssignRecount} disabled={!recountSelectedIds.length || !recountAssignee} className="rounded bg-slate-800 px-3 py-1 text-xs font-bold text-white disabled:opacity-40">Phân công cho</button></div>
+                    </div>
+                  )}
                   <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-wrap gap-4 items-center justify-between">
                     <div className="flex gap-4">
                       <select

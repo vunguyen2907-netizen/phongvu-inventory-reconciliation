@@ -414,5 +414,73 @@ select throws_ok($$select expected_serial_normalized from public.recount_task_se
 select throws_ok($$select serial_normalized from public.recount_serial_evidence$$, '42501');
 reset role;
 
+-- Task 6: draft generation is idempotent and assignments are server-derived.
+set local role authenticated;
+select set_config('request.jwt.claims', '{"sub":"10000000-0000-0000-0000-000000000006","role":"authenticated"}', true);
+select lives_ok($$select public.manager_create_recount_batch(
+  '20000000-0000-0000-0000-000000000001',
+  '[
+    {"source_detail_row_id":"draft-row-1","sku":"SKU-DRAFT","product_name":"Draft product","stock_bin":"BIN-1","first_count_bin":"COUNT-1","first_count_status":"Bắn thiếu (Chưa quét)","first_counter_erp_name":"ERP1","task_type":"missing_serial","masked_reference":"ignored"},
+    {"source_detail_row_id":"draft-row-2","sku":"SKU-DRAFT","product_name":"Draft product","stock_bin":"BIN-2","first_count_bin":"COUNT-2","first_count_status":"Bắn sai serial","first_counter_erp_name":"unknown performer","task_type":"wrong_serial","masked_reference":"ignored"}
+  ]'::jsonb,
+  '[
+    {"source_detail_row_id":"draft-row-1","sku":"SKU-DRAFT","serial_normalized":"DRAFT-EXPECTED-0001","expected_serial_normalized":"DRAFT-EXPECTED-0001","first_scanned_code_normalized":"","bin":"BIN-1"},
+    {"source_detail_row_id":"draft-row-2","sku":"SKU-DRAFT","serial_normalized":"DRAFT-EXPECTED-0002","expected_serial_normalized":"DRAFT-EXPECTED-0002","first_scanned_code_normalized":"DRAFT-SCANNED-0002","bin":"BIN-2"}
+  ]'::jsonb
+)$$, 'manager can create a recount draft from the current inventory session');
+select is(
+  (select count(*) from public.recount_batches where inventory_session_id = '20000000-0000-0000-0000-000000000001'),
+  3::bigint,
+  'draft generation keeps one batch per inventory session after the existing fixtures'
+);
+select lives_ok($$select public.manager_create_recount_batch(
+  '20000000-0000-0000-0000-000000000001',
+  '[
+    {"source_detail_row_id":"draft-row-1","sku":"SKU-DRAFT","product_name":"Draft product","stock_bin":"BIN-1","first_count_bin":"COUNT-1","first_count_status":"Bắn thiếu (Chưa quét)","first_counter_erp_name":"ERP1","task_type":"missing_serial","masked_reference":"ignored"},
+    {"source_detail_row_id":"draft-row-2","sku":"SKU-DRAFT","product_name":"Draft product","stock_bin":"BIN-2","first_count_bin":"COUNT-2","first_count_status":"Bắn sai serial","first_counter_erp_name":"unknown performer","task_type":"wrong_serial","masked_reference":"ignored"}
+  ]'::jsonb,
+  '[
+    {"source_detail_row_id":"draft-row-1","sku":"SKU-DRAFT","serial_normalized":"DRAFT-EXPECTED-0001","expected_serial_normalized":"DRAFT-EXPECTED-0001","first_scanned_code_normalized":"","bin":"BIN-1"},
+    {"source_detail_row_id":"draft-row-2","sku":"SKU-DRAFT","serial_normalized":"DRAFT-EXPECTED-0002","expected_serial_normalized":"DRAFT-EXPECTED-0002","first_scanned_code_normalized":"DRAFT-SCANNED-0002","bin":"BIN-2"}
+  ]'::jsonb
+)$$, 'creating the same draft twice is idempotent');
+select is(
+  (select count(*) from public.recount_tasks where batch_id = (
+    select id from public.recount_batches where inventory_session_id = '20000000-0000-0000-0000-000000000001' order by created_at desc limit 1
+  )),
+  2::bigint,
+  'idempotent draft has one task per source detail row'
+);
+select is(
+  (select count(*) from public.recount_tasks where source_detail_row_id in ('draft-row-1', 'draft-row-2')),
+  2::bigint,
+  'source detail row identity prevents duplicate task rows across draft retries'
+);
+
+select lives_ok($$select public.manager_bulk_assign_recount_tasks(
+  array[(select id from public.recount_tasks where source_detail_row_id = 'draft-row-2')],
+  '10000000-0000-0000-0000-000000000001'
+)$$, 'manager can bulk assign an active counter');
+select is(
+  (select state::text || '/' || assigned_user_id::text from public.recount_tasks where source_detail_row_id = 'draft-row-2'),
+  'assigned/10000000-0000-0000-0000-000000000001',
+  'bulk assignment updates state and assignee'
+);
+select throws_ok($$select public.manager_bulk_assign_recount_tasks(
+  array[(select id from public.recount_tasks where source_detail_row_id = 'draft-row-1')],
+  '10000000-0000-0000-0000-000000000004'
+)$$, '42501', null, 'locked counter cannot receive new work');
+
+select results_eq(
+  $$select source_detail_row_id from public.manager_list_recount_tasks(
+    (select id from public.recount_batches where inventory_session_id = '20000000-0000-0000-0000-000000000001' order by created_at desc limit 1),
+    1, 50, null, null, null, null, null
+  ) order by source_detail_row_id$$,
+  $$values ('draft-row-1'::text), ('draft-row-2'::text)$$,
+  'manager list returns paginated safe task columns'
+);
+
+reset role;
+
 select * from finish();
 rollback;

@@ -157,6 +157,11 @@ create table public.recount_batches (
   version integer not null default 1 check (version > 0)
 );
 create index recount_batches_session_status_idx on public.recount_batches (inventory_session_id, status);
+-- A session may retain historical active/reopened batches, but only one draft
+-- may be refreshed by the manager at a time.
+create unique index recount_batches_one_draft_per_session_idx
+  on public.recount_batches (inventory_session_id)
+  where status = 'draft';
 
 create table public.recount_tasks (
   id uuid primary key default gen_random_uuid(),
@@ -870,3 +875,447 @@ grant execute on function public.service_finish_profile_unlock(uuid, uuid, boole
 grant execute on function public.service_release_profile_unlock(uuid, uuid) to service_role;
 grant execute on function public.manager_delete_profile(uuid) to authenticated;
 -- Bootstrap is SQL-Editor/operator-only. Never expose private through the Data API.
+
+-- ============================================================
+-- Task 6: secure recount batch generation and manager workspace
+-- ============================================================
+
+create or replace function public.manager_create_recount_batch(
+  p_inventory_session_id uuid,
+  p_tasks jsonb,
+  p_evidence jsonb
+)
+returns jsonb
+language plpgsql security definer
+set search_path = ''
+as $$
+declare
+  v_actor public.profiles%rowtype;
+  v_batch public.recount_batches%rowtype;
+  v_task jsonb;
+  v_evidence jsonb;
+  v_source_id text;
+  v_sku text;
+  v_product_name text;
+  v_stock_bin text;
+  v_first_count_bin text;
+  v_first_count_status text;
+  v_first_counter_erp_name text;
+  v_task_type public.recount_task_type;
+  v_profile public.profiles%rowtype;
+  v_task_id uuid;
+  v_reference text;
+  v_suffix text;
+  v_mask_start integer;
+  v_task_count integer := 0;
+  v_unassigned_count integer := 0;
+  v_in_progress_count integer := 0;
+  v_completed_count integer := 0;
+  v_has_assignee boolean := false;
+begin
+  select * into v_actor
+  from public.profiles
+  where id = (select auth.uid())
+  for update;
+  if not found or v_actor.status <> 'active' or v_actor.role not in ('manager', 'admin') then
+    raise exception 'Active manager or admin profile required' using errcode = '42501';
+  end if;
+  if p_inventory_session_id is null then
+    raise exception 'Inventory session is required' using errcode = '22023';
+  end if;
+  if jsonb_typeof(coalesce(p_tasks, '[]'::jsonb)) <> 'array'
+     or jsonb_typeof(coalesce(p_evidence, '[]'::jsonb)) <> 'array' then
+    raise exception 'Tasks and evidence must be JSON arrays' using errcode = '22023';
+  end if;
+  if not exists (select 1 from public.inventory_sessions where id = p_inventory_session_id) then
+    raise exception 'Inventory session not found' using errcode = 'P0002';
+  end if;
+
+  select * into v_batch
+  from public.recount_batches
+  where inventory_session_id = p_inventory_session_id
+    and status = 'draft'
+  for update;
+  if not found then
+    insert into public.recount_batches (inventory_session_id, status, created_by)
+    values (p_inventory_session_id, 'draft', v_actor.id)
+    returning * into v_batch;
+  else
+    update public.recount_batches
+    set version = version + 1
+    where id = v_batch.id
+    returning * into v_batch;
+  end if;
+
+  -- Validate all task identity/enum values before writing any row. Complete
+  -- serials are accepted only in the protected evidence argument, never in
+  -- the manager-safe task payload.
+  for v_task in select value from jsonb_array_elements(coalesce(p_tasks, '[]'::jsonb)) loop
+    if v_task ? 'expected_serial' or v_task ? 'expected_serial_normalized'
+       or v_task ? 'stock_serial' or v_task ? 'first_scanned_code_normalized' then
+      raise exception 'Complete serial fields are not allowed in task payload' using errcode = '22023';
+    end if;
+    v_source_id := trim(coalesce(v_task ->> 'source_detail_row_id', ''));
+    if v_source_id = '' then
+      raise exception 'Every recount task requires a source detail row ID' using errcode = '22023';
+    end if;
+    v_task_type := (v_task ->> 'task_type')::public.recount_task_type;
+  end loop;
+
+  for v_task in select value from jsonb_array_elements(coalesce(p_tasks, '[]'::jsonb)) loop
+    v_source_id := trim(v_task ->> 'source_detail_row_id');
+    v_sku := trim(coalesce(v_task ->> 'sku', ''));
+    v_product_name := trim(coalesce(v_task ->> 'product_name', ''));
+    v_stock_bin := nullif(trim(coalesce(v_task ->> 'stock_bin', '')), '');
+    v_first_count_bin := nullif(trim(coalesce(v_task ->> 'first_count_bin', '')), '');
+    v_first_count_status := trim(coalesce(v_task ->> 'first_count_status', ''));
+    v_first_counter_erp_name := trim(coalesce(v_task ->> 'first_counter_erp_name', ''));
+    v_task_type := (v_task ->> 'task_type')::public.recount_task_type;
+    if v_sku = '' or v_product_name = '' or v_first_count_status = '' then
+      raise exception 'SKU, product name and first-count status are required' using errcode = '22023';
+    end if;
+
+    select * into v_profile
+    from public.profiles
+    where status = 'active'
+      and role = 'counter'
+      and erp_name_normalized = public.normalize_inventory_code(v_first_counter_erp_name)
+    order by id
+    limit 1;
+    v_has_assignee := found;
+
+    insert into public.recount_tasks (
+      batch_id, source_detail_row_id, sku, product_name, stock_bin,
+      first_count_bin, first_count_status, first_counter_erp_name,
+      first_counter_name_snapshot, assigned_user_id, assigned_name_snapshot,
+      task_type, masked_reference, state
+    ) values (
+      v_batch.id, v_source_id, v_sku, v_product_name, v_stock_bin,
+      v_first_count_bin, v_first_count_status, nullif(v_first_counter_erp_name, ''),
+      case when v_has_assignee then v_profile.full_name else null end,
+      case when v_has_assignee then v_profile.id else null end,
+      case when v_has_assignee then v_profile.full_name else null end,
+      v_task_type, '*', case when v_has_assignee then 'assigned' else 'unassigned' end
+    )
+    on conflict (batch_id, source_detail_row_id) do update
+    set sku = excluded.sku,
+        product_name = excluded.product_name,
+        stock_bin = excluded.stock_bin,
+        first_count_bin = excluded.first_count_bin,
+        first_count_status = excluded.first_count_status,
+        first_counter_erp_name = excluded.first_counter_erp_name,
+        first_counter_name_snapshot = excluded.first_counter_name_snapshot,
+        task_type = excluded.task_type,
+        assigned_user_id = case when public.recount_tasks.state in ('completed', 'in_progress', 'ready')
+                                then public.recount_tasks.assigned_user_id else excluded.assigned_user_id end,
+        assigned_name_snapshot = case when public.recount_tasks.state in ('completed', 'in_progress', 'ready')
+                                      then public.recount_tasks.assigned_name_snapshot else excluded.assigned_name_snapshot end,
+        state = case when public.recount_tasks.state in ('completed', 'in_progress', 'ready')
+                     then public.recount_tasks.state else excluded.state end,
+        resolution = case when public.recount_tasks.state in ('completed', 'in_progress', 'ready')
+                          then public.recount_tasks.resolution else null end,
+        reason = case when public.recount_tasks.state in ('completed', 'in_progress', 'ready')
+                      then public.recount_tasks.reason else null end,
+        version = public.recount_tasks.version + 1
+    returning id into v_task_id;
+    v_task_count := v_task_count + 1;
+
+    -- One task may have expected and first-scanned evidence rows. Exact codes
+    -- never leave this protected table through the RPC return value.
+    for v_evidence in
+      select value
+      from jsonb_array_elements(coalesce(p_evidence, '[]'::jsonb))
+      where trim(coalesce(value ->> 'source_detail_row_id', '')) = v_source_id
+    loop
+      if trim(coalesce(v_evidence ->> 'serial_normalized', '')) = '' then
+        raise exception 'Evidence serial cannot be empty' using errcode = '22023';
+      end if;
+      insert into public.recount_serial_evidence (
+        batch_id, source_detail_row_id, sku, serial_normalized, bin,
+        is_counted, is_excluded
+      ) values (
+        v_batch.id, v_source_id, trim(coalesce(v_evidence ->> 'sku', v_sku)),
+        public.normalize_inventory_code(v_evidence ->> 'serial_normalized'),
+        nullif(trim(coalesce(v_evidence ->> 'bin', '')), ''),
+        coalesce((v_evidence ->> 'is_counted')::boolean, true),
+        coalesce((v_evidence ->> 'is_excluded')::boolean, false)
+      )
+      on conflict (batch_id, source_detail_row_id, serial_normalized) do update
+      set sku = excluded.sku,
+          bin = excluded.bin,
+          is_counted = excluded.is_counted,
+          is_excluded = excluded.is_excluded;
+
+      insert into public.recount_task_secrets (
+        task_id, expected_serial_normalized, first_scanned_code_normalized,
+        first_scanned_code_masked
+      ) values (
+        v_task_id,
+        nullif(public.normalize_inventory_code(v_evidence ->> 'expected_serial_normalized'), ''),
+        nullif(public.normalize_inventory_code(v_evidence ->> 'first_scanned_code_normalized'), ''),
+        nullif(trim(coalesce(v_evidence ->> 'first_scanned_code_masked', '')), '')
+      )
+      on conflict (task_id) do update
+      set expected_serial_normalized = coalesce(excluded.expected_serial_normalized, public.recount_task_secrets.expected_serial_normalized),
+          first_scanned_code_normalized = coalesce(excluded.first_scanned_code_normalized, public.recount_task_secrets.first_scanned_code_normalized),
+          first_scanned_code_masked = coalesce(excluded.first_scanned_code_masked, public.recount_task_secrets.first_scanned_code_masked);
+    end loop;
+  end loop;
+
+  -- Compute the final-four mask server-side. A colliding suffix gets the first
+  -- differing four-character window; groups containing a short code remain
+  -- fully masked so a complete short secret cannot be inferred.
+  with refs as (
+    select t.id, coalesce(s.expected_serial_normalized, s.first_scanned_code_normalized) as reference
+    from public.recount_tasks t
+    left join public.recount_task_secrets s on s.task_id = t.id
+    where t.batch_id = v_batch.id
+  ), groups as (
+    select reference,
+           right(reference, 4) as suffix,
+           char_length(reference) as reference_length
+    from refs
+    where reference is not null and reference <> ''
+  ), collision_windows as (
+    select r.id, min(pos) as first_difference
+    from refs r
+    join lateral generate_series(1, greatest(char_length(r.reference), 1)) as positions(pos) on true
+    where r.reference is not null and r.reference <> ''
+      and (select count(*) from groups g where g.suffix = right(r.reference, 4)) > 1
+      and not exists (
+        select 1 from groups g where g.suffix = right(r.reference, 4) and g.reference_length <= 4
+      )
+      and (select count(distinct substr(g.reference, pos, 1))
+           from groups g where g.suffix = right(r.reference, 4)) > 1
+    group by r.id
+  )
+  update public.recount_tasks t
+  set masked_reference = case
+    when refs.reference is null or refs.reference = '' then '*'
+    when char_length(refs.reference) <= 4 then repeat('*', char_length(refs.reference))
+    when not exists (select 1 from groups g where g.suffix = right(refs.reference, 4) and g.reference_length <= 4)
+         and (select count(*) from groups g where g.suffix = right(refs.reference, 4)) > 1
+      then public.mask_inventory_code(refs.reference, collision_windows.first_difference, 4)
+    else public.mask_inventory_code(refs.reference, null, 4)
+  end
+  from refs
+  left join collision_windows on collision_windows.id = refs.id
+  where t.id = refs.id;
+
+  select count(*) filter (where state = 'unassigned'),
+         count(*) filter (where state = 'in_progress'),
+         count(*) filter (where state = 'completed')
+  into v_unassigned_count, v_in_progress_count, v_completed_count
+  from public.recount_tasks where batch_id = v_batch.id;
+
+  insert into public.audit_logs (
+    actor_user_id, actor_name_snapshot, action, entity_type, entity_id,
+    after_data
+  ) values (
+    v_actor.id, v_actor.full_name, 'create_recount_batch', 'recount_batch',
+    v_batch.id::text,
+    jsonb_build_object('inventory_session_id', p_inventory_session_id,
+                       'task_count', v_task_count,
+                       'unassigned_count', v_unassigned_count)
+  );
+
+  return jsonb_build_object(
+    'batch_id', v_batch.id,
+    'task_count', (select count(*) from public.recount_tasks where batch_id = v_batch.id),
+    'unassigned_count', v_unassigned_count,
+    'in_progress_count', v_in_progress_count,
+    'completed_count', v_completed_count
+  );
+end;
+$$;
+
+create or replace function public.manager_bulk_assign_recount_tasks(
+  p_task_ids uuid[],
+  p_user_id uuid
+)
+returns integer
+language plpgsql security definer
+set search_path = ''
+as $$
+declare
+  v_actor public.profiles%rowtype;
+  v_target public.profiles%rowtype;
+  v_task public.recount_tasks%rowtype;
+  v_count integer := 0;
+begin
+  select * into v_actor from public.profiles where id = (select auth.uid()) for update;
+  if not found or v_actor.status <> 'active' or v_actor.role not in ('manager', 'admin') then
+    raise exception 'Active manager or admin profile required' using errcode = '42501';
+  end if;
+  if coalesce(array_length(p_task_ids, 1), 0) = 0
+     or (select count(*) from unnest(p_task_ids)) <> (select count(distinct id) from unnest(p_task_ids) id) then
+    raise exception 'Task IDs must be non-empty and unique' using errcode = '22023';
+  end if;
+  select * into v_target from public.profiles where id = p_user_id for update;
+  if not found or v_target.status <> 'active' or v_target.role <> 'counter' then
+    raise exception 'Target must be an active approved counter' using errcode = '42501';
+  end if;
+  if (select count(*) from public.recount_tasks where id = any(p_task_ids)) <> array_length(p_task_ids, 1) then
+    raise exception 'Every task ID must belong to an existing recount task' using errcode = 'P0002';
+  end if;
+  if (select count(distinct batch_id) from public.recount_tasks where id = any(p_task_ids)) <> 1 then
+    raise exception 'All assigned tasks must belong to one batch' using errcode = '22023';
+  end if;
+
+  for v_task in
+    select * from public.recount_tasks where id = any(p_task_ids) order by id for update
+  loop
+    if v_task.state = 'completed' then
+      raise exception 'Completed tasks must be reopened before reassignment' using errcode = '55000';
+    end if;
+    update public.recount_tasks
+    set assigned_user_id = v_target.id,
+        assigned_name_snapshot = v_target.full_name,
+        state = 'assigned', resolution = null, reason = null,
+        completed_by = null, completed_by_name_snapshot = null,
+        completed_at = null, version = version + 1
+    where id = v_task.id;
+    insert into public.audit_logs (
+      actor_user_id, actor_name_snapshot, action, entity_type, entity_id,
+      before_data, after_data
+    ) values (
+      v_actor.id, v_actor.full_name, 'assign_recount_task', 'recount_task', v_task.id::text,
+      jsonb_build_object('assigned_user_id', v_task.assigned_user_id, 'state', v_task.state, 'version', v_task.version),
+      jsonb_build_object('assigned_user_id', v_target.id, 'assigned_name_snapshot', v_target.full_name,
+                         'state', 'assigned', 'version', v_task.version + 1)
+    );
+    v_count := v_count + 1;
+  end loop;
+  return v_count;
+end;
+$$;
+
+create or replace function public.manager_list_recount_tasks(
+  p_batch_id uuid,
+  p_page integer default 1,
+  p_page_size integer default 50,
+  p_assignee_id uuid default null,
+  p_state public.recount_task_state default null,
+  p_task_type public.recount_task_type default null,
+  p_sku text default null,
+  p_bin text default null
+)
+returns table (
+  id uuid, batch_id uuid, source_detail_row_id text, sku text,
+  product_name text, stock_bin text, first_count_bin text,
+  first_count_status text, first_counter_erp_name text,
+  first_counter_name_snapshot text, assigned_user_id uuid,
+  assigned_name_snapshot text, task_type public.recount_task_type,
+  masked_reference text, state public.recount_task_state,
+  resolution public.recount_resolution, reason text, version integer,
+  created_at timestamptz, updated_at timestamptz
+)
+language plpgsql security definer
+set search_path = ''
+as $$
+declare
+  v_actor public.profiles%rowtype;
+  v_limit integer := greatest(1, least(coalesce(p_page_size, 50), 500));
+  v_page integer := greatest(1, coalesce(p_page, 1));
+begin
+  select * into v_actor from public.profiles where id = (select auth.uid());
+  if not found or v_actor.status <> 'active' or v_actor.role not in ('manager', 'admin') then
+    raise exception 'Active manager or admin profile required' using errcode = '42501';
+  end if;
+  return query
+  select t.id, t.batch_id, t.source_detail_row_id, t.sku, t.product_name,
+         t.stock_bin, t.first_count_bin, t.first_count_status,
+         t.first_counter_erp_name, t.first_counter_name_snapshot,
+         t.assigned_user_id, t.assigned_name_snapshot, t.task_type,
+         t.masked_reference, t.state, t.resolution, t.reason, t.version,
+         t.created_at, t.updated_at
+  from public.recount_tasks t
+  where t.batch_id = p_batch_id
+    and (p_assignee_id is null or t.assigned_user_id = p_assignee_id)
+    and (p_state is null or t.state = p_state)
+    and (p_task_type is null or t.task_type = p_task_type)
+    and (p_sku is null or t.sku ilike '%' || p_sku || '%')
+    and (p_bin is null or coalesce(t.stock_bin, '') ilike '%' || p_bin || '%'
+                     or coalesce(t.first_count_bin, '') ilike '%' || p_bin || '%')
+  order by t.created_at, t.id
+  offset (v_page - 1) * v_limit limit v_limit;
+end;
+$$;
+
+create or replace function public.manager_reopen_recount_tasks(
+  p_task_ids uuid[],
+  p_reason text
+)
+returns integer
+language plpgsql security definer
+set search_path = ''
+as $$
+declare
+  v_actor public.profiles%rowtype;
+  v_task public.recount_tasks%rowtype;
+  v_assignee public.profiles%rowtype;
+  v_reason text := trim(coalesce(p_reason, ''));
+  v_count integer := 0;
+  v_has_assignee boolean := false;
+begin
+  select * into v_actor from public.profiles where id = (select auth.uid()) for update;
+  if not found or v_actor.status <> 'active' or v_actor.role not in ('manager', 'admin') then
+    raise exception 'Active manager or admin profile required' using errcode = '42501';
+  end if;
+  if v_reason = '' then
+    raise exception 'Reopen reason is required' using errcode = '22023';
+  end if;
+  if coalesce(array_length(p_task_ids, 1), 0) = 0
+     or (select count(*) from unnest(p_task_ids)) <> (select count(distinct id) from unnest(p_task_ids) id) then
+    raise exception 'Task IDs must be non-empty and unique' using errcode = '22023';
+  end if;
+  if (select count(*) from public.recount_tasks where id = any(p_task_ids)) <> array_length(p_task_ids, 1) then
+    raise exception 'Every task ID must belong to an existing recount task' using errcode = 'P0002';
+  end if;
+  if (select count(distinct batch_id) from public.recount_tasks where id = any(p_task_ids)) <> 1 then
+    raise exception 'All reopened tasks must belong to one batch' using errcode = '22023';
+  end if;
+
+  for v_task in
+    select * from public.recount_tasks where id = any(p_task_ids) order by id for update
+  loop
+    if v_task.state <> 'completed' then
+      raise exception 'Only completed tasks can be reopened' using errcode = '55000';
+    end if;
+    select * into v_assignee from public.profiles where id = v_task.assigned_user_id;
+    v_has_assignee := found;
+    update public.recount_tasks
+    set assigned_user_id = case when v_has_assignee and v_assignee.status = 'active' and v_assignee.role = 'counter' then v_assignee.id else null end,
+        assigned_name_snapshot = case when v_has_assignee and v_assignee.status = 'active' and v_assignee.role = 'counter' then v_assignee.full_name else null end,
+        state = case when v_has_assignee and v_assignee.status = 'active' and v_assignee.role = 'counter' then 'assigned' else 'unassigned' end,
+        resolution = null, reason = null, completed_by = null,
+        completed_by_name_snapshot = null, completed_at = null,
+        version = version + 1
+    where id = v_task.id;
+    insert into public.audit_logs (
+      actor_user_id, actor_name_snapshot, action, entity_type, entity_id,
+      before_data, after_data, reason
+    ) values (
+      v_actor.id, v_actor.full_name, 'reopen_recount_task', 'recount_task', v_task.id::text,
+      jsonb_build_object('state', v_task.state, 'resolution', v_task.resolution,
+                         'assigned_user_id', v_task.assigned_user_id, 'version', v_task.version),
+      jsonb_build_object('state', case when v_has_assignee and v_assignee.status = 'active' and v_assignee.role = 'counter' then 'assigned' else 'unassigned' end,
+                         'assigned_user_id', case when v_has_assignee and v_assignee.status = 'active' and v_assignee.role = 'counter' then v_assignee.id else null end,
+                         'version', v_task.version + 1),
+      v_reason
+    );
+    v_count := v_count + 1;
+  end loop;
+  update public.recount_batches set status = 'reopened' where id = v_task.batch_id;
+  return v_count;
+end;
+$$;
+
+revoke all on function public.manager_create_recount_batch(uuid, jsonb, jsonb) from public, anon, authenticated;
+revoke all on function public.manager_bulk_assign_recount_tasks(uuid[], uuid) from public, anon, authenticated;
+revoke all on function public.manager_list_recount_tasks(uuid, integer, integer, uuid, public.recount_task_state, public.recount_task_type, text, text) from public, anon, authenticated;
+revoke all on function public.manager_reopen_recount_tasks(uuid[], text) from public, anon, authenticated;
+grant execute on function public.manager_create_recount_batch(uuid, jsonb, jsonb) to authenticated;
+grant execute on function public.manager_bulk_assign_recount_tasks(uuid[], uuid) to authenticated;
+grant execute on function public.manager_list_recount_tasks(uuid, integer, integer, uuid, public.recount_task_state, public.recount_task_type, text, text) to authenticated;
+grant execute on function public.manager_reopen_recount_tasks(uuid[], text) to authenticated;

@@ -239,6 +239,24 @@ class SecureRecountSchemaContractTests(unittest.TestCase):
         self.assertIn('functions.invoke("admin-user-lifecycle"', source)
         self.assertNotIn("SUPABASE_SERVICE_ROLE_KEY", source)
 
+    def test_manager_recount_workspace_loads_the_safe_domain_and_uses_bounded_assignment_calls(self):
+        """The manager queue is unusable unless its draft builder is loaded and rendered."""
+        source = INDEX_HTML.read_text()
+        self.assertIn('<script src="./recount_domain.js"></script>', source)
+        for label in (
+            "Tạo danh sách kiểm lần 2",
+            "Chưa phân công",
+            "Đang thực hiện",
+            "Hoàn tất",
+            "Phân công cho",
+            "MỞ LẠI",
+        ):
+            with self.subTest(label=label):
+                self.assertIn(label, source)
+        self.assertIn("start += 500", source)
+        self.assertIn("manager_bulk_assign_recount_tasks", source)
+        self.assertIn("manager_reopen_recount_tasks", source)
+
     def test_consolidated_schema_matches_migration_and_preserves_legacy(self):
         sql = self.migration()
         consolidated = (ROOT / "supabase_schema.sql").read_text()
