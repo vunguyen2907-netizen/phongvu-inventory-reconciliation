@@ -669,7 +669,19 @@
     }
 
     function getPasswordRecoveryRedirectUrl() {
-      const url = new URL(getAuthRedirectUrl());
+      // Supabase rejects malformed redirect URLs before sending the email.
+      // Always normalize the configured value and fall back to the current
+      // app URL when Streamlit has injected an empty or invalid secret.
+      const safeOrigin = /^https?:$/.test(window.location.protocol)
+        ? window.location.origin
+        : "http://localhost";
+      let url;
+      try {
+        url = new URL(getAuthRedirectUrl(), safeOrigin);
+        if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("Unsupported redirect protocol");
+      } catch (_error) {
+        url = new URL(window.location.pathname || "/", safeOrigin);
+      }
       url.searchParams.set("auth_recovery", "1");
       return url.toString();
     }
@@ -1377,6 +1389,8 @@
       const [recountPage, setRecountPage] = useState(1);
       const [recountLoading, setRecountLoading] = useState(false);
       const [recountCountersLoading, setRecountCountersLoading] = useState(false);
+      const [counterRecountTasks, setCounterRecountTasks] = useState([]);
+      const [counterRecountLoading, setCounterRecountLoading] = useState(false);
       const [recountSelectedIds, setRecountSelectedIds] = useState([]);
       const [recountAssignee, setRecountAssignee] = useState("");
       const [recountFilters, setRecountFilters] = useState({ assignee: "", state: "", taskType: "", sku: "", bin: "" });
@@ -1494,6 +1508,33 @@
         } catch (e) { console.error(e); }
         finally { setRecountCountersLoading(false); }
       };
+
+      // Counters may only read their own assigned rows. RLS enforces that
+      // boundary and masked_reference prevents the exact serial from leaking.
+      const fetchCounterRecountTasks = async () => {
+        if (isManager || !supabaseClient || !session?.user?.id) return;
+        setCounterRecountLoading(true);
+        try {
+          const client = await getReadySupabaseClient();
+          if (!client) return;
+          const { data, error } = await client
+            .from('recount_tasks')
+            .select('id, batch_id, sku, product_name, stock_bin, first_count_bin, first_count_status, first_counter_name_snapshot, task_type, masked_reference, state, resolution, reason, updated_at')
+            .eq('assigned_user_id', session.user.id)
+            .order('updated_at', { ascending: false });
+          if (error) throw error;
+          setCounterRecountTasks(Array.isArray(data) ? data : []);
+        } catch (e) {
+          console.error('Không thể tải danh sách kiểm lần 2 của counter:', e);
+          setCounterRecountTasks([]);
+        } finally {
+          setCounterRecountLoading(false);
+        }
+      };
+
+      useEffect(() => {
+        if (!isManager && activeTab === "second-count") fetchCounterRecountTasks();
+      }, [isManager, activeTab, session?.user?.id]);
 
       const recountRpcFilters = () => ({
         p_assignee_id: recountFilters.assignee || null,
@@ -3204,6 +3245,46 @@
               {/* TAB 2: KIỂM ĐẾM LẦN 2 */}
               {activeTab === "second-count" && (
                 <div className="space-y-4">
+                  {!isManager && (
+                    <div className="rounded-xl border border-brand-200 bg-white p-4 shadow-sm">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <h3 className="font-bold text-slate-800">Danh sách kiểm lần 2 được giao</h3>
+                          <p className="mt-1 text-xs text-slate-500">Serial được che theo chính sách bảo mật; chỉ hiển thị các dòng đã phân công cho bạn.</p>
+                        </div>
+                        <button type="button" onClick={fetchCounterRecountTasks} disabled={counterRecountLoading} aria-busy={counterRecountLoading} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold text-slate-700 disabled:cursor-wait disabled:opacity-50">
+                          {counterRecountLoading ? "⏳ Đang tải…" : "↻ Làm mới danh sách"}
+                        </button>
+                      </div>
+                      {counterRecountLoading ? (
+                        <div className="mt-4 rounded-lg bg-slate-50 p-5 text-center text-sm text-slate-500">Đang tải danh sách kiểm lần 2…</div>
+                      ) : counterRecountTasks.length === 0 ? (
+                        <div className="mt-4 rounded-lg border border-dashed border-slate-300 bg-slate-50 p-5 text-center text-sm text-slate-500">Chưa có task kiểm lần 2 được phân công cho tài khoản này.</div>
+                      ) : (
+                        <div className="mt-4 overflow-x-auto rounded-lg border border-slate-200">
+                          <table className="w-full min-w-[900px] text-left text-xs">
+                            <thead className="bg-slate-100 text-slate-700"><tr>
+                              <th className="p-3">STT</th><th className="p-3">SKU</th><th className="p-3">Tên sản phẩm</th><th className="p-3">Serial tồn (đã che)</th><th className="p-3">BIN tồn</th><th className="p-3">Kết quả lần 1</th><th className="p-3">Trạng thái</th>
+                            </tr></thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {counterRecountTasks.map((task, index) => {
+                                const stateLabel = task.state === "assigned" ? "Đã nhận" : task.state === "in_progress" ? "Đang thực hiện" : task.state === "completed" ? "Hoàn tất" : task.state || "Chưa phân công";
+                                return <tr key={task.id} className="hover:bg-slate-50">
+                                  <td className="p-3 text-slate-500">{index + 1}</td>
+                                  <td className="p-3 font-mono font-semibold">{task.sku}</td>
+                                  <td className="p-3 max-w-[280px] whitespace-normal break-words">{task.product_name}</td>
+                                  <td className="p-3 font-mono font-semibold text-brand-700">{task.masked_reference || "*"}</td>
+                                  <td className="p-3">{task.stock_bin || task.first_count_bin || "—"}</td>
+                                  <td className="p-3">{task.first_count_status || "—"}</td>
+                                  <td className="p-3"><span className="rounded-full bg-indigo-50 px-2 py-1 font-bold text-indigo-700">{stateLabel}</span></td>
+                                </tr>;
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {isManager && (
                     <div className="bg-white p-4 rounded-xl border border-brand-200 shadow-sm space-y-3">
                       <div className="flex flex-wrap items-center justify-between gap-3">

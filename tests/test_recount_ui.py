@@ -742,6 +742,20 @@ class AuthUiTest(unittest.TestCase):
 
 
 class RecountUiContractTest(unittest.TestCase):
+    def test_password_recovery_redirect_falls_back_when_configured_url_is_invalid(self):
+        html = (ROOT / "index.html").read_text(encoding="utf-8")
+        self.assertIn('new URL(getAuthRedirectUrl(), safeOrigin)', html)
+        self.assertIn('new URL(window.location.pathname || "/", safeOrigin)', html)
+        self.assertIn('url.searchParams.set("auth_recovery", "1")', html)
+
+    def test_counter_loads_only_assigned_masked_recount_tasks(self):
+        html = (ROOT / "index.html").read_text(encoding="utf-8")
+        self.assertIn("fetchCounterRecountTasks", html)
+        self.assertIn(".from('recount_tasks')", html)
+        self.assertIn(".eq('assigned_user_id', session.user.id)", html)
+        self.assertIn("masked_reference", html)
+        self.assertIn("Chưa có task kiểm lần 2 được phân công cho tài khoản này.", html)
+
     def test_create_recount_batch_exposes_loading_state_and_blocks_repeat_clicks(self):
         html = (ROOT / "index.html").read_text(encoding="utf-8")
         self.assertIn("Đang tạo danh sách kiểm lần 2", html)
