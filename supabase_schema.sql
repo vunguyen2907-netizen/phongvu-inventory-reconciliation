@@ -1451,7 +1451,7 @@ begin
 
   select * into v_secret from public.recount_task_secrets s where s.task_id = v_task.id;
   v_masked := public.mask_inventory_code(v_scan);
-  v_hash := encode(digest(v_scan, 'sha256'), 'hex');
+  v_hash := encode(extensions.digest(v_scan, 'sha256'), 'hex');
 
   if v_secret.expected_serial_normalized is not null
      and v_scan = v_secret.expected_serial_normalized then

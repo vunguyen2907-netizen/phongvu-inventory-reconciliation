@@ -147,6 +147,7 @@ class SecureRecountSchemaContractTests(unittest.TestCase):
         self.assertIn("insert into public.recount_attempts", submit)
         self.assertIn("insert into public.audit_logs", submit)
         self.assertIn("public.mask_inventory_code(v_scan)", submit)
+        self.assertIn("extensions.digest(v_scan, 'sha256')", submit)
         self.assertIn("grant execute on function public.counter_list_recount_tasks(uuid, public.recount_task_state) to authenticated;", sql)
         self.assertIn("grant execute on function public.counter_submit_recount_attempt(uuid, text) to authenticated;", sql)
 
