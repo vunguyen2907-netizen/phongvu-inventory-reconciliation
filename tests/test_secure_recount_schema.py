@@ -156,6 +156,7 @@ class SecureRecountSchemaContractTests(unittest.TestCase):
 
     def test_manager_list_qualifies_profile_id_against_returns_table_id(self):
         sql = self.migration().lower()
+        self.assertIn("create or replace function public.manager_get_latest_recount_batch(", sql)
         body = sql.split("create or replace function public.manager_list_recount_tasks(", 1)[1]
         body = body.split("create or replace function public.manager_reopen_recount_tasks(", 1)[0]
         self.assertIn("from public.profiles p where p.id = (select auth.uid())", body)

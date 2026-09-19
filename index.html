@@ -1613,6 +1613,20 @@
         p_bin: recountFilters.bin.trim() || null
       });
 
+      const loadLatestRecountBatch = async () => {
+        if (!isManager || !supabaseClient) return;
+        try {
+          const client = await getReadySupabaseClient();
+          if (!client) return;
+          const { data, error } = await client.rpc('manager_get_latest_recount_batch', {
+            p_inventory_session_id: activeSessionId || null
+          });
+          if (error) throw error;
+          const latest = Array.isArray(data) ? data[0] : data;
+          if (latest?.batch_id) setRecountBatch(latest);
+        } catch (e) { console.error('Không thể tải phiên kiểm lần 2 mới nhất:', e); }
+      };
+
       const fetchRecountTasks = async (page = recountPage, batchId = recountBatch?.batch_id) => {
         if (!isManager || !supabaseClient || !batchId) return;
         setRecountLoading(true);
@@ -1729,10 +1743,14 @@
       };
 
       useEffect(() => {
-        if (!recountBatch?.batch_id || !['second-count', 'second-count-report'].includes(activeTab)) return;
+        if (!recountBatch?.batch_id || !['second-count', 'second-count-report', 'variance-summary'].includes(activeTab)) return;
         fetchRecountTasks(1);
         refreshRecountSummary();
       }, [recountBatch?.batch_id, recountFilters, activeTab]);
+
+      useEffect(() => {
+        if (isManager && !recountBatch?.batch_id && ['second-count', 'second-count-report', 'variance-summary'].includes(activeTab)) loadLatestRecountBatch();
+      }, [isManager, recountBatch?.batch_id, activeSessionId, activeTab]);
 
       // Auto-save debounce (10s)
       useEffect(() => {

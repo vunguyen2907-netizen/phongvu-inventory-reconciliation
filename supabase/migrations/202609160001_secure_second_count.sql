@@ -1279,6 +1279,27 @@ begin
 end;
 $$;
 
+create or replace function public.manager_get_latest_recount_batch(p_inventory_session_id uuid default null)
+returns table(batch_id uuid, inventory_session_id uuid, status public.recount_batch_status, created_at timestamptz, closed_at timestamptz)
+language plpgsql security definer
+set search_path = ''
+as $$
+declare
+  v_actor public.profiles%rowtype;
+begin
+  select * into v_actor from public.profiles p where p.id = (select auth.uid());
+  if not found or v_actor.status <> 'active' or v_actor.role not in ('manager', 'admin') then
+    raise exception 'Active manager or admin profile required' using errcode = '42501';
+  end if;
+  return query
+  select b.id, b.inventory_session_id, b.status, b.created_at, b.closed_at
+  from public.recount_batches b
+  where p_inventory_session_id is null or b.inventory_session_id = p_inventory_session_id
+  order by b.created_at desc, b.id desc
+  limit 1;
+end;
+$$;
+
 create or replace function public.manager_reopen_recount_tasks(
   p_task_ids uuid[],
   p_reason text
@@ -1355,6 +1376,8 @@ revoke all on function public.manager_reopen_recount_tasks(uuid[], text) from pu
 grant execute on function public.manager_create_recount_batch(uuid, jsonb, jsonb) to authenticated;
 grant execute on function public.manager_bulk_assign_recount_tasks(uuid[], uuid) to authenticated;
 grant execute on function public.manager_list_recount_tasks(uuid, integer, integer, uuid, public.recount_task_state, public.recount_task_type, text, text) to authenticated;
+revoke all on function public.manager_get_latest_recount_batch(uuid) from public, anon, authenticated;
+grant execute on function public.manager_get_latest_recount_batch(uuid) to authenticated;
 grant execute on function public.manager_reopen_recount_tasks(uuid[], text) to authenticated;
 
 -- Counter-facing read/write contract.  Counters never query the protected
