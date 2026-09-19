@@ -741,5 +741,19 @@ class AuthUiTest(unittest.TestCase):
         self.assertEqual(call["payload"], {"password": "new-safe-password"})
 
 
+class RecountUiContractTest(unittest.TestCase):
+    def test_create_recount_batch_exposes_loading_state_and_blocks_repeat_clicks(self):
+        html = (ROOT / "index.html").read_text(encoding="utf-8")
+        self.assertIn("Đang tạo danh sách kiểm lần 2", html)
+        self.assertIn("disabled={recountLoading}", html)
+        self.assertIn('aria-busy={recountLoading}', html)
+
+    def test_reopen_action_has_confirmation_modal_and_only_completed_tasks_are_enabled(self):
+        html = (ROOT / "index.html").read_text(encoding="utf-8")
+        self.assertIn("recountReopenTarget &&", html)
+        self.assertIn("disabled={task.state !== \"completed\" || recountLoading}", html)
+        self.assertIn("Nhập MO LAI để xác nhận", html)
+
+
 if __name__ == "__main__":
     unittest.main()
