@@ -802,6 +802,13 @@ class RecountUiContractTest(unittest.TestCase):
         self.assertIn("recountCountersLoading", html)
         self.assertIn("⏳ Đang tải nhân sự…", html)
 
+    def test_manager_recount_results_reload_for_the_selected_inventory_session(self):
+        html = (ROOT / "index.html").read_text(encoding="utf-8")
+        self.assertIn("manager_get_latest_recount_batch", html)
+        self.assertIn("p_inventory_session_id: sessionId || null", html)
+        self.assertIn("setRecountBatch(null);", html)
+        self.assertIn("loadLatestRecountBatch(activeSessionId);", html)
+
 
 if __name__ == "__main__":
     unittest.main()

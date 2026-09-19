@@ -1613,13 +1613,13 @@
         p_bin: recountFilters.bin.trim() || null
       });
 
-      const loadLatestRecountBatch = async () => {
+      const loadLatestRecountBatch = async (sessionId = activeSessionId) => {
         if (!isManager || !supabaseClient) return;
         try {
           const client = await getReadySupabaseClient();
           if (!client) return;
           const { data, error } = await client.rpc('manager_get_latest_recount_batch', {
-            p_inventory_session_id: activeSessionId || null
+            p_inventory_session_id: sessionId || null
           });
           if (error) throw error;
           const latest = Array.isArray(data) ? data[0] : data;
@@ -1749,8 +1749,13 @@
       }, [recountBatch?.batch_id, recountFilters, activeTab]);
 
       useEffect(() => {
-        if (isManager && !recountBatch?.batch_id && ['second-count', 'second-count-report', 'variance-summary'].includes(activeTab)) loadLatestRecountBatch();
-      }, [isManager, recountBatch?.batch_id, activeSessionId, activeTab]);
+        if (!isManager || !['second-count', 'second-count-report', 'variance-summary'].includes(activeTab)) return;
+        // A saved inventory session owns its recount batch. Clear the previous
+        // session's batch before loading so historical sessions never leak
+        // another session's results into the report.
+        setRecountBatch(null);
+        loadLatestRecountBatch(activeSessionId);
+      }, [isManager, activeSessionId, activeTab]);
 
       // Auto-save debounce (10s)
       useEffect(() => {
