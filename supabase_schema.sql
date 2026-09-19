@@ -1539,3 +1539,41 @@ revoke all on function public.counter_list_recount_tasks(uuid, public.recount_ta
 revoke all on function public.counter_submit_recount_attempt(uuid, text, text) from public, anon, authenticated;
 grant execute on function public.counter_list_recount_tasks(uuid, public.recount_task_state) to authenticated;
 grant execute on function public.counter_submit_recount_attempt(uuid, text, text) to authenticated;
+
+drop function if exists public.counter_finish_recount_session(uuid);
+create or replace function public.counter_finish_recount_session(p_batch_id uuid)
+returns jsonb
+language plpgsql security definer
+set search_path = ''
+as $$
+declare
+  v_actor public.profiles%rowtype;
+  v_own_total integer;
+  v_own_pending integer;
+  v_all_pending integer;
+begin
+  select * into v_actor from public.profiles p where p.id = (select auth.uid());
+  if not found or v_actor.status <> 'active' or v_actor.role <> 'counter' then
+    raise exception 'Active counter profile required' using errcode = '42501';
+  end if;
+  select count(*)::integer, count(*) filter (where state <> 'completed')::integer
+    into v_own_total, v_own_pending
+  from public.recount_tasks
+  where batch_id = p_batch_id and assigned_user_id = v_actor.id;
+  if coalesce(v_own_total, 0) = 0 then
+    raise exception 'No assigned recount tasks found' using errcode = 'P0002';
+  end if;
+  if v_own_pending > 0 then
+    return jsonb_build_object('result', 'pending_tasks', 'pending_count', v_own_pending);
+  end if;
+  select count(*)::integer into v_all_pending
+  from public.recount_tasks where batch_id = p_batch_id and state <> 'completed';
+  if v_all_pending > 0 then
+    return jsonb_build_object('result', 'awaiting_other_counters', 'pending_count', v_all_pending);
+  end if;
+  update public.recount_batches set status = 'completed' where id = p_batch_id;
+  return jsonb_build_object('result', 'completed', 'batch_id', p_batch_id);
+end;
+$$;
+revoke all on function public.counter_finish_recount_session(uuid) from public, anon, authenticated;
+grant execute on function public.counter_finish_recount_session(uuid) to authenticated;

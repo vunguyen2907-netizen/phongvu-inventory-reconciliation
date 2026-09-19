@@ -1401,6 +1401,8 @@
       const [counterRecountLoading, setCounterRecountLoading] = useState(false);
       const [counterScanValues, setCounterScanValues] = useState({});
       const [counterNoteValues, setCounterNoteValues] = useState({});
+      const [counterFinishLoading, setCounterFinishLoading] = useState(false);
+      const [counterSessionFinished, setCounterSessionFinished] = useState(false);
       const [counterSubmitId, setCounterSubmitId] = useState("");
       const [recountSelectedIds, setRecountSelectedIds] = useState([]);
       const [recountAssignee, setRecountAssignee] = useState("");
@@ -1534,6 +1536,7 @@
           });
           if (error) throw error;
           setCounterRecountTasks(Array.isArray(data) ? data : []);
+          setCounterSessionFinished(false);
           setCounterScanValues(previous => Object.fromEntries((data || []).map(task => [task.id, previous[task.id] || ""])));
           setCounterNoteValues(previous => Object.fromEntries((data || []).map(task => [task.id, previous[task.id] || task.reason || ""])));
         } catch (e) {
@@ -1542,6 +1545,28 @@
         } finally {
           setCounterRecountLoading(false);
         }
+      };
+
+      const finishCounterRecountSession = async () => {
+        if (counterFinishLoading || counterRecountTasks.length === 0 || counterRecountTasks.some(task => task.state !== "completed")) return;
+        const batchId = counterRecountTasks[0]?.batch_id;
+        if (!batchId) return;
+        setCounterFinishLoading(true);
+        try {
+          const client = await getReadySupabaseClient();
+          if (!client) throw new Error("Chưa cấu hình Supabase Auth.");
+          const { data, error } = await client.rpc("counter_finish_recount_session", { p_batch_id: batchId });
+          if (error) throw error;
+          if (data?.result === "completed") {
+            setCounterSessionFinished(true);
+            showNotice("✅ Đã kết thúc phiên kiểm lần 2.");
+          } else if (data?.result === "awaiting_other_counters") {
+            showNotice(`Còn ${data.pending_count || 0} dòng của nhân sự khác chưa hoàn tất.`);
+          } else {
+            showNotice(`Còn ${data?.pending_count || 0} dòng chưa hoàn tất.`);
+          }
+        } catch (e) { showNotice("Lỗi kết thúc phiên: " + e.message); }
+        finally { setCounterFinishLoading(false); }
       };
 
       const submitCounterRecountTask = async (task) => {
@@ -3315,9 +3340,11 @@
                           <p className="mt-1 text-xs text-slate-500">Serial được che theo chính sách bảo mật; chỉ hiển thị các dòng đã phân công cho bạn.</p>
                           {counterRecountTasks.length > 0 && <p className="mt-2 text-xs font-bold text-emerald-700">Đã hoàn tất {counterRecountTasks.filter(task => task.state === "completed").length}/{counterRecountTasks.length} dòng</p>}
                         </div>
-                        <button type="button" onClick={fetchCounterRecountTasks} disabled={counterRecountLoading} aria-busy={counterRecountLoading} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold text-slate-700 disabled:cursor-wait disabled:opacity-50">
+                        <div className="flex flex-wrap items-center justify-end gap-2"><button type="button" onClick={fetchCounterRecountTasks} disabled={counterRecountLoading || counterFinishLoading} aria-busy={counterRecountLoading} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold text-slate-700 disabled:cursor-wait disabled:opacity-50">
                           {counterRecountLoading ? "⏳ Đang tải…" : "↻ Làm mới danh sách"}
-                        </button>
+                        </button><button type="button" onClick={finishCounterRecountSession} disabled={counterSessionFinished || counterFinishLoading || counterRecountTasks.length === 0 || counterRecountTasks.some(task => task.state !== "completed")} aria-busy={counterFinishLoading} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-40">
+                          {counterSessionFinished ? "✓ Đã kết thúc phiên" : counterFinishLoading ? "Đang kết thúc…" : "Kết thúc phiên kiểm"}
+                        </button></div>
                       </div>
                       {counterRecountLoading ? (
                         <div className="mt-4 rounded-lg bg-slate-50 p-5 text-center text-sm text-slate-500">Đang tải danh sách kiểm lần 2…</div>

@@ -151,6 +151,8 @@ class SecureRecountSchemaContractTests(unittest.TestCase):
         self.assertIn("extensions.digest(v_scan, 'sha256')", submit)
         self.assertIn("grant execute on function public.counter_list_recount_tasks(uuid, public.recount_task_state) to authenticated;", sql)
         self.assertIn("grant execute on function public.counter_submit_recount_attempt(uuid, text, text) to authenticated;", sql)
+        self.assertIn("create or replace function public.counter_finish_recount_session(p_batch_id uuid)", sql)
+        self.assertIn("awaiting_other_counters", sql)
 
     def test_manager_list_qualifies_profile_id_against_returns_table_id(self):
         sql = self.migration().lower()
