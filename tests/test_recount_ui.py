@@ -768,6 +768,15 @@ class RecountUiContractTest(unittest.TestCase):
         self.assertIn("Đang gửi email đổi mật khẩu…", html)
         self.assertIn("Đã gửi email đổi mật khẩu", html)
 
+    def test_registration_fields_are_ordered_and_autocomplete_safe(self):
+        html = (ROOT / "index.html").read_text(encoding="utf-8")
+        self.assertLess(html.index('id="auth-full-name"'), html.index('id="auth-password"'))
+        self.assertIn('id="auth-full-name" name="full_name" required autoComplete="name"', html)
+        self.assertIn('id="auth-erp-name" name="erp_name" required autoComplete="organization-title"', html)
+        self.assertIn('id="auth-password" name="password" type="password" required minLength="6"', html)
+        self.assertIn('autoComplete={isSignUp ? "new-password" : "current-password"}', html)
+        self.assertIn("Mật khẩu chỉ dùng đăng nhập, không lưu vào hồ sơ nhân sự.", html)
+
 
 if __name__ == "__main__":
     unittest.main()
