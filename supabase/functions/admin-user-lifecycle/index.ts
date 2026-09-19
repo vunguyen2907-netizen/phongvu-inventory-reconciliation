@@ -27,7 +27,7 @@ type UserClient = ProfileReader & {
 };
 type ServiceClient = {
   auth: { admin: {
-    updateUserById(id: string, attributes: { ban_duration: string }): Promise<{ data: unknown; error: ClientError | null }>;
+    updateUserById(id: string, attributes: { ban_duration?: string; email_confirm?: boolean }): Promise<{ data: unknown; error: ClientError | null }>;
   } };
   from(table: string): ProfileQuery;
   rpc(name: string, args: Record<string, unknown>): Promise<{ data: unknown; error: ClientError | null }>;
@@ -194,11 +194,11 @@ export function createLifecycleHandler(dependencies: LifecycleDependencies) {
       return response(400, { error: "invalid_json" });
     }
     const body = payload && typeof payload === "object" && !Array.isArray(payload)
-      ? payload as { action?: unknown; target_user_id?: unknown; operation_id?: unknown }
+      ? payload as { action?: unknown; target_user_id?: unknown; operation_id?: unknown; erp_name?: unknown }
       : null;
     const action = typeof body?.action === "string" ? body.action : "";
     const targetUserId = typeof body?.target_user_id === "string" ? body.target_user_id.trim() : "";
-    if (!targetUserId || !["delete_user", "unlock_user"].includes(action)) {
+    if (!targetUserId || !["approve_user", "confirm_email", "delete_user", "unlock_user"].includes(action)) {
       return response(400, { error: "invalid_request" });
     }
 
@@ -222,6 +222,42 @@ export function createLifecycleHandler(dependencies: LifecycleDependencies) {
 
       const serviceClient = dependencies.createServiceClient();
       switch (action) {
+        case "approve_user": {
+          if (target.status !== "pending") return response(409, { error: "target_not_pending" });
+          const erpName = typeof body?.erp_name === "string" ? body.erp_name.trim() : "";
+          if (!erpName) return response(400, { error: "erp_name_required" });
+          const { error: approvalError } = await userClient.rpc("manager_approve_profile", {
+            p_user_id: targetUserId,
+            p_erp_name: erpName,
+          });
+          if (approvalError) {
+            return response(approvalError.code === "42501" ? 403 : 409, {
+              error: "profile_approval_failed",
+              message: approvalError.message || "",
+            });
+          }
+          const { error: confirmationError } = await serviceClient.auth.admin.updateUserById(targetUserId, {
+            email_confirm: true,
+          });
+          if (confirmationError) {
+            return response(502, {
+              error: "auth_email_confirmation_failed",
+              recovery_required: true,
+              message: confirmationError.message || "",
+            });
+          }
+          return response(200, { ok: true, action, target_user_id: targetUserId });
+        }
+        case "confirm_email": {
+          if (!["active", "locked"].includes(target.status)) return response(409, { error: "target_not_approved" });
+          const { error: confirmationError } = await serviceClient.auth.admin.updateUserById(targetUserId, {
+            email_confirm: true,
+          });
+          if (confirmationError) {
+            return response(502, { error: "auth_email_confirmation_failed", message: confirmationError.message || "" });
+          }
+          return response(200, { ok: true, action, target_user_id: targetUserId });
+        }
         case "delete_user": {
           const alreadyDeleted = target.status === "deleted";
           if (!alreadyDeleted) {
@@ -383,9 +419,11 @@ function requiredEnvironment(name: string) {
 
 function productionDependencies(): LifecycleDependencies {
   const url = requiredEnvironment("SUPABASE_URL");
-  const publishableKey = Deno.env.get("SUPABASE_PUBLISHABLE_KEY")?.trim()
+  const publishableKey = Deno.env.get("PHONGVU_PUBLISHABLE_KEY")?.trim()
+    || Deno.env.get("SUPABASE_PUBLISHABLE_KEY")?.trim()
     || requiredEnvironment("SUPABASE_ANON_KEY");
-  const serviceRoleKey = requiredEnvironment("SUPABASE_SERVICE_ROLE_KEY");
+  const serviceRoleKey = Deno.env.get("PHONGVU_SERVICE_ROLE_KEY")?.trim()
+    || requiredEnvironment("SUPABASE_SERVICE_ROLE_KEY");
   return {
     createUserClient: (authorization) => createClient(url, publishableKey, {
       global: { headers: { Authorization: authorization } },
@@ -397,4 +435,4 @@ function productionDependencies(): LifecycleDependencies {
   };
 }
 
-if (import.meta.main) Deno.serve(createLifecycleHandler(productionDependencies()));
+Deno.serve(createLifecycleHandler(productionDependencies()));

@@ -378,8 +378,8 @@ class AuthUiTest(unittest.TestCase):
         alias.fill("ERP NEW")
         page.get_by_role("button", name="Phê duyệt Pending User").click()
 
-        call = page.evaluate("window.__AUTH_CALLS__.find(call => call.method === 'rpc')")
-        self.assertEqual(call["payload"], {"name": "manager_approve_profile", "payload": {"p_user_id": "pending-user", "p_erp_name": "ERP NEW"}})
+        call = page.evaluate("window.__AUTH_CALLS__.find(call => call.method === 'function.invoke')")
+        self.assertEqual(call["payload"], {"name": "admin-user-lifecycle", "body": {"action": "approve_user", "target_user_id": "pending-user", "erp_name": "ERP NEW"}})
 
     def test_manager_account_panel_can_delete_a_pending_registration_with_typed_confirmation(self):
         session = {"user": {"id": "manager-user", "email": "manager@example.com"}}

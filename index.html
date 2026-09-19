@@ -1178,11 +1178,7 @@
           return;
         }
         await runAction(account, `Đã phê duyệt ${account.full_name}.`, async client => {
-          const { error } = await client.rpc("manager_approve_profile", {
-            p_user_id: account.id,
-            p_erp_name: erpName
-          });
-          if (error) throw error;
+          await invokeLifecycle(client, "approve_user", account, { erp_name: erpName });
         });
       };
 
@@ -1202,16 +1198,30 @@
         }
       };
 
-      const invokeLifecycle = async (client, action, account) => {
+      const invokeLifecycle = async (client, action, account, extra = {}) => {
         const { data, error } = await client.functions.invoke("admin-user-lifecycle", {
-          body: { action, target_user_id: account.id }
+          body: { action, target_user_id: account.id, ...extra }
         });
-        if (error) throw error;
+        if (error) {
+          let detail = "";
+          try {
+            const response = error.context;
+            const body = response && typeof response.json === "function" ? await response.json() : null;
+            detail = body?.message || body?.error || "";
+          } catch (_parseError) {
+            // Keep the SDK error when the Edge Function response is not JSON.
+          }
+          throw new Error(detail || error.message || "Yêu cầu vòng đời tài khoản thất bại.");
+        }
         if (!data?.ok) throw new Error(data?.error || "Yêu cầu vòng đời tài khoản thất bại.");
       };
 
       const unlock = async account => {
         await runAction(account, `Đã mở khóa ${account.full_name}.`, client => invokeLifecycle(client, "unlock_user", account));
+      };
+
+      const confirmEmail = async account => {
+        await runAction(account, `Đã xác nhận email đăng nhập cho ${account.full_name}.`, client => invokeLifecycle(client, "confirm_email", account));
       };
 
       const confirmDelete = async () => {
@@ -1277,6 +1287,7 @@
                         )}
                         {account.status === "active" && (
                           <div className="flex gap-2">
+                            <button type="button" aria-label={`Xác nhận email ${account.full_name}`} onClick={() => confirmEmail(account)} disabled={busyId === account.id} className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">Xác nhận email</button>
                             <button type="button" aria-label={`Khóa ${account.full_name}`} onClick={() => { setLockTarget(account); setLockReason(""); }} className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-bold text-white">Khóa</button>
                             <button type="button" aria-label={`Xóa ${account.full_name}`} onClick={() => { setDeleteTarget(account); setDeleteConfirmation(""); }} className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-bold text-white">Xóa</button>
                           </div>

@@ -251,7 +251,7 @@ class SecureRecountSchemaContractTests(unittest.TestCase):
         for label in ("Quản lý tài khoản", "Chờ duyệt", "Hoạt động", "Đã khóa", "Đã xóa",
                       "Lý do khóa", "Nhập email để xác nhận"):
             self.assertIn(label, source)
-        self.assertIn('rpc("manager_approve_profile"', source)
+        self.assertIn('invokeLifecycle(client, "approve_user"', source)
         self.assertIn('rpc("manager_lock_profile"', source)
         self.assertIn('functions.invoke("admin-user-lifecycle"', source)
         self.assertNotIn("SUPABASE_SERVICE_ROLE_KEY", source)

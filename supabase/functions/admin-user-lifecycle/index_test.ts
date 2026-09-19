@@ -18,7 +18,7 @@ type FixtureOptions = {
   serviceRpcErrors?: Record<string, TestError | TestError[]>;
   authErrors?: Record<string, TestError | TestError[]>;
   onRpc?: (name: string, target: Profile) => void;
-  onAuthUpdate?: (duration: string, target: Profile) => void;
+  onAuthUpdate?: (duration: string | undefined, target: Profile) => void;
   clearUnlockLeaseOnAuthUpdate?: boolean;
   waitForTargetReads?: number;
 };
@@ -77,6 +77,7 @@ function fixture(caller: Profile, target: Profile, options: FixtureOptions = {})
         target.status = "deleted";
         unlockOperationId = null;
       }
+      if (name === "manager_approve_profile") target.status = "active";
       if (name === "manager_begin_profile_unlock") {
         const operationId = (args as { p_operation_id: string }).p_operation_id;
         if (target.status === "active") {
@@ -113,11 +114,11 @@ function fixture(caller: Profile, target: Profile, options: FixtureOptions = {})
   };
   const serviceClient = {
     auth: { admin: {
-      updateUserById: async (id: string, attributes: { ban_duration: string }) => {
+      updateUserById: async (id: string, attributes: { ban_duration?: string; email_confirm?: boolean }) => {
         calls.authUpdates.push({ id, attributes });
-        calls.events.push(`auth:${attributes.ban_duration}`);
+        calls.events.push(attributes.email_confirm ? "auth:email_confirm" : `auth:${attributes.ban_duration}`);
         options.onAuthUpdate?.(attributes.ban_duration, target);
-        const error = nextError(options.authErrors, attributes.ban_duration);
+        const error = nextError(options.authErrors, attributes.ban_duration || (attributes.email_confirm ? "email_confirm" : ""));
         if (options.clearUnlockLeaseOnAuthUpdate && attributes.ban_duration === "none") unlockOperationId = null;
         if (!error) authBanned = attributes.ban_duration !== "none";
         return { data: {}, error };
@@ -234,6 +235,23 @@ Deno.test("manager soft-deletes the profile and bans Auth for a counter", async 
   assertEquals(calls.userTokens, ["valid-jwt"]);
   assertEquals(calls.rpc, [{ name: "manager_delete_profile", args: { p_user_id: "counter-1" } }]);
   assertEquals(calls.authUpdates, [{ id: "counter-1", attributes: { ban_duration: "876000h" } }]);
+});
+
+Deno.test("manager approval confirms the Auth email after activating the profile", async () => {
+  const { handler, calls, state } = fixture(
+    { id: "manager-1", role: "manager", status: "active" },
+    { id: "counter-1", role: "counter", status: "pending" },
+  );
+  const response = await handler(new Request("http://localhost/admin-user-lifecycle", {
+    method: "POST",
+    headers: { authorization: "Bearer valid-jwt", "content-type": "application/json" },
+    body: JSON.stringify({ action: "approve_user", target_user_id: "counter-1", erp_name: "ERP Counter" }),
+  }));
+  assertEquals(response.status, 200);
+  assertEquals(calls.rpc, [{ name: "manager_approve_profile", args: { p_user_id: "counter-1", p_erp_name: "ERP Counter" } }]);
+  assertEquals(calls.authUpdates, [{ id: "counter-1", attributes: { email_confirm: true } }]);
+  assertEquals(state.authBanned, true);
+  assertEquals(target.status, "active");
 });
 
 Deno.test("manager cannot delete an admin", async () => {
