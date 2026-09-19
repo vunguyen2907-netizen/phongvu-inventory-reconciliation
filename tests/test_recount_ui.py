@@ -754,6 +754,20 @@ class RecountUiContractTest(unittest.TestCase):
         self.assertIn("disabled={task.state !== \"completed\" || recountLoading}", html)
         self.assertIn("Nhập MO LAI để xác nhận", html)
 
+    def test_manager_recount_workspace_supports_refreshable_assignments_and_select_all(self):
+        html = (ROOT / "index.html").read_text(encoding="utf-8")
+        self.assertIn("Chọn tất cả task trên trang", html)
+        self.assertIn("Đã nhận", html)
+        self.assertIn("fetchRecountCounters();", html)
+        self.assertNotIn("Danh sách kiểm lần 2 an toàn", html)
+        self.assertNotIn("Tạo snapshot chênh lệch", html)
+
+    def test_account_actions_are_grouped_with_profile_and_password_reset_has_feedback(self):
+        html = (ROOT / "index.html").read_text(encoding="utf-8")
+        self.assertIn("Quản lý tài khoản", html)
+        self.assertIn("Đang gửi email đổi mật khẩu…", html)
+        self.assertIn("Đã gửi email đổi mật khẩu", html)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1367,7 +1367,7 @@
       const [recountSelectedIds, setRecountSelectedIds] = useState([]);
       const [recountAssignee, setRecountAssignee] = useState("");
       const [recountFilters, setRecountFilters] = useState({ assignee: "", state: "", taskType: "", sku: "", bin: "" });
-      const [recountSummary, setRecountSummary] = useState({ total: 0, unassigned: 0, in_progress: 0, completed: 0 });
+      const [recountSummary, setRecountSummary] = useState({ total: 0, unassigned: 0, assigned: 0, in_progress: 0, completed: 0 });
       const [recountReopenTarget, setRecountReopenTarget] = useState(null);
       const [recountReopenReason, setRecountReopenReason] = useState("");
       const [recountReopenConfirmation, setRecountReopenConfirmation] = useState("");
@@ -1462,6 +1462,10 @@
         fetchRecountCounters();
       }, [isManager]);
 
+      useEffect(() => {
+        if (isManager && activeTab === "second-count") fetchRecountCounters();
+      }, [isManager, activeTab]);
+
       const fetchRecountCounters = async () => {
         if (!isManager || !supabaseClient) return;
         try {
@@ -1516,10 +1520,10 @@
             if (error) throw error;
             return count || 0;
           };
-          const [total, unassigned, inProgress, completed] = await Promise.all([
-            countRows(), countRows('unassigned'), countRows('in_progress'), countRows('completed')
+          const [total, unassigned, assigned, inProgress, completed] = await Promise.all([
+            countRows(), countRows('unassigned'), countRows('assigned'), countRows('in_progress'), countRows('completed')
           ]);
-          setRecountSummary({ total, unassigned, in_progress: inProgress, completed });
+          setRecountSummary({ total, unassigned, assigned, in_progress: inProgress, completed });
         } catch (e) { console.error('Không thể tải tổng quan kiểm lần 2:', e); }
       };
 
@@ -2712,7 +2716,7 @@
           if (!client?.auth?.resetPasswordForEmail) throw new Error("Không thể gửi email đổi mật khẩu.");
           const { error } = await client.auth.resetPasswordForEmail(email, { redirectTo: getPasswordRecoveryRedirectUrl() });
           if (error) throw error;
-          setAuthActionMessage("Email đổi mật khẩu đã được gửi.");
+          setAuthActionMessage("Đã gửi email đổi mật khẩu. Hãy kiểm tra hộp thư.");
         } catch (error) {
           setAuthActionError(authErrorMessage(error, "Không thể gửi email đổi mật khẩu."));
         } finally {
@@ -2784,15 +2788,6 @@
                   {savedSessions.length === 0 && <p className="text-xs text-slate-500 italic">Chưa có lịch sử lưu.</p>}
                 </div>
               </div>
-
-              {/* ACCOUNT MANAGEMENT */}
-              {!legacyMode && (
-                <div className="mb-5 pt-4 border-t border-slate-800">
-                  <button type="button" onClick={() => setAccountPanelOpen(true)} className="w-full rounded-lg bg-slate-800 hover:bg-slate-700 px-3 py-2.5 text-left text-sm font-bold text-slate-100 transition">
-                    👥 Quản lý tài khoản
-                  </button>
-                </div>
-              )}
 
               {/* MONTHLY ARCHIVES SECTION */}
               <div className="pt-4 border-t border-slate-800 space-y-3">
@@ -2875,8 +2870,15 @@
                     {authActionMessage && <p role="status" className="mt-1 text-xs font-semibold text-emerald-600">{authActionMessage}</p>}
                   </div>
                   {!legacyMode && (
-                    <div className="flex gap-2">
-                      <button type="button" onClick={handlePasswordReset} disabled={authActionPending} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-600 disabled:opacity-50">Gửi email đổi mật khẩu</button>
+                    <div className="flex flex-wrap justify-end gap-2">
+                      {isManager && (
+                        <button type="button" onClick={() => setAccountPanelOpen(true)} className="rounded-lg border border-brand-200 bg-brand-50 px-3 py-2 text-xs font-semibold text-brand-700 hover:bg-brand-100">
+                          👥 Quản lý tài khoản
+                        </button>
+                      )}
+                      <button type="button" onClick={handlePasswordReset} disabled={authActionPending} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-600 disabled:cursor-wait disabled:opacity-50">
+                        {authActionPending ? "⏳ Đang gửi email đổi mật khẩu…" : "Gửi email đổi mật khẩu"}
+                      </button>
                       <button type="button" onClick={handleShellSignOut} disabled={authActionPending} className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">Đăng xuất</button>
                     </div>
                   )}
@@ -3190,10 +3192,7 @@
                   {isManager && (
                     <div className="bg-white p-4 rounded-xl border border-brand-200 shadow-sm space-y-3">
                       <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div>
-                          <h3 className="font-bold text-slate-800">Danh sách kiểm lần 2 an toàn</h3>
-                          <p className="text-xs text-slate-500">Tạo snapshot chênh lệch và phân công mà không lộ serial đầy đủ.</p>
-                        </div>
+                        <h3 className="font-bold text-slate-800">Danh sách kiểm lần 2</h3>
                         <button
                           type="button"
                           onClick={handleCreateRecountBatch}
@@ -3204,20 +3203,49 @@
                           {recountLoading ? "⏳ Đang tạo danh sách kiểm lần 2…" : "Tạo danh sách kiểm lần 2"}
                         </button>
                       </div>
-                      <div className="grid grid-cols-4 gap-2 text-xs">
-                        <div className="rounded-lg bg-slate-50 p-2"><b>Tổng</b><div>{recountSummary.total}</div></div>
-                        <div className="rounded-lg bg-amber-50 p-2"><b>Chưa phân công</b><div>{recountSummary.unassigned}</div></div>
-                        <div className="rounded-lg bg-blue-50 p-2"><b>Đang thực hiện</b><div>{recountSummary.in_progress}</div></div>
-                        <div className="rounded-lg bg-emerald-50 p-2"><b>Hoàn tất</b><div>{recountSummary.completed}</div></div>
+                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+                        <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm"><p className="text-[11px] font-bold uppercase text-slate-500">Tổng</p><p className="mt-1 text-xl font-extrabold text-slate-900">{recountSummary.total}</p></div>
+                        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 shadow-sm"><p className="text-[11px] font-bold uppercase text-amber-700">Chưa phân công</p><p className="mt-1 text-xl font-extrabold text-amber-900">{recountSummary.unassigned}</p></div>
+                        <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-3 shadow-sm"><p className="text-[11px] font-bold uppercase text-indigo-700">Đã nhận</p><p className="mt-1 text-xl font-extrabold text-indigo-900">{recountSummary.assigned}</p></div>
+                        <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 shadow-sm"><p className="text-[11px] font-bold uppercase text-blue-700">Đang thực hiện</p><p className="mt-1 text-xl font-extrabold text-blue-900">{recountSummary.in_progress}</p></div>
+                        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 shadow-sm"><p className="text-[11px] font-bold uppercase text-emerald-700">Hoàn tất</p><p className="mt-1 text-xl font-extrabold text-emerald-900">{recountSummary.completed}</p></div>
+                      </div>
+                      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <h4 className="font-bold text-slate-800">Phân công</h4>
+                            <p className="mt-1 text-xs text-slate-500">Đã chọn {recountSelectedIds.length} task trên trang này.</p>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <select value={recountAssignee} onChange={e => setRecountAssignee(e.target.value)} disabled={recountLoading || recountCounters.filter(c => c.status === "active").length === 0} aria-label="Nhân sự nhận kiểm lần 2" className="rounded-lg border border-slate-300 px-3 py-2 text-xs disabled:bg-slate-100">
+                              <option value="">Chọn nhân sự</option>
+                              {recountCounters.filter(c => c.status === "active").map(c => <option key={c.id} value={c.id}>{c.full_name || c.erp_name || c.email}</option>)}
+                            </select>
+                            <button type="button" onClick={fetchRecountCounters} disabled={recountLoading} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold text-slate-700 disabled:opacity-40">↻ Làm mới nhân sự</button>
+                            <button type="button" onClick={handleBulkAssignRecount} disabled={!recountSelectedIds.length || !recountAssignee || recountLoading} className="rounded-lg bg-slate-800 px-3 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-40">Phân công cho</button>
+                          </div>
+                        </div>
                       </div>
                       {recountTasks.length > 0 && (
-                        <div className="overflow-x-auto rounded-lg border border-slate-200">
-                          <table className="w-full text-left text-xs"><thead className="bg-slate-100"><tr><th className="p-2" aria-label="Chọn"></th><th className="p-2">SKU</th><th className="p-2">BIN</th><th className="p-2">Trạng thái</th><th className="p-2">Phân công cho</th><th className="p-2">Hành động</th></tr></thead><tbody>
-                            {recountTasks.map(task => <tr key={task.id} className="border-t border-slate-100"><td className="p-2"><input type="checkbox" checked={recountSelectedIds.includes(task.id)} onChange={e => setRecountSelectedIds(ids => e.target.checked ? [...new Set([...ids, task.id])] : ids.filter(id => id !== task.id))} /></td><td className="p-2">{task.sku}</td><td className="p-2">{task.stock_bin || "—"}</td><td className="p-2">{task.state === "unassigned" ? "Chưa phân công" : task.state === "in_progress" ? "Đang thực hiện" : task.state === "completed" ? "Hoàn tất" : task.state}</td><td className="p-2">{task.assigned_name_snapshot || "—"}</td><td className="p-2"><button type="button" onClick={() => setRecountReopenTarget(task)} disabled={task.state !== "completed" || recountLoading} title={task.state === "completed" ? "Mở lại task đã hoàn tất" : "Chỉ task đã hoàn tất mới có thể mở lại"} className="font-bold text-rose-700 disabled:cursor-not-allowed disabled:text-slate-400">MỞ LẠI</button></td></tr>)}
-                          </tbody></table>
+                        <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                          <div className="mb-3 flex items-center justify-between gap-3"><h4 className="font-bold text-slate-800">Danh sách task</h4><span className="text-xs text-slate-500">Hiển thị {recountTasks.length} dòng</span></div>
+                          <div className="overflow-x-auto rounded-lg border border-slate-200">
+                            <table className="w-full min-w-[760px] text-left text-xs"><thead className="bg-slate-100 text-slate-700"><tr>
+                              <th className="p-3"><input type="checkbox" aria-label="Chọn tất cả task trên trang" checked={recountTasks.length > 0 && recountTasks.every(task => recountSelectedIds.includes(task.id))} onChange={e => setRecountSelectedIds(e.target.checked ? recountTasks.map(task => task.id) : [])} /></th>
+                              <th className="p-3">SKU</th><th className="p-3">BIN</th><th className="p-3">Trạng thái tiếp nhận</th><th className="p-3">Người nhận</th><th className="p-3">Hành động</th>
+                            </tr></thead><tbody>
+                              {recountTasks.map(task => {
+                                const stateLabel = task.state === "unassigned" ? "Chưa phân công" : task.state === "assigned" ? "Đã nhận" : task.state === "in_progress" ? "Đang thực hiện" : task.state === "completed" ? "Hoàn tất" : task.state;
+                                const stateClass = task.state === "completed" ? "bg-emerald-100 text-emerald-700" : task.state === "in_progress" ? "bg-blue-100 text-blue-700" : task.state === "assigned" ? "bg-indigo-100 text-indigo-700" : "bg-amber-100 text-amber-700";
+                                return <tr key={task.id} className="border-t border-slate-100 hover:bg-slate-50">
+                                  <td className="p-3"><input type="checkbox" aria-label={`Chọn task ${task.sku}`} checked={recountSelectedIds.includes(task.id)} onChange={e => setRecountSelectedIds(ids => e.target.checked ? [...new Set([...ids, task.id])] : ids.filter(id => id !== task.id))} /></td>
+                                  <td className="p-3 font-mono font-semibold">{task.sku}</td><td className="p-3">{task.stock_bin || "—"}</td><td className="p-3"><span className={`inline-flex rounded-full px-2 py-1 font-bold ${stateClass}`}>{stateLabel}</span></td><td className="p-3">{task.assigned_name_snapshot || "—"}</td><td className="p-3"><button type="button" onClick={() => setRecountReopenTarget(task)} disabled={task.state !== "completed" || recountLoading} title={task.state === "completed" ? "Mở lại task đã hoàn tất" : "Chỉ task đã hoàn tất mới có thể mở lại"} className="font-bold text-rose-700 disabled:cursor-not-allowed disabled:text-slate-400">MỞ LẠI</button></td>
+                                </tr>;
+                              })}
+                            </tbody></table>
+                          </div>
                         </div>
                       )}
-                      <div className="flex flex-wrap items-center gap-2"><select value={recountAssignee} onChange={e => setRecountAssignee(e.target.value)} className="rounded border px-2 py-1 text-xs"><option value="">Phân công cho</option>{recountCounters.filter(c => c.status === "active").map(c => <option key={c.id} value={c.id}>{c.full_name || c.erp_name}</option>)}</select><button type="button" onClick={handleBulkAssignRecount} disabled={!recountSelectedIds.length || !recountAssignee} className="rounded bg-slate-800 px-3 py-1 text-xs font-bold text-white disabled:opacity-40">Phân công cho</button></div>
                     </div>
                   )}
                   <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-wrap gap-4 items-center justify-between">
@@ -3652,7 +3680,7 @@
           )}
 
           {accountPanelOpen && !legacyMode && (
-            <AccountManagementPanel callerRole={profile?.role} onClose={() => setAccountPanelOpen(false)} />
+            <AccountManagementPanel callerRole={profile?.role} onClose={() => { setAccountPanelOpen(false); fetchRecountCounters(); }} />
           )}
 
           {recountReopenTarget && (
