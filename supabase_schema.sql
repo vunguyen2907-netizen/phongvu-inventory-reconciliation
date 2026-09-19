@@ -974,6 +974,18 @@ begin
     if v_sku = '' or v_product_name = '' or v_first_count_status = '' then
       raise exception 'SKU, product name and first-count status are required' using errcode = '22023';
     end if;
+    if exists (
+      select 1 from jsonb_array_elements(coalesce(p_evidence, '[]'::jsonb)) e
+      where length(public.normalize_inventory_code(e.value ->> 'serial_normalized')) >= 4
+        and (public.normalize_inventory_code(v_sku) like '%' || public.normalize_inventory_code(e.value ->> 'serial_normalized') || '%'
+          or public.normalize_inventory_code(v_product_name) like '%' || public.normalize_inventory_code(e.value ->> 'serial_normalized') || '%'
+          or public.normalize_inventory_code(coalesce(v_stock_bin, '')) like '%' || public.normalize_inventory_code(e.value ->> 'serial_normalized') || '%'
+          or public.normalize_inventory_code(coalesce(v_first_count_bin, '')) like '%' || public.normalize_inventory_code(e.value ->> 'serial_normalized') || '%'
+          or public.normalize_inventory_code(v_first_count_status) like '%' || public.normalize_inventory_code(e.value ->> 'serial_normalized') || '%'
+          or public.normalize_inventory_code(v_first_counter_erp_name) like '%' || public.normalize_inventory_code(e.value ->> 'serial_normalized') || '%')
+    ) then
+      raise exception 'Task display fields cannot contain protected serial codes' using errcode = '22023';
+    end if;
 
     select * into v_profile
     from public.profiles
@@ -1062,16 +1074,24 @@ begin
     end loop;
   end loop;
 
+  delete from public.recount_tasks t
+  where t.batch_id = v_batch.id
+    and t.state in ('unassigned', 'assigned', 'reopened')
+    and not exists (
+      select 1 from jsonb_array_elements(coalesce(p_tasks, '[]'::jsonb)) x
+      where trim(coalesce(x.value ->> 'source_detail_row_id', '')) = t.source_detail_row_id
+    );
+
   -- Compute the final-four mask server-side. A colliding suffix gets the first
   -- differing four-character window; groups containing a short code remain
   -- fully masked so a complete short secret cannot be inferred.
   with refs as (
-    select t.id, coalesce(s.expected_serial_normalized, s.first_scanned_code_normalized) as reference
+    select t.id, t.sku, coalesce(s.expected_serial_normalized, s.first_scanned_code_normalized) as reference
     from public.recount_tasks t
     left join public.recount_task_secrets s on s.task_id = t.id
     where t.batch_id = v_batch.id
   ), groups as (
-    select reference,
+    select sku, reference,
            right(reference, 4) as suffix,
            char_length(reference) as reference_length
     from refs
@@ -1081,20 +1101,20 @@ begin
     from refs r
     join lateral generate_series(1, greatest(char_length(r.reference), 1)) as positions(pos) on true
     where r.reference is not null and r.reference <> ''
-      and (select count(*) from groups g where g.suffix = right(r.reference, 4)) > 1
+      and (select count(*) from groups g where g.sku = r.sku and g.suffix = right(r.reference, 4)) > 1
       and not exists (
-        select 1 from groups g where g.suffix = right(r.reference, 4) and g.reference_length <= 4
+        select 1 from groups g where g.sku = r.sku and g.suffix = right(r.reference, 4) and g.reference_length <= 4
       )
       and (select count(distinct substr(g.reference, pos, 1))
-           from groups g where g.suffix = right(r.reference, 4)) > 1
+           from groups g where g.sku = r.sku and g.suffix = right(r.reference, 4)) > 1
     group by r.id
   )
   update public.recount_tasks t
   set masked_reference = case
     when refs.reference is null or refs.reference = '' then '*'
     when char_length(refs.reference) <= 4 then repeat('*', char_length(refs.reference))
-    when not exists (select 1 from groups g where g.suffix = right(refs.reference, 4) and g.reference_length <= 4)
-         and (select count(*) from groups g where g.suffix = right(refs.reference, 4)) > 1
+    when not exists (select 1 from groups g where g.sku = refs.sku and g.suffix = right(refs.reference, 4) and g.reference_length <= 4)
+         and (select count(*) from groups g where g.sku = refs.sku and g.suffix = right(refs.reference, 4)) > 1
       then public.mask_inventory_code(refs.reference, collision_windows.first_difference, 4)
     else public.mask_inventory_code(refs.reference, null, 4)
   end
@@ -1150,6 +1170,9 @@ begin
   if coalesce(array_length(p_task_ids, 1), 0) = 0
      or (select count(*) from unnest(p_task_ids)) <> (select count(distinct id) from unnest(p_task_ids) id) then
     raise exception 'Task IDs must be non-empty and unique' using errcode = '22023';
+  end if;
+  if array_length(p_task_ids, 1) > 500 then
+    raise exception 'At most 500 tasks may be assigned per call' using errcode = '22023';
   end if;
   select * into v_target from public.profiles where id = p_user_id for update;
   if not found or v_target.status <> 'active' or v_target.role <> 'counter' then
