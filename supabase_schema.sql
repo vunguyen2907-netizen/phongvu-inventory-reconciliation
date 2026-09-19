@@ -1255,7 +1255,7 @@ declare
   v_limit integer := greatest(1, least(coalesce(p_page_size, 50), 500));
   v_page integer := greatest(1, coalesce(p_page, 1));
 begin
-  select * into v_actor from public.profiles where id = (select auth.uid());
+  select * into v_actor from public.profiles p where p.id = (select auth.uid());
   if not found or v_actor.status <> 'active' or v_actor.role not in ('manager', 'admin') then
     raise exception 'Active manager or admin profile required' using errcode = '42501';
   end if;
