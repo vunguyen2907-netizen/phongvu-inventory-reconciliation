@@ -136,6 +136,20 @@ class SecureRecountSchemaContractTests(unittest.TestCase):
             sql,
         )
 
+    def test_counter_contract_exposes_masked_list_and_assigned_only_submit_rpc(self):
+        sql = self.migration().lower()
+        self.assertIn("create or replace function public.counter_list_recount_tasks(", sql)
+        self.assertIn("create or replace function public.counter_submit_recount_attempt(", sql)
+        submit = sql.split("create or replace function public.counter_submit_recount_attempt(", 1)[1]
+        self.assertIn("p_task_id uuid", submit)
+        self.assertIn("p_scanned_value text", submit)
+        self.assertIn("t.assigned_user_id = v_actor.id", submit)
+        self.assertIn("insert into public.recount_attempts", submit)
+        self.assertIn("insert into public.audit_logs", submit)
+        self.assertIn("public.mask_inventory_code(v_scan)", submit)
+        self.assertIn("grant execute on function public.counter_list_recount_tasks(uuid, public.recount_task_state) to authenticated;", sql)
+        self.assertIn("grant execute on function public.counter_submit_recount_attempt(uuid, text) to authenticated;", sql)
+
     def test_manager_list_qualifies_profile_id_against_returns_table_id(self):
         sql = self.migration().lower()
         body = sql.split("create or replace function public.manager_list_recount_tasks(", 1)[1]

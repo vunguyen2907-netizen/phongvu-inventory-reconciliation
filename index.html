@@ -1391,6 +1391,8 @@
       const [recountCountersLoading, setRecountCountersLoading] = useState(false);
       const [counterRecountTasks, setCounterRecountTasks] = useState([]);
       const [counterRecountLoading, setCounterRecountLoading] = useState(false);
+      const [counterScanValues, setCounterScanValues] = useState({});
+      const [counterSubmitId, setCounterSubmitId] = useState("");
       const [recountSelectedIds, setRecountSelectedIds] = useState([]);
       const [recountAssignee, setRecountAssignee] = useState("");
       const [recountFilters, setRecountFilters] = useState({ assignee: "", state: "", taskType: "", sku: "", bin: "" });
@@ -1517,18 +1519,47 @@
         try {
           const client = await getReadySupabaseClient();
           if (!client) return;
-          const { data, error } = await client
-            .from('recount_tasks')
-            .select('id, batch_id, sku, product_name, stock_bin, first_count_bin, first_count_status, first_counter_name_snapshot, task_type, masked_reference, state, resolution, reason, updated_at')
-            .eq('assigned_user_id', session.user.id)
-            .order('updated_at', { ascending: false });
+          const { data, error } = await client.rpc('counter_list_recount_tasks', {
+            p_batch_id: null,
+            p_state: null
+          });
           if (error) throw error;
           setCounterRecountTasks(Array.isArray(data) ? data : []);
+          setCounterScanValues(previous => Object.fromEntries((data || []).map(task => [task.id, previous[task.id] || ""])));
         } catch (e) {
           console.error('Không thể tải danh sách kiểm lần 2 của counter:', e);
           setCounterRecountTasks([]);
         } finally {
           setCounterRecountLoading(false);
+        }
+      };
+
+      const submitCounterRecountTask = async (task) => {
+        const scannedCode = String(counterScanValues[task.id] || "").trim();
+        if (!scannedCode || counterSubmitId) return;
+        setCounterSubmitId(task.id);
+        try {
+          const client = await getReadySupabaseClient();
+          if (!client) throw new Error("Chưa cấu hình Supabase Auth.");
+          const { data, error } = await client.rpc("counter_submit_recount_attempt", {
+            p_task_id: task.id,
+            p_scanned_value: scannedCode
+          });
+          if (error) throw error;
+          setCounterScanValues(previous => ({ ...previous, [task.id]: "" }));
+          await fetchCounterRecountTasks();
+          const result = data?.result;
+          if (result === "duplicate_first_count") {
+            alert("Serial đã tồn tại trong kết quả lần 1. Vui lòng kiểm tra lại mã hoặc xác nhận theo hướng dẫn quản lý.");
+          } else if (result === "wrong_sku" || result === "unknown_serial") {
+            alert("Mã serial chưa khớp sản phẩm. Task vẫn đang thực hiện, hãy quét lại serial đúng.");
+          } else {
+            alert("✅ Đã ghi nhận kết quả kiểm lần 2.");
+          }
+        } catch (e) {
+          alert("Lỗi ghi nhận kiểm lần 2: " + e.message);
+        } finally {
+          setCounterSubmitId("");
         }
       };
 
@@ -3264,7 +3295,7 @@
                         <div className="mt-4 overflow-x-auto rounded-lg border border-slate-200">
                           <table className="w-full min-w-[900px] text-left text-xs">
                             <thead className="bg-slate-100 text-slate-700"><tr>
-                              <th className="p-3">STT</th><th className="p-3">SKU</th><th className="p-3">Tên sản phẩm</th><th className="p-3">Serial tồn (đã che)</th><th className="p-3">BIN tồn</th><th className="p-3">Kết quả lần 1</th><th className="p-3">Trạng thái</th>
+                              <th className="p-3">STT</th><th className="p-3">SKU</th><th className="p-3">Tên sản phẩm</th><th className="p-3">Serial tồn (đã che)</th><th className="p-3">BIN tồn</th><th className="p-3">Kết quả lần 1</th><th className="p-3">Serial bổ sung</th><th className="p-3">Trạng thái</th><th className="p-3">Xác nhận</th>
                             </tr></thead>
                             <tbody className="divide-y divide-slate-100">
                               {counterRecountTasks.map((task, index) => {
@@ -3276,7 +3307,9 @@
                                   <td className="p-3 font-mono font-semibold text-brand-700">{task.masked_reference || "*"}</td>
                                   <td className="p-3">{task.stock_bin || task.first_count_bin || "—"}</td>
                                   <td className="p-3">{task.first_count_status || "—"}</td>
+                                  <td className="p-2"><input type="text" inputMode="text" value={counterScanValues[task.id] || ""} onChange={event => setCounterScanValues(previous => ({ ...previous, [task.id]: event.target.value }))} disabled={task.state === "completed" || counterSubmitId === task.id} placeholder="Quét serial…" aria-label={`Serial bổ sung cho SKU ${task.sku}`} className="w-44 rounded-lg border border-slate-300 px-2 py-1.5 font-mono text-xs focus:border-brand-500 focus:outline-none disabled:bg-slate-100" /></td>
                                   <td className="p-3"><span className="rounded-full bg-indigo-50 px-2 py-1 font-bold text-indigo-700">{stateLabel}</span></td>
+                                  <td className="p-2"><button type="button" onClick={() => submitCounterRecountTask(task)} disabled={task.state === "completed" || !String(counterScanValues[task.id] || "").trim() || counterSubmitId === task.id} aria-busy={counterSubmitId === task.id} className="rounded-lg bg-brand-600 px-3 py-1.5 text-[11px] font-bold text-white disabled:cursor-not-allowed disabled:opacity-40">{counterSubmitId === task.id ? "Đang lưu…" : "Kiểm đếm xong"}</button></td>
                                 </tr>;
                               })}
                             </tbody>
