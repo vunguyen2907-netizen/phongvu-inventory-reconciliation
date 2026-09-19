@@ -3292,6 +3292,7 @@
                       ) : counterRecountTasks.length === 0 ? (
                         <div className="mt-4 rounded-lg border border-dashed border-slate-300 bg-slate-50 p-5 text-center text-sm text-slate-500">Chưa có task kiểm lần 2 được phân công cho tài khoản này.</div>
                       ) : (
+                        <>
                         <div className="mt-4 space-y-3 md:hidden">
                           {counterRecountTasks.map((task, index) => {
                             const stateLabel = task.state === "assigned" ? "Đã nhận" : task.state === "in_progress" ? "Đang thực hiện" : task.state === "completed" ? "Hoàn tất" : task.state || "Chưa phân công";
@@ -3326,6 +3327,7 @@
                             </tbody>
                           </table>
                         </div>
+                        </>
                       )}
                     </div>
                   )}
