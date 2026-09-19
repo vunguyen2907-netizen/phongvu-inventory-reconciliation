@@ -1370,6 +1370,14 @@
       const [authActionMessage, setAuthActionMessage] = useState("");
       const [authActionPending, setAuthActionPending] = useState(false);
       const [accountPanelOpen, setAccountPanelOpen] = useState(false);
+      const [appNotice, setAppNotice] = useState("");
+      const showNotice = (message) => setAppNotice(String(message || ""));
+
+      useEffect(() => {
+        if (!appNotice) return undefined;
+        const timer = setTimeout(() => setAppNotice(""), 4500);
+        return () => clearTimeout(timer);
+      }, [appNotice]);
 
       // Raw Uploaded Files States
       const [rawStockData, setRawStockData] = useState([]);
@@ -1550,14 +1558,14 @@
           await fetchCounterRecountTasks();
           const result = data?.result;
           if (result === "duplicate_first_count") {
-            alert("Serial đã tồn tại trong kết quả lần 1. Vui lòng kiểm tra lại mã hoặc xác nhận theo hướng dẫn quản lý.");
+            showNotice("Serial đã tồn tại trong kết quả lần 1. Vui lòng kiểm tra lại mã hoặc xác nhận theo hướng dẫn quản lý.");
           } else if (result === "wrong_sku" || result === "unknown_serial") {
-            alert("Mã serial chưa khớp sản phẩm. Task vẫn đang thực hiện, hãy quét lại serial đúng.");
+            showNotice("Mã serial chưa khớp sản phẩm. Task vẫn đang thực hiện, hãy quét lại serial đúng.");
           } else {
-            alert("✅ Đã ghi nhận kết quả kiểm lần 2.");
+            showNotice("✅ Đã ghi nhận kết quả kiểm lần 2.");
           }
         } catch (e) {
-          alert("Lỗi ghi nhận kiểm lần 2: " + e.message);
+          showNotice("Lỗi ghi nhận kiểm lần 2: " + e.message);
         } finally {
           setCounterSubmitId("");
         }
@@ -1591,7 +1599,7 @@
           setRecountTasks(Array.isArray(data) ? data : []);
           setRecountPage(page);
           setRecountSelectedIds([]);
-        } catch (e) { alert('Lỗi tải danh sách kiểm lần 2: ' + e.message); }
+        } catch (e) { showNotice('Lỗi tải danh sách kiểm lần 2: ' + e.message); }
         finally { setRecountLoading(false); }
       };
 
@@ -1617,7 +1625,7 @@
       const handleCreateRecountBatch = async () => {
         if (recountLoading) return;
         if (!supabaseClient || !activeSessionId || dfCheckDetail.length === 0) {
-          alert('Vui lòng lưu đợt kiểm kê lên Supabase trước khi tạo danh sách kiểm lần 2.');
+          showNotice('Vui lòng lưu đợt kiểm kê lên Supabase trước khi tạo danh sách kiểm lần 2.');
           return;
         }
         setRecountLoading(true);
@@ -1639,8 +1647,8 @@
           setRecountPage(1);
           await fetchRecountTasks(1, summary.batch_id);
           await refreshRecountSummary(summary.batch_id);
-          alert(`✅ Đã tạo danh sách kiểm lần 2 (${summary.task_count || draft.tasks.length} task).`);
-        } catch (e) { alert('Lỗi tạo danh sách kiểm lần 2: ' + e.message); }
+          showNotice(`✅ Đã tạo danh sách kiểm lần 2 (${summary.task_count || draft.tasks.length} task).`);
+        } catch (e) { showNotice('Lỗi tạo danh sách kiểm lần 2: ' + e.message); }
         finally { setRecountLoading(false); }
       };
 
@@ -1660,8 +1668,8 @@
           await fetchRecountTasks(recountPage);
           await refreshRecountSummary();
           setRecountAssignee("");
-          alert('✅ Đã phân công các dòng đã chọn.');
-        } catch (e) { alert('Lỗi phân công kiểm lần 2: ' + e.message); }
+          showNotice('✅ Đã phân công các dòng đã chọn.');
+        } catch (e) { showNotice('Lỗi phân công kiểm lần 2: ' + e.message); }
         finally { setRecountLoading(false); }
       };
 
@@ -1686,7 +1694,7 @@
           setRecountReopenConfirmation("");
           await fetchRecountTasks(recountPage);
           await refreshRecountSummary();
-        } catch (e) { alert('Lỗi mở lại task: ' + e.message); }
+        } catch (e) { showNotice('Lỗi mở lại task: ' + e.message); }
         finally { setRecountLoading(false); }
       };
 
@@ -1714,7 +1722,7 @@
       // --- RECONCILIATION ALGORITHM ---
       const handleProcessFiles = (stockRowsRaw, erpRowsRaw) => {
         if (!stockRowsRaw || stockRowsRaw.length === 0 || !erpRowsRaw || erpRowsRaw.length === 0) {
-          alert("Vui lòng tải lên cả 2 file trước khi bấm đối soát!");
+          showNotice("Vui lòng tải lên cả 2 file trước khi bấm đối soát!");
           return;
         }
 
@@ -1747,7 +1755,7 @@
         const executionMetadataIndex = buildExecutionMetadataIndex(erpSourceRows);
 
         if (stockRows.length === 0 || erpRows.length === 0) {
-          alert("Không khớp được cột SKU/Mã sản phẩm trên 2 file. Vui lòng kiểm tra lại file!");
+          showNotice("Không khớp được cột SKU/Mã sản phẩm trên 2 file. Vui lòng kiểm tra lại file!");
           return;
         }
 
@@ -1982,9 +1990,9 @@
             setLastSavedTime(new Date().toLocaleTimeString('vi-VN'));
             setIsDirty(false);
             fetchSavedSessions();
-            if (showNotice) alert("✅ Đã lưu thành công đợt kiểm kê lên Supabase!");
+            showNotice("✅ Đã lưu thành công đợt kiểm kê lên Supabase!");
           }
-        } catch (e) { alert("Lỗi khi lưu Supabase: " + e.message); }
+        } catch (e) { showNotice("Lỗi khi lưu Supabase: " + e.message); }
       };
 
       const handleLoadSession = async (id) => {
@@ -2013,7 +2021,7 @@
             setLastSavedTime(new Date(data.updated_at).toLocaleTimeString('vi-VN'));
             setIsDirty(false);
           }
-        } catch (e) { alert("Lỗi tải đợt kiểm kê: " + e.message); }
+        } catch (e) { showNotice("Lỗi tải đợt kiểm kê: " + e.message); }
       };
 
       // --- MONTHLY ARCHIVE SAVE ---
@@ -2066,10 +2074,10 @@
                 .in('id', oldIds);
               if (pruneError) console.error("Không thể xóa archive cũ:", pruneError);
             }
-            alert(`✅ Đã lưu báo cáo ${label} thành công!`);
+            showNotice(`✅ Đã lưu báo cáo ${label} thành công!`);
             fetchMonthlyArchives();
-          } else { alert("Lỗi lưu archive: " + error.message); }
-        } catch (e) { alert("Lỗi: " + e.message); }
+          } else { showNotice("Lỗi lưu archive: " + error.message); }
+        } catch (e) { showNotice("Lỗi: " + e.message); }
       };
 
       const handleLoadMonthlyArchive = async (yearMonth) => {
@@ -2099,7 +2107,7 @@
           setIsDirty(false);
           setActiveTab("variance-summary");
         } catch (e) {
-          alert("Lỗi tải báo cáo tháng: " + e.message);
+          showNotice("Lỗi tải báo cáo tháng: " + e.message);
         }
       };
 
@@ -2172,7 +2180,7 @@
 
       const confirmClearSurplusSerial = () => {
         if (!clearReasonInput.trim() || !pendingClearSerial) {
-          alert("Vui lòng nhập lý do loại bỏ!");
+          showNotice("Vui lòng nhập lý do loại bỏ!");
           return;
         }
         const { rowId, sku, serial, l2Added, removalKind } = pendingClearSerial;
@@ -2516,7 +2524,7 @@
       const openExplanationReport = () => {
         const discrepancyRows = dfMainRows.filter(row => row.diff !== 0);
         if (discrepancyRows.length === 0) {
-          alert("Không có SKU chênh lệch tồn để lập biên bản giải trình.");
+          showNotice("Không có SKU chênh lệch tồn để lập biên bản giải trình.");
           return;
         }
         setProposedActions(previous => Object.fromEntries(
@@ -2813,6 +2821,12 @@
 
       return (
         <div className="flex h-screen overflow-hidden">
+          {appNotice && (
+            <div className="fixed right-4 top-4 z-[100] flex max-w-[min(92vw,32rem)] items-start gap-3 rounded-xl border border-slate-200 bg-slate-900 px-4 py-3 text-sm font-medium text-white shadow-2xl" role="status" aria-live="polite">
+              <span className="flex-1 whitespace-pre-wrap break-words">{appNotice}</span>
+              <button type="button" onClick={() => setAppNotice("")} className="shrink-0 text-slate-300 hover:text-white" aria-label="Đóng thông báo">×</button>
+            </div>
+          )}
           {/* SIDEBAR */}
           {isManager && !sidebarCollapsed && <aside className="w-80 shrink-0 bg-slate-900 text-slate-100 flex flex-col justify-between p-4 shadow-xl overflow-y-auto">
             <div>
