@@ -1400,6 +1400,7 @@
       const [counterRecountTasks, setCounterRecountTasks] = useState([]);
       const [counterRecountLoading, setCounterRecountLoading] = useState(false);
       const [counterScanValues, setCounterScanValues] = useState({});
+      const [counterNoteValues, setCounterNoteValues] = useState({});
       const [counterSubmitId, setCounterSubmitId] = useState("");
       const [recountSelectedIds, setRecountSelectedIds] = useState([]);
       const [recountAssignee, setRecountAssignee] = useState("");
@@ -1534,6 +1535,7 @@
           if (error) throw error;
           setCounterRecountTasks(Array.isArray(data) ? data : []);
           setCounterScanValues(previous => Object.fromEntries((data || []).map(task => [task.id, previous[task.id] || ""])));
+          setCounterNoteValues(previous => Object.fromEntries((data || []).map(task => [task.id, previous[task.id] || task.reason || ""])));
         } catch (e) {
           console.error('Không thể tải danh sách kiểm lần 2 của counter:', e);
           setCounterRecountTasks([]);
@@ -1544,17 +1546,20 @@
 
       const submitCounterRecountTask = async (task) => {
         const scannedCode = String(counterScanValues[task.id] || "").trim();
-        if (!scannedCode || counterSubmitId) return;
+        const note = String(counterNoteValues[task.id] || "").trim();
+        if ((!scannedCode && !note) || counterSubmitId) return;
         setCounterSubmitId(task.id);
         try {
           const client = await getReadySupabaseClient();
           if (!client) throw new Error("Chưa cấu hình Supabase Auth.");
           const { data, error } = await client.rpc("counter_submit_recount_attempt", {
             p_task_id: task.id,
-            p_scanned_value: scannedCode
+            p_scanned_value: scannedCode,
+            p_note: note || null
           });
           if (error) throw error;
           setCounterScanValues(previous => ({ ...previous, [task.id]: "" }));
+          setCounterNoteValues(previous => ({ ...previous, [task.id]: "" }));
           await fetchCounterRecountTasks();
           const result = data?.result;
           if (result === "duplicate_first_count") {
@@ -1699,7 +1704,7 @@
       };
 
       useEffect(() => {
-        if (!recountBatch?.batch_id || activeTab !== 'second-count') return;
+        if (!recountBatch?.batch_id || !['second-count', 'second-count-report'].includes(activeTab)) return;
         fetchRecountTasks(1);
         refreshRecountSummary();
       }, [recountBatch?.batch_id, recountFilters, activeTab]);
@@ -2681,6 +2686,17 @@
         setExplanationModalOpen(false);
       };
 
+      const recountNotesBySku = useMemo(() => {
+        const notes = {};
+        (recountTasks || []).forEach(task => {
+          const note = String(task.reason || "").trim();
+          if (!note) return;
+          if (!notes[task.sku]) notes[task.sku] = [];
+          if (!notes[task.sku].includes(note)) notes[task.sku].push(note);
+        });
+        return notes;
+      }, [recountTasks]);
+
       // --- DERIVED TAB 4 SUMMARY ROWS ---
       const dfMainRows = useMemo(() => {
         if (dfCountL2.length === 0 || dfCheckDetail.length === 0) return [];
@@ -2710,9 +2726,10 @@
 
           const l2Note = r.note || "";
           const dtNote = (detailNotesBySku[sku] || []).join(" | ");
+          const recountNote = (recountNotesBySku[sku] || []).join(" | ");
           // Cùng một ghi chú có thể được lưu ở cả chi tiết serial và kiểm đếm L2.
           // Chuẩn hóa và loại trùng trước khi đưa lên báo cáo.
-          const combinedNote = dedupeReportNotes(dtNote, l2Note);
+          const combinedNote = dedupeReportNotes(dtNote, l2Note, recountNote);
           // Ghi chú xử lý vẫn được giữ ở dữ liệu chi tiết để truy vết,
           // nhưng báo cáo tổng hợp chỉ hiển thị ghi chú khi SKU còn lệch tồn.
           const reportNote = diff !== 0 ? combinedNote : "";
@@ -2729,7 +2746,7 @@
             sku, name, uom, qtySys, qtyL1, qtyL2, totalActual, diff, chkStatus, note: reportNote
           };
         });
-      }, [dfCountL2, dfCheckDetail]);
+      }, [dfCountL2, dfCheckDetail, recountNotesBySku]);
 
       // Filtered Views
       const filteredDetailRows = useMemo(() => {
@@ -3314,7 +3331,9 @@
                               <div className="flex items-start justify-between gap-3"><div><p className="text-[11px] font-semibold text-slate-500">STT {index + 1} · SKU</p><p className="font-mono text-sm font-bold text-slate-900">{task.sku}</p></div><span className="rounded-full bg-indigo-50 px-2 py-1 text-[11px] font-bold text-indigo-700">{stateLabel}</span></div>
                               <p className="mt-2 text-sm font-semibold text-slate-800">{task.product_name}</p>
                               <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs"><div><dt className="text-slate-500">Serial tồn</dt><dd className="font-mono font-bold text-brand-700">{task.masked_reference || "*"}</dd></div><div><dt className="text-slate-500">BIN tồn</dt><dd>{task.stock_bin || task.first_count_bin || "—"}</dd></div><div className="col-span-2"><dt className="text-slate-500">Kết quả lần 1</dt><dd>{task.first_count_status || "—"}</dd></div></dl>
-                              <div className="mt-3 flex gap-2"><input type="text" inputMode="text" value={counterScanValues[task.id] || ""} onChange={event => setCounterScanValues(previous => ({ ...previous, [task.id]: event.target.value }))} disabled={task.state === "completed" || counterSubmitId === task.id} placeholder="Quét serial…" aria-label={`Serial bổ sung cho SKU ${task.sku}`} className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-sm focus:border-brand-500 focus:outline-none disabled:bg-slate-100" /><button type="button" onClick={() => submitCounterRecountTask(task)} disabled={task.state === "completed" || !String(counterScanValues[task.id] || "").trim() || counterSubmitId === task.id} aria-busy={counterSubmitId === task.id} className="shrink-0 rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-40">{counterSubmitId === task.id ? "Đang lưu…" : "Xác nhận"}</button></div>
+                              <input type="text" inputMode="text" value={counterScanValues[task.id] || ""} onChange={event => setCounterScanValues(previous => ({ ...previous, [task.id]: event.target.value }))} disabled={task.state === "completed" || counterSubmitId === task.id} placeholder="Quét serial…" aria-label={`Serial bổ sung cho SKU ${task.sku}`} className="mt-3 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-sm focus:border-brand-500 focus:outline-none disabled:bg-slate-100" />
+                              <textarea rows="2" value={counterNoteValues[task.id] || ""} onChange={event => setCounterNoteValues(previous => ({ ...previous, [task.id]: event.target.value }))} disabled={task.state === "completed" || counterSubmitId === task.id} placeholder="Ghi chú / lý do (ví dụ: Đã xuất cho đơn...)" aria-label={`Ghi chú cho SKU ${task.sku}`} className="mt-2 w-full resize-y rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-brand-500 focus:outline-none disabled:bg-slate-100" />
+                              <button type="button" onClick={() => submitCounterRecountTask(task)} disabled={task.state === "completed" || (!String(counterScanValues[task.id] || "").trim() && !String(counterNoteValues[task.id] || "").trim()) || counterSubmitId === task.id} aria-busy={counterSubmitId === task.id} className="mt-2 w-full rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-40">{counterSubmitId === task.id ? "Đang lưu…" : "Xác nhận"}</button>
                             </article>;
                           })}
                         </div>
@@ -3333,9 +3352,9 @@
                                   <td className="p-3 font-mono font-semibold text-brand-700">{task.masked_reference || "*"}</td>
                                   <td className="p-3">{task.stock_bin || task.first_count_bin || "—"}</td>
                                   <td className="p-3">{task.first_count_status || "—"}</td>
-                                  <td className="p-2"><input type="text" inputMode="text" value={counterScanValues[task.id] || ""} onChange={event => setCounterScanValues(previous => ({ ...previous, [task.id]: event.target.value }))} disabled={task.state === "completed" || counterSubmitId === task.id} placeholder="Quét serial…" aria-label={`Serial bổ sung cho SKU ${task.sku}`} className="w-44 rounded-lg border border-slate-300 px-2 py-1.5 font-mono text-xs focus:border-brand-500 focus:outline-none disabled:bg-slate-100" /></td>
+                                  <td className="p-2"><div className="space-y-1"><input type="text" inputMode="text" value={counterScanValues[task.id] || ""} onChange={event => setCounterScanValues(previous => ({ ...previous, [task.id]: event.target.value }))} disabled={task.state === "completed" || counterSubmitId === task.id} placeholder="Quét serial…" aria-label={`Serial bổ sung cho SKU ${task.sku}`} className="w-44 rounded-lg border border-slate-300 px-2 py-1.5 font-mono text-xs focus:border-brand-500 focus:outline-none disabled:bg-slate-100" /><input type="text" value={counterNoteValues[task.id] || ""} onChange={event => setCounterNoteValues(previous => ({ ...previous, [task.id]: event.target.value }))} disabled={task.state === "completed" || counterSubmitId === task.id} placeholder="Ghi chú / lý do…" aria-label={`Ghi chú cho SKU ${task.sku}`} className="w-44 rounded-lg border border-slate-300 px-2 py-1.5 text-xs focus:border-brand-500 focus:outline-none disabled:bg-slate-100" /></div></td>
                                   <td className="p-3"><span className="rounded-full bg-indigo-50 px-2 py-1 font-bold text-indigo-700">{stateLabel}</span></td>
-                                  <td className="p-2"><button type="button" onClick={() => submitCounterRecountTask(task)} disabled={task.state === "completed" || !String(counterScanValues[task.id] || "").trim() || counterSubmitId === task.id} aria-busy={counterSubmitId === task.id} className="rounded-lg bg-brand-600 px-3 py-1.5 text-[11px] font-bold text-white disabled:cursor-not-allowed disabled:opacity-40">{counterSubmitId === task.id ? "Đang lưu…" : "Kiểm đếm xong"}</button></td>
+                                  <td className="p-2"><button type="button" onClick={() => submitCounterRecountTask(task)} disabled={task.state === "completed" || (!String(counterScanValues[task.id] || "").trim() && !String(counterNoteValues[task.id] || "").trim()) || counterSubmitId === task.id} aria-busy={counterSubmitId === task.id} className="rounded-lg bg-brand-600 px-3 py-1.5 text-[11px] font-bold text-white disabled:cursor-not-allowed disabled:opacity-40">{counterSubmitId === task.id ? "Đang lưu…" : "Kiểm đếm xong"}</button></td>
                                 </tr>;
                               })}
                             </tbody>
@@ -3529,10 +3548,20 @@
 
               {/* TAB 4: BÁO CÁO KIỂM LẦN 2 */}
               {activeTab === "second-count-report" && (
-                <div className="space-y-4 max-w-4xl mx-auto">
-                  <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                <div className="space-y-4">
+                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
                     <h3 className="text-base font-bold text-slate-800">Báo cáo kiểm lần 2</h3>
-                    <p className="mt-2 text-xs text-slate-500">Báo cáo kết quả đếm lại sẽ hiển thị tại đây khi một đợt kiểm đếm được xác nhận.</p>
+                    <p className="mt-1 text-xs text-slate-500">Ghi chú từ counter được lưu theo từng task và tổng hợp theo SKU.</p>
+                  </div>
+                  <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
+                    <table className="w-full min-w-[900px] text-left text-xs">
+                      <thead className="bg-slate-100 font-bold text-slate-700"><tr><th className="p-3">SKU</th><th className="p-3">Tên sản phẩm</th><th className="p-3">Kết quả lần 1</th><th className="p-3">Trạng thái lần 2</th><th className="p-3">Người kiểm lần 2</th><th className="p-3">Ghi chú / Lý do</th></tr></thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {recountTasks.length === 0 ? <tr><td colSpan="6" className="p-6 text-center text-slate-500">Chưa có dữ liệu kiểm lần 2.</td></tr> : recountTasks.map(task => (
+                          <tr key={task.id} className="align-top hover:bg-slate-50"><td className="p-3 font-mono font-semibold">{task.sku}</td><td className="p-3 max-w-sm whitespace-normal break-words">{task.product_name}</td><td className="p-3">{task.first_count_status || "—"}</td><td className="p-3">{task.state === "completed" ? "Đã hoàn tất" : task.state === "in_progress" ? "Đang thực hiện" : task.state}</td><td className="p-3">{task.completed_by_name_snapshot || task.assigned_name_snapshot || "—"}</td><td className="p-3 whitespace-pre-wrap break-words text-slate-700">{task.reason || "—"}</td></tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               )}

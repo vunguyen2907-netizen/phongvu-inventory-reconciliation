@@ -1397,14 +1397,17 @@ begin
 end;
 $$;
 
--- Record one scan for an assigned task.  Exact serials are compared only in
+-- Record one scan/note for an assigned task. Exact serials are compared only in
 -- this security-definer transaction and are never returned to the counter.
 -- A scan already present in first-count evidence is reported as duplicate;
 -- only a verified expected serial (or a confirmed surplus re-scan) completes
 -- the task.  The version check makes retries harmless for a completed task.
+drop function if exists public.counter_submit_recount_attempt(uuid, text);
+drop function if exists public.counter_submit_recount_attempt(uuid, text, text);
 create or replace function public.counter_submit_recount_attempt(
   p_task_id uuid,
-  p_scanned_value text
+  p_scanned_value text,
+  p_note text default null
 )
 returns jsonb
 language plpgsql security definer
@@ -1415,6 +1418,7 @@ declare
   v_task public.recount_tasks%rowtype;
   v_secret public.recount_task_secrets%rowtype;
   v_scan text := public.normalize_inventory_code(p_scanned_value);
+  v_note text := left(trim(coalesce(p_note, '')), 2000);
   v_result public.recount_attempt_result;
   v_resolution public.recount_resolution;
   v_state public.recount_task_state;
@@ -1428,8 +1432,8 @@ begin
   if not found or v_actor.status <> 'active' or v_actor.role <> 'counter' then
     raise exception 'Active counter profile required' using errcode = '42501';
   end if;
-  if p_task_id is null or v_scan = '' then
-    raise exception 'Task and scanned serial are required' using errcode = '22023';
+  if p_task_id is null or (v_scan = '' and v_note = '') then
+    raise exception 'Task requires a serial or note' using errcode = '22023';
   end if;
   if char_length(v_scan) > 256 then
     raise exception 'Scanned serial is too long' using errcode = '22023';
@@ -1450,10 +1454,17 @@ begin
   end if;
 
   select * into v_secret from public.recount_task_secrets s where s.task_id = v_task.id;
-  v_masked := public.mask_inventory_code(v_scan);
-  v_hash := encode(extensions.digest(v_scan, 'sha256'), 'hex');
+  if v_scan = '' then
+    v_result := 'not_found';
+    v_resolution := 'not_found';
+    v_state := 'completed';
+    v_masked := null;
+    v_hash := null;
+  else
+    v_masked := public.mask_inventory_code(v_scan);
+    v_hash := encode(extensions.digest(v_scan, 'sha256'), 'hex');
 
-  if v_secret.expected_serial_normalized is not null
+    if v_secret.expected_serial_normalized is not null
      and v_scan = v_secret.expected_serial_normalized then
     v_result := 'matched';
     v_resolution := 'matched';
@@ -1480,10 +1491,11 @@ begin
     v_result := case when v_same_batch then 'duplicate_first_count' else 'wrong_sku' end;
     v_resolution := case when v_same_batch then 'mistaken_first_scan' else 'not_found' end;
     v_state := 'in_progress';
-  else
-    v_result := 'unknown_serial';
-    v_resolution := 'not_found';
-    v_state := 'in_progress';
+    else
+      v_result := 'unknown_serial';
+      v_resolution := 'not_found';
+      v_state := 'in_progress';
+    end if;
   end if;
 
   insert into public.recount_attempts (
@@ -1491,12 +1503,13 @@ begin
     scanned_value_masked, result, reason
   ) values (
     v_task.id, v_actor.id, v_actor.full_name, v_hash, v_masked,
-    v_result, null
+    v_result, nullif(v_note, '')
   );
 
   update public.recount_tasks
   set state = v_state,
       resolution = case when v_state = 'completed' then v_resolution else null end,
+      reason = case when v_note <> '' then v_note else v_task.reason end,
       completed_by = case when v_state = 'completed' then v_actor.id else null end,
       completed_by_name_snapshot = case when v_state = 'completed' then v_actor.full_name else null end,
       completed_at = case when v_state = 'completed' then now() else null end,
@@ -1523,6 +1536,6 @@ end;
 $$;
 
 revoke all on function public.counter_list_recount_tasks(uuid, public.recount_task_state) from public, anon, authenticated;
-revoke all on function public.counter_submit_recount_attempt(uuid, text) from public, anon, authenticated;
+revoke all on function public.counter_submit_recount_attempt(uuid, text, text) from public, anon, authenticated;
 grant execute on function public.counter_list_recount_tasks(uuid, public.recount_task_state) to authenticated;
-grant execute on function public.counter_submit_recount_attempt(uuid, text) to authenticated;
+grant execute on function public.counter_submit_recount_attempt(uuid, text, text) to authenticated;

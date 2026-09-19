@@ -143,13 +143,14 @@ class SecureRecountSchemaContractTests(unittest.TestCase):
         submit = sql.split("create or replace function public.counter_submit_recount_attempt(", 1)[1]
         self.assertIn("p_task_id uuid", submit)
         self.assertIn("p_scanned_value text", submit)
+        self.assertIn("p_note text default null", submit)
         self.assertIn("t.assigned_user_id = v_actor.id", submit)
         self.assertIn("insert into public.recount_attempts", submit)
         self.assertIn("insert into public.audit_logs", submit)
         self.assertIn("public.mask_inventory_code(v_scan)", submit)
         self.assertIn("extensions.digest(v_scan, 'sha256')", submit)
         self.assertIn("grant execute on function public.counter_list_recount_tasks(uuid, public.recount_task_state) to authenticated;", sql)
-        self.assertIn("grant execute on function public.counter_submit_recount_attempt(uuid, text) to authenticated;", sql)
+        self.assertIn("grant execute on function public.counter_submit_recount_attempt(uuid, text, text) to authenticated;", sql)
 
     def test_manager_list_qualifies_profile_id_against_returns_table_id(self):
         sql = self.migration().lower()
