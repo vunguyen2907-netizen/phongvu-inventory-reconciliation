@@ -3197,7 +3197,7 @@
                       </div>
                       {recountTasks.length > 0 && (
                         <div className="overflow-x-auto rounded-lg border border-slate-200">
-                          <table className="w-full text-left text-xs"><thead className="bg-slate-100"><tr><th className="p-2">SKU</th><th className="p-2">BIN</th><th className="p-2">Trạng thái</th><th className="p-2">Phân công cho</th><th className="p-2">Hành động</th></tr></thead><tbody>
+                          <table className="w-full text-left text-xs"><thead className="bg-slate-100"><tr><th className="p-2" aria-label="Chọn"></th><th className="p-2">SKU</th><th className="p-2">BIN</th><th className="p-2">Trạng thái</th><th className="p-2">Phân công cho</th><th className="p-2">Hành động</th></tr></thead><tbody>
                             {recountTasks.map(task => <tr key={task.id} className="border-t border-slate-100"><td className="p-2"><input type="checkbox" checked={recountSelectedIds.includes(task.id)} onChange={e => setRecountSelectedIds(ids => e.target.checked ? [...new Set([...ids, task.id])] : ids.filter(id => id !== task.id))} /></td><td className="p-2">{task.sku}</td><td className="p-2">{task.stock_bin || "—"}</td><td className="p-2">{task.state === "unassigned" ? "Chưa phân công" : task.state === "in_progress" ? "Đang thực hiện" : task.state === "completed" ? "Hoàn tất" : task.state}</td><td className="p-2">{task.assigned_name_snapshot || "—"}</td><td className="p-2"><button type="button" onClick={() => setRecountReopenTarget(task)} className="text-rose-700 font-bold">MỞ LẠI</button></td></tr>)}
                           </tbody></table>
                         </div>

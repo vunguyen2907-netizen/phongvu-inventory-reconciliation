@@ -977,12 +977,14 @@ begin
     if exists (
       select 1 from jsonb_array_elements(coalesce(p_evidence, '[]'::jsonb)) e
       where length(public.normalize_inventory_code(e.value ->> 'serial_normalized')) >= 4
-        and (public.normalize_inventory_code(v_sku) like '%' || public.normalize_inventory_code(e.value ->> 'serial_normalized') || '%'
-          or public.normalize_inventory_code(v_product_name) like '%' || public.normalize_inventory_code(e.value ->> 'serial_normalized') || '%'
-          or public.normalize_inventory_code(coalesce(v_stock_bin, '')) like '%' || public.normalize_inventory_code(e.value ->> 'serial_normalized') || '%'
-          or public.normalize_inventory_code(coalesce(v_first_count_bin, '')) like '%' || public.normalize_inventory_code(e.value ->> 'serial_normalized') || '%'
-          or public.normalize_inventory_code(v_first_count_status) like '%' || public.normalize_inventory_code(e.value ->> 'serial_normalized') || '%'
-          or public.normalize_inventory_code(v_first_counter_erp_name) like '%' || public.normalize_inventory_code(e.value ->> 'serial_normalized') || '%')
+        and (public.normalize_inventory_code(v_sku) like '%' || public.normalize_inventory_code(coalesce(e.value ->> 'serial_normalized', '')) || '%'
+          or public.normalize_inventory_code(v_product_name) like '%' || public.normalize_inventory_code(coalesce(e.value ->> 'serial_normalized', '')) || '%'
+          or public.normalize_inventory_code(coalesce(v_stock_bin, '')) like '%' || public.normalize_inventory_code(coalesce(e.value ->> 'serial_normalized', '')) || '%'
+          or public.normalize_inventory_code(coalesce(v_first_count_bin, '')) like '%' || public.normalize_inventory_code(coalesce(e.value ->> 'serial_normalized', '')) || '%'
+          or public.normalize_inventory_code(v_first_count_status) like '%' || public.normalize_inventory_code(coalesce(e.value ->> 'serial_normalized', '')) || '%'
+          or public.normalize_inventory_code(v_first_counter_erp_name) like '%' || public.normalize_inventory_code(coalesce(e.value ->> 'serial_normalized', '')) || '%'
+          or public.normalize_inventory_code(v_sku) like '%' || public.normalize_inventory_code(coalesce(e.value ->> 'expected_serial_normalized', '')) || '%'
+          or public.normalize_inventory_code(v_product_name) like '%' || public.normalize_inventory_code(coalesce(e.value ->> 'first_scanned_code_normalized', '')) || '%')
     ) then
       raise exception 'Task display fields cannot contain protected serial codes' using errcode = '22023';
     end if;
@@ -1081,6 +1083,17 @@ begin
       select 1 from jsonb_array_elements(coalesce(p_tasks, '[]'::jsonb)) x
       where trim(coalesce(x.value ->> 'source_detail_row_id', '')) = t.source_detail_row_id
     );
+
+  delete from public.recount_serial_evidence e
+  where e.batch_id = v_batch.id
+    and (not exists (
+      select 1 from jsonb_array_elements(coalesce(p_tasks, '[]'::jsonb)) x
+      where trim(coalesce(x.value ->> 'source_detail_row_id', '')) = e.source_detail_row_id
+    ) or not exists (
+      select 1 from jsonb_array_elements(coalesce(p_evidence, '[]'::jsonb)) x
+      where trim(coalesce(x.value ->> 'source_detail_row_id', '')) = e.source_detail_row_id
+        and public.normalize_inventory_code(x.value ->> 'serial_normalized') = e.serial_normalized
+    ));
 
   -- Compute the final-four mask server-side. A colliding suffix gets the first
   -- differing four-character window; groups containing a short code remain
