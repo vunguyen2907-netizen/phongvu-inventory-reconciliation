@@ -194,10 +194,6 @@
       );
       const expectedSerial = expectedAlias.normalized;
       const firstScannedCode = scannedAlias.normalized;
-      if (!isNonSerial && !expectedSerial && !firstScannedCode) {
-        throw new Error(`Missing expected or first-scanned inventory code at ${rawSourceId}`);
-      }
-
       const statusAlias = consistentTextAlias(
         row,
         DETAIL_FIELDS.status,
@@ -221,6 +217,13 @@
         "exclusion",
         rawSourceId
       );
+      const codeLessResolved = Boolean(resolved)
+        || Boolean(excludedAlias)
+        || status === "Đã loại bỏ Serial dư"
+        || resolution === "same_product_multiple_codes";
+      if (!isNonSerial && !expectedSerial && !firstScannedCode && !codeLessResolved) {
+        throw new Error(`Missing expected or first-scanned inventory code at ${rawSourceId}`);
+      }
       const excludedFromActual = Boolean(excludedAlias)
         || String(resolution ?? "") === "same_product_multiple_codes"
         || status === "Đã loại bỏ Serial dư";

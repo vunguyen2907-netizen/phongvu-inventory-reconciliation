@@ -474,6 +474,19 @@ assert.throws(
   /Missing expected or first-scanned inventory code at INVALID-SHAPE/
 );
 
+const clearedSurplusDraft = buildRecountDraft([{
+  rowId: "1703737::431",
+  sku: "1703737",
+  name: "Bàn Phím Dareu LK145 Gaming đen",
+  status: "Đã loại bỏ Serial dư",
+  stockSerial: "",
+  scannedSerial: "",
+  isNonSerial: false,
+  excludedFromActual: true
+}], []);
+assert.equal(clearedSurplusDraft.tasks.length, 0, "cleared surplus rows without codes are ignored safely");
+assert.equal(clearedSurplusDraft.evidence.length, 0, "cleared surplus rows do not create protected evidence");
+
 const reorderRows = [
   { rowId: "row::ORDER-CODE-1", sku: "ORDER-1", name: "One", stockSerial: "ORDER-CODE-1", status: "Bắn thiếu (Chưa quét)" },
   { rowId: "ORDER::SAFE", sku: "ORDER-2", name: "Two", stockSerial: "ORDER-CODE-2", status: "Bắn thiếu (Chưa quét)" }
