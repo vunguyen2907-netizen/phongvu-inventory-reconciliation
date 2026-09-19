@@ -1365,6 +1365,7 @@
       const [recountCounters, setRecountCounters] = useState([]);
       const [recountPage, setRecountPage] = useState(1);
       const [recountLoading, setRecountLoading] = useState(false);
+      const [recountCountersLoading, setRecountCountersLoading] = useState(false);
       const [recountSelectedIds, setRecountSelectedIds] = useState([]);
       const [recountAssignee, setRecountAssignee] = useState("");
       const [recountFilters, setRecountFilters] = useState({ assignee: "", state: "", taskType: "", sku: "", bin: "" });
@@ -1469,6 +1470,7 @@
 
       const fetchRecountCounters = async () => {
         if (!isManager || !supabaseClient) return;
+        setRecountCountersLoading(true);
         try {
           const client = await getReadySupabaseClient();
           if (!client) return;
@@ -1479,6 +1481,7 @@
             .order('full_name');
           if (!error && data) setRecountCounters(data);
         } catch (e) { console.error(e); }
+        finally { setRecountCountersLoading(false); }
       };
 
       const recountRpcFilters = () => ({
@@ -3222,7 +3225,7 @@
                               <option value="">Chọn nhân sự</option>
                               {recountCounters.filter(c => c.status === "active").map(c => <option key={c.id} value={c.id}>{c.full_name || c.erp_name || c.email}</option>)}
                             </select>
-                            <button type="button" onClick={fetchRecountCounters} disabled={recountLoading} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold text-slate-700 disabled:opacity-40">↻ Làm mới nhân sự</button>
+                            <button type="button" onClick={fetchRecountCounters} disabled={recountCountersLoading || recountLoading} aria-busy={recountCountersLoading} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold text-slate-700 disabled:cursor-wait disabled:opacity-40">{recountCountersLoading ? "⏳ Đang tải nhân sự…" : "↻ Làm mới nhân sự"}</button>
                             <button type="button" onClick={handleBulkAssignRecount} disabled={!recountSelectedIds.length || !recountAssignee || recountLoading} className="rounded-lg bg-slate-800 px-3 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-40">Phân công cho</button>
                           </div>
                         </div>

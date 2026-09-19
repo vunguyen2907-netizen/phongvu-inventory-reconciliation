@@ -777,6 +777,11 @@ class RecountUiContractTest(unittest.TestCase):
         self.assertIn('autoComplete={isSignUp ? "new-password" : "current-password"}', html)
         self.assertIn("Mật khẩu chỉ dùng đăng nhập, không lưu vào hồ sơ nhân sự.", html)
 
+    def test_counter_refresh_button_exposes_loading_feedback(self):
+        html = (ROOT / "index.html").read_text(encoding="utf-8")
+        self.assertIn("recountCountersLoading", html)
+        self.assertIn("⏳ Đang tải nhân sự…", html)
+
 
 if __name__ == "__main__":
     unittest.main()
