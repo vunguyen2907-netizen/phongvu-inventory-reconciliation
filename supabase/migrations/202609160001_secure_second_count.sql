@@ -1009,7 +1009,8 @@ begin
       case when v_has_assignee then v_profile.full_name else null end,
       case when v_has_assignee then v_profile.id else null end,
       case when v_has_assignee then v_profile.full_name else null end,
-      v_task_type, '*', case when v_has_assignee then 'assigned' else 'unassigned' end
+      v_task_type, '*',
+      (case when v_has_assignee then 'assigned' else 'unassigned' end)::public.recount_task_state
     )
     on conflict (batch_id, source_detail_row_id) do update
     set sku = excluded.sku,
@@ -1323,7 +1324,7 @@ begin
     update public.recount_tasks
     set assigned_user_id = case when v_has_assignee and v_assignee.status = 'active' and v_assignee.role = 'counter' then v_assignee.id else null end,
         assigned_name_snapshot = case when v_has_assignee and v_assignee.status = 'active' and v_assignee.role = 'counter' then v_assignee.full_name else null end,
-        state = case when v_has_assignee and v_assignee.status = 'active' and v_assignee.role = 'counter' then 'assigned' else 'unassigned' end,
+        state = (case when v_has_assignee and v_assignee.status = 'active' and v_assignee.role = 'counter' then 'assigned' else 'unassigned' end)::public.recount_task_state,
         resolution = null, reason = null, completed_by = null,
         completed_by_name_snapshot = null, completed_at = null,
         version = version + 1

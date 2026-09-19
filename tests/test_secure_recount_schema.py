@@ -125,6 +125,17 @@ class SecureRecountSchemaContractTests(unittest.TestCase):
             self.assertIn("set search_path = ''", body, name)
             self.assertRegex(sql, rf"revoke all on function {re.escape(name)}\([^;]*\) from public, anon, authenticated;")
 
+    def test_recount_task_state_assignments_cast_to_enum(self):
+        sql = self.migration().lower()
+        self.assertIn(
+            "(case when v_has_assignee then 'assigned' else 'unassigned' end)::public.recount_task_state",
+            sql,
+        )
+        self.assertIn(
+            "(case when v_has_assignee and v_assignee.status = 'active' and v_assignee.role = 'counter' then 'assigned' else 'unassigned' end)::public.recount_task_state",
+            sql,
+        )
+
     def test_account_lifecycle_rpcs_are_definer_only_and_client_allowlisted(self):
         sql = self.migration().lower()
         for name, signature in (
