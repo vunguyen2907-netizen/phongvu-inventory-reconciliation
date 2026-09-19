@@ -983,8 +983,8 @@ begin
           or public.normalize_inventory_code(coalesce(v_first_count_bin, '')) like '%' || public.normalize_inventory_code(coalesce(e.value ->> 'serial_normalized', '')) || '%'
           or public.normalize_inventory_code(v_first_count_status) like '%' || public.normalize_inventory_code(coalesce(e.value ->> 'serial_normalized', '')) || '%'
           or public.normalize_inventory_code(v_first_counter_erp_name) like '%' || public.normalize_inventory_code(coalesce(e.value ->> 'serial_normalized', '')) || '%'
-          or public.normalize_inventory_code(v_sku) like '%' || public.normalize_inventory_code(coalesce(e.value ->> 'expected_serial_normalized', '')) || '%'
-          or public.normalize_inventory_code(v_product_name) like '%' || public.normalize_inventory_code(coalesce(e.value ->> 'first_scanned_code_normalized', '')) || '%')
+          or (length(public.normalize_inventory_code(coalesce(e.value ->> 'expected_serial_normalized', ''))) >= 4 and public.normalize_inventory_code(v_sku) like '%' || public.normalize_inventory_code(e.value ->> 'expected_serial_normalized') || '%')
+          or (length(public.normalize_inventory_code(coalesce(e.value ->> 'first_scanned_code_normalized', ''))) >= 4 and public.normalize_inventory_code(v_product_name) like '%' || public.normalize_inventory_code(e.value ->> 'first_scanned_code_normalized') || '%'))
     ) then
       raise exception 'Task display fields cannot contain protected serial codes' using errcode = '22023';
     end if;
