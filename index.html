@@ -2415,7 +2415,7 @@
             const headerCell = ws[XLSX.utils.encode_cell({ r: headerRow, c })];
             if (headerCell) {
               headerCell.s = {
-                font: { bold: true, color: { rgb: "1F2937" }, sz: 11 },
+                font: { name: "Times New Roman", bold: true, color: { rgb: "000000" }, sz: 10.5 },
                 fill: { patternType: "solid", fgColor: { rgb: "D9E1F2" } },
                 alignment: { horizontal: "center", vertical: "center", wrapText: true },
                 border
@@ -2424,12 +2424,12 @@
           }
 
           for (let r = dataStart; r <= dataEnd; r += 1) {
-            ws["!rows"][r] = { hpt: 30 };
+            ws["!rows"][r] = { hpt: 24 };
             for (let c = 0; c <= range.e.c; c += 1) {
               const cell = ws[XLSX.utils.encode_cell({ r, c })];
               if (!cell) continue;
               cell.s = {
-                font: { sz: 10, color: { rgb: "111827" } },
+                font: { name: "Times New Roman", sz: 10, color: { rgb: "000000" } },
                 alignment: {
                   horizontal: numericColumns.includes(c) ? "right" : (centerColumns.includes(c) ? "center" : "left"),
                   vertical: "center",
@@ -2437,17 +2437,17 @@
                 },
                 border
               };
-              if (numericColumns.includes(c)) cell.z = c === 6 ? '0;[Red](0);-' : '0';
+              if (numericColumns.includes(c)) cell.z = c === 6 ? '#,##0;[Red](#,##0);"-"' : '#,##0';
             }
           }
 
           if (totalRow !== null) {
-            ws["!rows"][totalRow] = { hpt: 28 };
+            ws["!rows"][totalRow] = { hpt: 26 };
             for (let c = 0; c <= range.e.c; c += 1) {
               const cell = ws[XLSX.utils.encode_cell({ r: totalRow, c })];
               if (!cell) continue;
               cell.s = {
-                font: { bold: true, color: { rgb: "C00000" }, sz: 10 },
+                font: { name: "Times New Roman", bold: true, color: { rgb: "C00000" }, sz: 10.5 },
                 fill: { patternType: "solid", fgColor: { rgb: "FFF2CC" } },
                 alignment: {
                   horizontal: numericColumns.includes(c) ? "right" : "left",
@@ -2456,12 +2456,19 @@
                 },
                 border
               };
-              if (numericColumns.includes(c)) cell.z = c === 6 ? '0;[Red](0);-' : '0';
+              if (numericColumns.includes(c)) cell.z = c === 6 ? '#,##0;[Red](#,##0);"-"' : '#,##0';
             }
           }
         };
 
-        const summaryHeaderRow = 9;
+        const dateParts = reportDate.split('-');
+        const day = dateParts[2] || '01';
+        const month = dateParts[1] || '01';
+        const year = dateParts[0] || '2026';
+        const cleanLocation = locationName.replace(/^Tại kho:\s*/i, '').trim();
+        const branchShort = cleanLocation.includes('|') ? cleanLocation.split('|')[0].trim() : (cleanLocation || 'Đơn vị');
+
+        const summaryHeaderRow = 10;
         const summaryTableRows = dfMainRows.map((r, i) => [
           i + 1,
           r.sku,
@@ -2476,50 +2483,91 @@
         const totalActual = dfMainRows.reduce((sum, row) => sum + row.totalActual, 0);
         const totalDiff = dfMainRows.reduce((sum, row) => sum + row.diff, 0);
         const summaryData = [
-          ["PHONGVU.VN"],
           ["CÔNG TY CỔ PHẦN THƯƠNG MẠI DỊCH VỤ PHONG VŨ"],
-          ["BIÊN BẢN KIỂM KÊ HÀNG TỒN KHO"],
-          [`NGÀY ${reportDate.split('-').reverse().join('.')}`],
           [],
-          [`Tại kho: ${locationName}`],
-          [`Quản lý Đơn vị: ${mgrName}`],
-          [`Đại diện Kiểm kê / Kho: ${staffName}`],
+          ["BIÊN BẢN KIỂM KÊ HÀNG TỒN KHO"],
+          [`NGÀY ${day}.${month}.${year}`],
+          [],
+          [`Hôm nay, vào lúc  ___  giờ  ___  phút, ngày ${day} tháng ${month}  năm ${year}`],
+          [`Tại kho: ${cleanLocation} , chúng tôi gồm có:`],
+          [`Họ tên : ${mgrName}`, "", "", `Chức danh: Quản lý ${branchShort}`],
+          [`Họ tên : ${staffName}`, "", "", `Chức danh: Nhân viên Kho ${branchShort}`],
           [],
           ["STT", "SKU", "Tên hàng hóa", "ĐVT", "Sổ sách", "Thực tế", "Chênh lệch", "Ghi chú / Tình trạng"],
           ...summaryTableRows,
-          ["Tổng cộng", "", "", "", totalSys, totalActual, totalDiff, ""]
+          ["Tổng cộng", "", "", "", totalSys, totalActual, totalDiff, ""],
+          [],
+          ["Đại diện Kho", "", "Đại diện kiểm kê", "", "Quản lý Đơn vị", "", "Kiểm soát nội bộ", ""],
+          ["(Ký, ghi rõ họ tên)", "", "(Ký, ghi rõ họ tên)", "", "(Ký, ghi rõ họ tên)", "", "(Ký, ghi rõ họ tên)", ""]
         ];
         const wsSummary = XLSX.utils.aoa_to_sheet(summaryData);
         const summaryDataStart = summaryHeaderRow + 1;
         const summaryDataEnd = summaryDataStart + summaryTableRows.length - 1;
         const summaryTotalRow = summaryDataEnd + 1;
-        wsSummary["!merges"] = [0, 1, 2, 3, 5, 6, 7].map(r => ({
-          s: { r, c: 0 }, e: { r, c: 7 }
-        }));
-        wsSummary["!merges"].push({
-          s: { r: summaryTotalRow, c: 0 }, e: { r: summaryTotalRow, c: 3 }
+        const sigTitleRow = summaryTotalRow + 2;
+        const sigSubRow = summaryTotalRow + 3;
+
+        wsSummary["!merges"] = [
+          { s: { r: 0, c: 0 }, e: { r: 0, c: 7 } },
+          { s: { r: 2, c: 0 }, e: { r: 2, c: 7 } },
+          { s: { r: 3, c: 0 }, e: { r: 3, c: 7 } },
+          { s: { r: 5, c: 0 }, e: { r: 5, c: 7 } },
+          { s: { r: 6, c: 0 }, e: { r: 6, c: 7 } },
+          { s: { r: 7, c: 0 }, e: { r: 7, c: 2 } },
+          { s: { r: 7, c: 3 }, e: { r: 7, c: 7 } },
+          { s: { r: 8, c: 0 }, e: { r: 8, c: 2 } },
+          { s: { r: 8, c: 3 }, e: { r: 8, c: 7 } },
+          { s: { r: summaryTotalRow, c: 0 }, e: { r: summaryTotalRow, c: 3 } },
+          { s: { r: sigTitleRow, c: 0 }, e: { r: sigTitleRow, c: 1 } },
+          { s: { r: sigTitleRow, c: 2 }, e: { r: sigTitleRow, c: 3 } },
+          { s: { r: sigTitleRow, c: 4 }, e: { r: sigTitleRow, c: 5 } },
+          { s: { r: sigTitleRow, c: 6 }, e: { r: sigTitleRow, c: 7 } },
+          { s: { r: sigSubRow, c: 0 }, e: { r: sigSubRow, c: 1 } },
+          { s: { r: sigSubRow, c: 2 }, e: { r: sigSubRow, c: 3 } },
+          { s: { r: sigSubRow, c: 4 }, e: { r: sigSubRow, c: 5 } },
+          { s: { r: sigSubRow, c: 6 }, e: { r: sigSubRow, c: 7 } }
+        ];
+
+        wsSummary["!rows"] = wsSummary["!rows"] || [];
+        wsSummary["!rows"][0] = { hpt: 24 };
+        wsSummary["!rows"][2] = { hpt: 28 };
+        wsSummary["!rows"][3] = { hpt: 22 };
+        wsSummary["!rows"][5] = { hpt: 20 };
+        wsSummary["!rows"][6] = { hpt: 20 };
+        wsSummary["!rows"][7] = { hpt: 20 };
+        wsSummary["!rows"][8] = { hpt: 20 };
+        wsSummary["!rows"][sigTitleRow] = { hpt: 26 };
+        wsSummary["!rows"][sigSubRow] = { hpt: 20 };
+
+        const c0 = wsSummary[XLSX.utils.encode_cell({ r: 0, c: 0 })];
+        if (c0) c0.s = { font: { name: "Times New Roman", bold: true, color: { rgb: "000000" }, sz: 11 }, alignment: { horizontal: "left", vertical: "center" } };
+
+        const c2 = wsSummary[XLSX.utils.encode_cell({ r: 2, c: 0 })];
+        if (c2) c2.s = { font: { name: "Times New Roman", bold: true, color: { rgb: "000000" }, sz: 16 }, alignment: { horizontal: "center", vertical: "center" } };
+
+        const c3 = wsSummary[XLSX.utils.encode_cell({ r: 3, c: 0 })];
+        if (c3) c3.s = { font: { name: "Times New Roman", bold: true, color: { rgb: "C00000" }, sz: 11 }, alignment: { horizontal: "center", vertical: "center" } };
+
+        const c5 = wsSummary[XLSX.utils.encode_cell({ r: 5, c: 0 })];
+        if (c5) c5.s = { font: { name: "Times New Roman", sz: 10, color: { rgb: "000000" } }, alignment: { horizontal: "left", vertical: "center" } };
+
+        const c6 = wsSummary[XLSX.utils.encode_cell({ r: 6, c: 0 })];
+        if (c6) c6.s = { font: { name: "Times New Roman", bold: true, color: { rgb: "C00000" }, sz: 10 }, alignment: { horizontal: "left", vertical: "center" } };
+
+        [7, 8].forEach(r => {
+          const col0 = wsSummary[XLSX.utils.encode_cell({ r, c: 0 })];
+          if (col0) col0.s = { font: { name: "Times New Roman", italic: true, color: { rgb: "C00000" }, sz: 10 }, alignment: { horizontal: "left", vertical: "center" } };
+          const col3 = wsSummary[XLSX.utils.encode_cell({ r, c: 3 })];
+          if (col3) col3.s = { font: { name: "Times New Roman", italic: true, color: { rgb: "C00000" }, sz: 10 }, alignment: { horizontal: "left", vertical: "center" } };
         });
-        [
-          { row: 0, size: 14, color: "003399", bold: true },
-          { row: 1, size: 10, color: "555555", bold: false },
-          { row: 2, size: 16, color: "1F2937", bold: true },
-          { row: 3, size: 11, color: "C00000", bold: true }
-        ].forEach(item => {
-          const cell = wsSummary[XLSX.utils.encode_cell({ r: item.row, c: 0 })];
-          cell.s = {
-            font: { bold: item.bold, color: { rgb: item.color }, sz: item.size },
-            alignment: { horizontal: item.row >= 2 ? "center" : "left", vertical: "center" }
-          };
-          wsSummary["!rows"] = wsSummary["!rows"] || [];
-          wsSummary["!rows"][item.row] = { hpt: item.row === 2 ? 26 : 20 };
+
+        [0, 2, 4, 6].forEach(c => {
+          const sigT = wsSummary[XLSX.utils.encode_cell({ r: sigTitleRow, c })];
+          if (sigT) sigT.s = { font: { name: "Times New Roman", bold: true, color: { rgb: "000000" }, sz: 10.5 }, alignment: { horizontal: "center", vertical: "center" } };
+          const sigS = wsSummary[XLSX.utils.encode_cell({ r: sigSubRow, c })];
+          if (sigS) sigS.s = { font: { name: "Times New Roman", italic: true, color: { rgb: "555555" }, sz: 9.5 }, alignment: { horizontal: "center", vertical: "center" } };
         });
-        [5, 6, 7].forEach(r => {
-          const cell = wsSummary[XLSX.utils.encode_cell({ r, c: 0 })];
-          cell.s = {
-            font: { sz: 10, color: { rgb: "374151" } },
-            alignment: { horizontal: "left", vertical: "center", wrapText: true }
-          };
-        });
+
         styleTable(wsSummary, {
           headerRow: summaryHeaderRow,
           dataStart: summaryDataStart,
@@ -2634,55 +2682,74 @@
           { text: '', alignment: 'left' }
         ]);
 
+        const dateParts = reportDate.split('-');
+        const day = dateParts[2] || '01';
+        const month = dateParts[1] || '01';
+        const year = dateParts[0] || '2026';
+        const cleanLocation = locationName.replace(/^Tại kho:\s*/i, '').trim();
+        const branchShort = cleanLocation.includes('|') ? cleanLocation.split('|')[0].trim() : (cleanLocation || 'Đơn vị');
+
         const logoData = window.PHONGVU_LOGO_BASE64 || null;
         const fontName = (window.pdfMake?.fonts?.TimesNewRoman && window.pdfMake?.vfs?.['TimesNewRoman-Regular.ttf'])
           ? 'TimesNewRoman'
           : 'Roboto';
 
-        const headerSection = logoData ? {
-          columns: [
-            {
-              width: 220,
-              stack: [
-                { image: logoData, width: 140, height: 49.8 },
-                { text: 'CÔNG TY CP TM-DV PHONG VŨ', style: 'companyName', margin: [0, 4, 0, 0] }
+        const topHeader = [];
+        if (logoData) {
+          topHeader.push({ image: logoData, width: 140, height: 49.8, margin: [0, 0, 0, 4] });
+        }
+        topHeader.push({
+          text: 'CÔNG TY CỔ PHẦN THƯƠNG MẠI DỊCH VỤ PHONG VŨ',
+          style: 'companyName',
+          margin: [0, 2, 0, 10]
+        });
+        topHeader.push({
+          text: 'BIÊN BẢN KIỂM KÊ HÀNG TỒN KHO',
+          style: 'pdfTitle'
+        });
+        topHeader.push({
+          text: `NGÀY ${day}.${month}.${year}`,
+          style: 'pdfSubtitle',
+          margin: [0, 2, 0, 12]
+        });
+
+        const metaSection = [
+          {
+            text: `Hôm nay, vào lúc  ___  giờ  ___  phút, ngày ${day} tháng ${month}  năm ${year}`,
+            style: 'metaIntro',
+            margin: [0, 0, 0, 3]
+          },
+          {
+            text: `Tại kho: ${cleanLocation} , chúng tôi gồm có:`,
+            style: 'metaLocation',
+            margin: [0, 0, 0, 4]
+          },
+          {
+            table: {
+              widths: [280, '*'],
+              body: [
+                [
+                  { text: `Họ tên : ${mgrName}`, style: 'metaParticipant' },
+                  { text: `Chức danh: Quản lý ${branchShort}`, style: 'metaParticipant' }
+                ],
+                [
+                  { text: `Họ tên : ${staffName}`, style: 'metaParticipant' },
+                  { text: `Chức danh: Nhân viên Kho ${branchShort}`, style: 'metaParticipant' }
+                ]
               ]
             },
-            {
-              width: '*',
-              stack: [
-                { text: 'BIÊN BẢN KIỂM KÊ HÀNG TỒN KHO', style: 'pdfTitle' },
-                { text: `NGÀY ${reportDate.split('-').reverse().join('.')}`, style: 'pdfSubtitle' }
-              ]
-            },
-            {
-              width: 200,
-              alignment: 'right',
-              stack: [
-                { text: `Tại kho: ${locationName || 'Kho Tổng'}`, style: 'metaRight' },
-                { text: `Ngày in: ${reportDate.split('-').reverse().join('/')}`, style: 'metaRight' }
-              ]
-            }
-          ]
-        } : {
-          stack: [
-            { text: 'PHONGVU.VN', style: 'companyName' },
-            { text: 'CÔNG TY CỔ PHẦN THƯƠNG MẠI DỊCH VỤ PHONG VŨ', style: 'companyName' },
-            { text: 'BIÊN BẢN KIỂM KÊ HÀNG TỒN KHO', style: 'pdfTitle' },
-            { text: `NGÀY ${reportDate.split('-').reverse().join('.')}`, style: 'pdfSubtitle' }
-          ]
-        };
+            layout: 'noBorders',
+            margin: [0, 0, 0, 8]
+          }
+        ];
 
         const docDefinition = {
           pageSize: 'A4',
           pageOrientation: 'landscape',
           pageMargins: [25, 25, 25, 25],
           content: [
-            headerSection,
-            { text: ' ', margin: [0, 4, 0, 4] },
-            { text: `Họ tên: ${mgrName} — Chức danh: Quản lý Đơn vị`, style: 'metaText' },
-            { text: `Họ tên: ${staffName} — Chức danh: Đại diện Kiểm kê / Kho`, style: 'metaText' },
-            { text: ' ', margin: [0, 4, 0, 4] },
+            ...topHeader,
+            ...metaSection,
             {
               table: {
                 headerRows: 1,
@@ -2690,10 +2757,12 @@
                 body: tableBody
               },
               layout: {
-                fillColor: function (rowIndex) { return (rowIndex === 0) ? '#D9E1F2' : null; }
+                fillColor: function (rowIndex) {
+                  return (rowIndex === 0) ? '#D9E1F2' : (rowIndex === tableBody.length - 1 ? '#FFF2CC' : null);
+                }
               }
             },
-            { text: ' ', margin: [0, 12, 0, 12] },
+            { text: ' ', margin: [0, 10, 0, 10] },
             {
               table: {
                 widths: ['25%', '25%', '25%', '25%'],
@@ -2710,11 +2779,12 @@
             }
           ],
           styles: {
-            companyName: { fontSize: 9.5, bold: true, color: '#0958d9' },
-            pdfTitle: { fontSize: 15, bold: true, alignment: 'center', margin: [0, 6, 0, 3] },
-            pdfSubtitle: { fontSize: 11, bold: true, color: '#cc0000', alignment: 'center' },
-            metaRight: { fontSize: 9.5, color: '#475569', margin: [0, 2, 0, 2] },
-            metaText: { fontSize: 10, margin: [0, 2, 0, 2] },
+            companyName: { fontSize: 10.5, bold: true, color: '#000000' },
+            pdfTitle: { fontSize: 16, bold: true, alignment: 'center', margin: [0, 0, 0, 2] },
+            pdfSubtitle: { fontSize: 11, bold: true, color: '#c00000', alignment: 'center' },
+            metaIntro: { fontSize: 10, color: '#000000' },
+            metaLocation: { fontSize: 10, bold: true, color: '#c00000' },
+            metaParticipant: { fontSize: 10, italics: true, color: '#c00000' },
             tableHeader: { fontSize: 9.5, bold: true, alignment: 'center', margin: [0, 3, 0, 3] }
           },
           defaultStyle: { font: fontName, fontSize: 9 }
@@ -2765,7 +2835,10 @@
           [],
           ["Mã VT", "Tên vật tư hàng hóa", "Đvt", "Kiểm kê thực tế (A)", "Tồn cuối phần mềm (B)", "Thừa A-B", "Thiếu B-A", "Giải trình chênh lệch", "Đề xuất xử lý"],
           ...tableRows,
-          ["Tổng cộng", "", "", "", "", "", "", "", ""]
+          ["Tổng cộng", "", "", "", "", "", "", "", ""],
+          [],
+          ["Quản lý Đơn vị", "", "", "Đại diện kiểm kê / Kho", "", "", "Thủ kho / Nhân viên kho", "", ""],
+          ["(Ký, ghi rõ họ tên)", "", "", "(Ký, ghi rõ họ tên)", "", "", "(Ký, ghi rõ họ tên)", "", ""]
         ];
         const ws = XLSX.utils.aoa_to_sheet(sheetData);
         const border = {
@@ -2775,16 +2848,33 @@
           right: { style: "thin", color: { rgb: "64748B" } }
         };
 
+        const sigTitleRow = totalRow + 2;
+        const sigSubRow = totalRow + 3;
+
         ws["!merges"] = [0, 1, 3, 4, 5].map(row => ({
           s: { r: row, c: 0 }, e: { r: row, c: 8 }
         }));
         ws["!merges"].push({ s: { r: totalRow, c: 0 }, e: { r: totalRow, c: 2 } });
+        ws["!merges"].push(
+          { s: { r: sigTitleRow, c: 0 }, e: { r: sigTitleRow, c: 2 } },
+          { s: { r: sigTitleRow, c: 3 }, e: { r: sigTitleRow, c: 5 } },
+          { s: { r: sigTitleRow, c: 6 }, e: { r: sigTitleRow, c: 8 } },
+          { s: { r: sigSubRow, c: 0 }, e: { r: sigSubRow, c: 2 } },
+          { s: { r: sigSubRow, c: 3 }, e: { r: sigSubRow, c: 5 } },
+          { s: { r: sigSubRow, c: 6 }, e: { r: sigSubRow, c: 8 } }
+        );
+
         ws["!cols"] = [15, 48, 10, 17, 18, 12, 12, 42, 42].map(wch => ({ wch }));
         ws["!rows"] = ws["!rows"] || [];
-        ws["!rows"][0] = { hpt: 30 };
+        ws["!rows"][0] = { hpt: 32 };
         ws["!rows"][1] = { hpt: 24 };
-        ws["!rows"][5] = { hpt: 34 };
-        ws["!rows"][headerRow] = { hpt: 42 };
+        ws["!rows"][3] = { hpt: 22 };
+        ws["!rows"][4] = { hpt: 22 };
+        ws["!rows"][5] = { hpt: 24 };
+        ws["!rows"][headerRow] = { hpt: 38 };
+        ws["!rows"][sigTitleRow] = { hpt: 26 };
+        ws["!rows"][sigSubRow] = { hpt: 20 };
+
         ws["!autofilter"] = { ref: `A${headerRow + 1}:I${totalRow}` };
         ws["!pageSetup"] = { orientation: "landscape", fitToWidth: 1, fitToHeight: 0, paperSize: 9 };
         ws["!margins"] = { left: 0.25, right: 0.25, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 };
@@ -2795,6 +2885,7 @@
             const cell = ws[ref] || { t: "s", v: "" };
             cell.s = {
               ...(cell.s || {}),
+              font: { name: "Times New Roman", sz: 10.5, color: { rgb: "000000" } },
               fill: { patternType: "solid", fgColor: { rgb: "FFFFFF" } }
             };
             ws[ref] = cell;
@@ -2802,19 +2893,19 @@
         }
 
         ws.A1.s = {
-          font: { bold: true, sz: 16, color: { rgb: "111827" } },
+          font: { name: "Times New Roman", bold: true, sz: 15, color: { rgb: "000000" } },
           fill: { patternType: "solid", fgColor: { rgb: "FFFFFF" } },
           alignment: { horizontal: "center", vertical: "center" }
         };
         ws.A2.s = {
-          font: { bold: true, sz: 12, color: { rgb: "111827" } },
+          font: { name: "Times New Roman", bold: true, sz: 11, color: { rgb: "000000" } },
           fill: { patternType: "solid", fgColor: { rgb: "FFFFFF" } },
           alignment: { horizontal: "center", vertical: "center", wrapText: true }
         };
         [3, 4, 5].forEach(row => {
           const cell = ws[XLSX.utils.encode_cell({ r: row, c: 0 })];
           cell.s = {
-            font: { sz: 10, color: { rgb: "1F2937" } },
+            font: { name: "Times New Roman", sz: 10.5, color: { rgb: "000000" } },
             fill: { patternType: "solid", fgColor: { rgb: "FFFFFF" } },
             alignment: { horizontal: "left", vertical: "center", wrapText: true }
           };
@@ -2823,7 +2914,7 @@
         for (let column = 0; column < 9; column += 1) {
           const cell = ws[XLSX.utils.encode_cell({ r: headerRow, c: column })];
           cell.s = {
-            font: { bold: true, sz: 10, color: { rgb: "111827" } },
+            font: { name: "Times New Roman", bold: true, sz: 10.5, color: { rgb: "000000" } },
             fill: { patternType: "solid", fgColor: { rgb: column === 5 || column === 6 ? "FFF2CC" : "CFE2F3" } },
             alignment: { horizontal: "center", vertical: "center", wrapText: true },
             border
@@ -2832,12 +2923,12 @@
 
         tableRows.forEach((row, rowIndex) => {
           const sheetRow = dataStartRow + rowIndex;
-          ws["!rows"][sheetRow] = { hpt: 42 };
+          ws["!rows"][sheetRow] = { hpt: 36 };
           for (let column = 0; column < 9; column += 1) {
             const cell = ws[XLSX.utils.encode_cell({ r: sheetRow, c: column })];
             if (!cell) continue;
             cell.s = {
-              font: { sz: 10, color: { rgb: "111827" } },
+              font: { name: "Times New Roman", sz: 10, color: { rgb: "000000" } },
               fill: { patternType: "solid", fgColor: { rgb: "FFFFFF" } },
               alignment: {
                 horizontal: column >= 3 && column <= 6 ? "right" : (column === 2 ? "center" : "left"),
@@ -2846,7 +2937,7 @@
               },
               border
             };
-            if (column >= 3 && column <= 6) cell.z = '0;[Red](0);-';
+            if (column >= 3 && column <= 6) cell.z = '#,##0;[Red](#,##0);"-"';
           }
         });
 
@@ -2863,20 +2954,37 @@
           cell.f = `SUM(${XLSX.utils.encode_col(column)}${excelFirstDataRow}:${XLSX.utils.encode_col(column)}${excelLastDataRow})`;
           cell.t = "n";
           cell.v = totals[column - 3];
-          cell.z = '0;[Red](0);-';
+          cell.z = '#,##0;[Red](#,##0);"-"';
           ws[XLSX.utils.encode_cell({ r: totalRow, c: column })] = cell;
         });
         for (let column = 0; column < 9; column += 1) {
           const ref = XLSX.utils.encode_cell({ r: totalRow, c: column });
           const cell = ws[ref] || { t: "s", v: "" };
           cell.s = {
-            font: { bold: true, sz: 10, color: { rgb: "C00000" } },
+            font: { name: "Times New Roman", bold: true, sz: 10.5, color: { rgb: "C00000" } },
             fill: { patternType: "solid", fgColor: { rgb: "FFF2CC" } },
             alignment: { horizontal: column >= 3 && column <= 6 ? "right" : "left", vertical: "center" },
             border
           };
           ws[ref] = cell;
         }
+
+        [0, 3, 6].forEach(c => {
+          const sigT = ws[XLSX.utils.encode_cell({ r: sigTitleRow, c })];
+          if (sigT) {
+            sigT.s = {
+              font: { name: "Times New Roman", bold: true, sz: 10.5, color: { rgb: "000000" } },
+              alignment: { horizontal: "center", vertical: "center" }
+            };
+          }
+          const sigS = ws[XLSX.utils.encode_cell({ r: sigSubRow, c })];
+          if (sigS) {
+            sigS.s = {
+              font: { name: "Times New Roman", italic: true, sz: 9.5, color: { rgb: "555555" } },
+              alignment: { horizontal: "center", vertical: "center" }
+            };
+          }
+        });
 
         XLSX.utils.book_append_sheet(wb, ws, "Giai trinh chenh lech");
         XLSX.writeFile(wb, `Bien_Ban_Giai_Trinh_Chenh_Lech_${reportDate.replace(/-/g, '')}.xlsx`);
