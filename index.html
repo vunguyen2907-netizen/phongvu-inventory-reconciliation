@@ -39,6 +39,7 @@
   <!-- PDFMake for PDF Generation -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/pdfmake.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/vfs_fonts.js"></script>
+  <script src="./times_fonts.js"></script>
 
   <!-- Supabase JS -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -1127,6 +1128,7 @@
       const [accounts, setAccounts] = useState([]);
       const [filter, setFilter] = useState("pending");
       const [aliases, setAliases] = useState({});
+      const [roles, setRoles] = useState({});
       const [loading, setLoading] = useState(true);
       const [busyId, setBusyId] = useState("");
       const [error, setError] = useState("");
@@ -1153,6 +1155,10 @@
           setAccounts(manageable);
           setAliases(previous => ({
             ...Object.fromEntries(manageable.map(account => [account.id, account.erp_name || ""])),
+            ...previous
+          }));
+          setRoles(previous => ({
+            ...Object.fromEntries(manageable.map(account => [account.id, account.role || "counter"])),
             ...previous
           }));
         } catch (actionError) {
@@ -1189,8 +1195,23 @@
           setError("Tên nhân viên ERP không được để trống.");
           return;
         }
-        await runAction(account, `Đã phê duyệt ${account.full_name}.`, async client => {
-          await invokeLifecycle(client, "approve_user", account, { erp_name: erpName });
+        const selectedRole = roles[account.id] || account.role || "counter";
+        const roleLabel = selectedRole === "admin" ? "Quản trị viên" : selectedRole === "manager" ? "Quản lý" : "Kiểm đếm";
+        await runAction(account, `Đã phê duyệt ${account.full_name} (${roleLabel}).`, async client => {
+          const extra = { erp_name: erpName };
+          if (callerRole === "admin" || (roles[account.id] && roles[account.id] !== account.role)) {
+            extra.role = selectedRole;
+          }
+          await invokeLifecycle(client, "approve_user", account, extra);
+        });
+      };
+
+      const updateRole = async account => {
+        const newRole = roles[account.id] || account.role || "counter";
+        if (newRole === account.role) return;
+        const roleLabel = newRole === "admin" ? "Quản trị viên" : newRole === "manager" ? "Quản lý" : "Kiểm đếm";
+        await runAction(account, `Đã cập nhật vai trò của ${account.full_name} thành ${roleLabel}.`, async client => {
+          await invokeLifecycle(client, "update_role", account, { role: newRole });
         });
       };
 
@@ -1280,34 +1301,105 @@
               ) : (
                 <div className="space-y-3">
                   {visibleAccounts.map(account => (
-                    <article key={account.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <article key={account.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm hover:border-slate-300 transition">
                       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                         <div className="min-w-0">
-                          <h3 className="font-bold text-slate-900">{account.full_name}</h3>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3 className="font-bold text-slate-900">{account.full_name}</h3>
+                            <span className={`rounded-md px-2 py-0.5 text-xs font-semibold ${
+                              account.role === "admin"
+                                ? "bg-purple-100 text-purple-800 border border-purple-200"
+                                : account.role === "manager"
+                                ? "bg-blue-100 text-blue-800 border border-blue-200"
+                                : "bg-emerald-100 text-emerald-800 border border-emerald-200"
+                            }`}>
+                              {account.role === "admin" ? "Quản trị viên (Admin)" : account.role === "manager" ? "Quản lý (Manager)" : "Kiểm đếm (Counter)"}
+                            </span>
+                          </div>
                           <p className="text-sm text-slate-500 break-all">{account.email}</p>
-                          <p className="mt-1 text-xs text-slate-400">{account.role} · {account.erp_name || "Chưa có ERP"}</p>
+                          <p className="mt-1 text-xs text-slate-400">ERP: {account.erp_name || "Chưa có ERP"}</p>
                         </div>
                         {account.status === "pending" && (
                           <div className="flex flex-col sm:flex-row gap-2 sm:items-end">
                             <label className="text-xs font-bold text-slate-600">
                               Tên nhân viên ERP
-                              <input aria-label={`ERP cho ${account.full_name}`} value={aliases[account.id] || ""} onChange={event => setAliases(previous => ({ ...previous, [account.id]: event.target.value }))} className="mt-1 block w-full sm:w-56 rounded-lg border border-slate-300 px-3 py-2 text-sm font-normal" />
+                              <input aria-label={`ERP cho ${account.full_name}`} value={aliases[account.id] || ""} onChange={event => setAliases(previous => ({ ...previous, [account.id]: event.target.value }))} className="mt-1 block w-full sm:w-44 rounded-lg border border-slate-300 px-3 py-2 text-sm font-normal" />
                             </label>
-                            <button type="button" aria-label={`Phê duyệt ${account.full_name}`} onClick={() => approve(account)} disabled={busyId === account.id} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">Phê duyệt</button>
-                            <button type="button" aria-label={`Xóa ${account.full_name}`} onClick={() => { setDeleteTarget(account); setDeleteConfirmation(""); }} className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-bold text-white">Xóa</button>
+                            <label className="text-xs font-bold text-slate-600">
+                              Vai trò / Phân quyền
+                              <select aria-label={`Vai trò cho ${account.full_name}`} value={roles[account.id] || account.role || "counter"} onChange={event => setRoles(previous => ({ ...previous, [account.id]: event.target.value }))} className="mt-1 block w-full sm:w-48 rounded-lg border border-slate-300 px-3 py-2 text-sm font-normal bg-white">
+                                <option value="counter">Nhân viên kiểm đếm (Counter)</option>
+                                <option value="manager">Quản lý kiểm kê (Manager)</option>
+                                <option value="admin">Quản trị viên (Admin)</option>
+                              </select>
+                            </label>
+                            <button type="button" aria-label={`Phê duyệt ${account.full_name}`} onClick={() => approve(account)} disabled={busyId === account.id} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700 disabled:opacity-50">Phê duyệt</button>
+                            <button type="button" aria-label={`Xóa ${account.full_name}`} onClick={() => { setDeleteTarget(account); setDeleteConfirmation(""); }} className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-bold text-white hover:bg-rose-700">Xóa</button>
                           </div>
                         )}
                         {account.status === "active" && (
-                          <div className="flex gap-2">
-                            <button type="button" aria-label={`Xác nhận email ${account.full_name}`} onClick={() => confirmEmail(account)} disabled={busyId === account.id} className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">Xác nhận email</button>
-                            <button type="button" aria-label={`Khóa ${account.full_name}`} onClick={() => { setLockTarget(account); setLockReason(""); }} className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-bold text-white">Khóa</button>
-                            <button type="button" aria-label={`Xóa ${account.full_name}`} onClick={() => { setDeleteTarget(account); setDeleteConfirmation(""); }} className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-bold text-white">Xóa</button>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg p-1">
+                              <select
+                                aria-label={`Vai trò cho ${account.full_name}`}
+                                value={roles[account.id] || account.role || "counter"}
+                                onChange={event => setRoles(previous => ({ ...previous, [account.id]: event.target.value }))}
+                                className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+                              >
+                                <option value="counter">Kiểm đếm (Counter)</option>
+                                <option value="manager">Quản lý (Manager)</option>
+                                <option value="admin">Quản trị viên (Admin)</option>
+                              </select>
+                              <button
+                                type="button"
+                                aria-label={`Đổi vai trò ${account.full_name}`}
+                                onClick={() => updateRole(account)}
+                                disabled={busyId === account.id || (roles[account.id] || account.role) === account.role}
+                                className={`rounded-md px-3 py-1.5 text-xs font-bold transition shadow-sm ${
+                                  (roles[account.id] || account.role) !== account.role
+                                    ? 'bg-brand-600 text-white hover:bg-brand-700 ring-2 ring-brand-300'
+                                    : 'bg-slate-200 text-slate-500 hover:bg-slate-300 disabled:opacity-40'
+                                }`}
+                                title="Lưu thay đổi vai trò"
+                              >
+                                {busyId === account.id ? "Đang lưu…" : "Đổi role"}
+                              </button>
+                            </div>
+                            <button type="button" aria-label={`Xác nhận email ${account.full_name}`} onClick={() => confirmEmail(account)} disabled={busyId === account.id} className="rounded-lg bg-sky-600 px-3 py-2 text-xs sm:text-sm font-bold text-white hover:bg-sky-700 disabled:opacity-50">Xác nhận email</button>
+                            <button type="button" aria-label={`Khóa ${account.full_name}`} onClick={() => { setLockTarget(account); setLockReason(""); }} className="rounded-lg bg-amber-500 px-3 py-2 text-xs sm:text-sm font-bold text-white hover:bg-amber-600">Khóa</button>
+                            <button type="button" aria-label={`Xóa ${account.full_name}`} onClick={() => { setDeleteTarget(account); setDeleteConfirmation(""); }} className="rounded-lg bg-rose-600 px-3 py-2 text-xs sm:text-sm font-bold text-white hover:bg-rose-700">Xóa</button>
                           </div>
                         )}
                         {account.status === "locked" && (
-                          <div className="flex gap-2">
-                            <button type="button" aria-label={`Mở khóa ${account.full_name}`} onClick={() => unlock(account)} disabled={busyId === account.id} className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-50">Mở khóa</button>
-                            <button type="button" aria-label={`Xóa ${account.full_name}`} onClick={() => { setDeleteTarget(account); setDeleteConfirmation(""); }} className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-bold text-white">Xóa</button>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg p-1">
+                              <select
+                                aria-label={`Vai trò cho ${account.full_name}`}
+                                value={roles[account.id] || account.role || "counter"}
+                                onChange={event => setRoles(previous => ({ ...previous, [account.id]: event.target.value }))}
+                                className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+                              >
+                                <option value="counter">Kiểm đếm (Counter)</option>
+                                <option value="manager">Quản lý (Manager)</option>
+                                <option value="admin">Quản trị viên (Admin)</option>
+                              </select>
+                              <button
+                                type="button"
+                                aria-label={`Đổi vai trò ${account.full_name}`}
+                                onClick={() => updateRole(account)}
+                                disabled={busyId === account.id || (roles[account.id] || account.role) === account.role}
+                                className={`rounded-md px-3 py-1.5 text-xs font-bold transition shadow-sm ${
+                                  (roles[account.id] || account.role) !== account.role
+                                    ? 'bg-brand-600 text-white hover:bg-brand-700 ring-2 ring-brand-300'
+                                    : 'bg-slate-200 text-slate-500 hover:bg-slate-300 disabled:opacity-40'
+                                }`}
+                                title="Lưu thay đổi vai trò"
+                              >
+                                {busyId === account.id ? "Đang lưu…" : "Đổi role"}
+                              </button>
+                            </div>
+                            <button type="button" aria-label={`Mở khóa ${account.full_name}`} onClick={() => unlock(account)} disabled={busyId === account.id} className="rounded-lg bg-brand-600 px-3 py-2 text-xs sm:text-sm font-bold text-white hover:bg-brand-700 disabled:opacity-50">Mở khóa</button>
+                            <button type="button" aria-label={`Xóa ${account.full_name}`} onClick={() => { setDeleteTarget(account); setDeleteConfirmation(""); }} className="rounded-lg bg-rose-600 px-3 py-2 text-xs sm:text-sm font-bold text-white hover:bg-rose-700">Xóa</button>
                           </div>
                         )}
                         {account.status === "deleted" && <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-500">Đã vô hiệu hóa</span>}
@@ -1534,11 +1626,11 @@
             p_batch_id: null,
             p_state: null
           });
-          if (error) throw error;
-          setCounterRecountTasks(Array.isArray(data) ? data : []);
+          const taskList = Array.isArray(data) ? data : [];
+          setCounterRecountTasks(taskList);
           setCounterSessionFinished(false);
-          setCounterScanValues(previous => Object.fromEntries((data || []).map(task => [task.id, previous[task.id] || ""])));
-          setCounterNoteValues(previous => Object.fromEntries((data || []).map(task => [task.id, previous[task.id] || task.reason || ""])));
+          setCounterScanValues(previous => Object.fromEntries(taskList.map(task => [task.id, previous[task.id] || ""])));
+          setCounterNoteValues(previous => Object.fromEntries(taskList.map(task => [task.id, previous[task.id] || task.reason || ""])));
         } catch (e) {
           console.error('Không thể tải danh sách kiểm lần 2 của counter:', e);
           setCounterRecountTasks([]);
@@ -1615,6 +1707,12 @@
 
       const loadLatestRecountBatch = async (sessionId = activeSessionId) => {
         if (!isManager || !supabaseClient) return;
+        if (!sessionId) {
+          setRecountBatch(null);
+          setRecountTasks([]);
+          setRecountSummary({ total: 0, unassigned: 0, assigned: 0, in_progress: 0, completed: 0 });
+          return;
+        }
         try {
           const client = await getReadySupabaseClient();
           if (!client) return;
@@ -1623,8 +1721,19 @@
           });
           if (error) throw error;
           const latest = Array.isArray(data) ? data[0] : data;
-          if (latest?.batch_id) setRecountBatch(latest);
-        } catch (e) { console.error('Không thể tải phiên kiểm lần 2 mới nhất:', e); }
+          if (latest?.batch_id) {
+            setRecountBatch(latest);
+          } else {
+            setRecountBatch(null);
+            setRecountTasks([]);
+            setRecountSummary({ total: 0, unassigned: 0, assigned: 0, in_progress: 0, completed: 0 });
+          }
+        } catch (e) {
+          console.error('Không thể tải phiên kiểm lần 2 mới nhất:', e);
+          setRecountBatch(null);
+          setRecountTasks([]);
+          setRecountSummary({ total: 0, unassigned: 0, assigned: 0, in_progress: 0, completed: 0 });
+        }
       };
 
       const fetchRecountTasks = async (page = recountPage, batchId = recountBatch?.batch_id) => {
@@ -1750,11 +1859,12 @@
 
       useEffect(() => {
         if (!isManager || !['second-count', 'second-count-report', 'variance-summary'].includes(activeTab)) return;
-        // A saved inventory session owns its recount batch. Clear the previous
-        // session's batch before loading so historical sessions never leak
-        // another session's results into the report.
         setRecountBatch(null);
-        loadLatestRecountBatch(activeSessionId);
+        setRecountTasks([]);
+        setRecountSummary({ total: 0, unassigned: 0, assigned: 0, in_progress: 0, completed: 0 });
+        if (activeSessionId) {
+          loadLatestRecountBatch(activeSessionId);
+        }
       }, [isManager, activeSessionId, activeTab]);
 
       // Auto-save debounce (10s)
@@ -2073,6 +2183,10 @@
             setSessionName(data.session_name || '');
             setLastSavedTime(new Date(data.updated_at).toLocaleTimeString('vi-VN'));
             setIsDirty(false);
+            setRecountBatch(null);
+            setRecountTasks([]);
+            setRecountSummary({ total: 0, unassigned: 0, assigned: 0, in_progress: 0, completed: 0 });
+            loadLatestRecountBatch(data.id);
           }
         } catch (e) { showNotice("Lỗi tải đợt kiểm kê: " + e.message); }
       };
@@ -2520,40 +2634,75 @@
           { text: '', alignment: 'left' }
         ]);
 
+        const logoData = window.PHONGVU_LOGO_BASE64 || null;
+        const fontName = (window.pdfMake?.fonts?.TimesNewRoman && window.pdfMake?.vfs?.['TimesNewRoman-Regular.ttf'])
+          ? 'TimesNewRoman'
+          : 'Roboto';
+
+        const headerSection = logoData ? {
+          columns: [
+            {
+              width: 220,
+              stack: [
+                { image: logoData, width: 140, height: 49.8 },
+                { text: 'CÔNG TY CP TM-DV PHONG VŨ', style: 'companyName', margin: [0, 4, 0, 0] }
+              ]
+            },
+            {
+              width: '*',
+              stack: [
+                { text: 'BIÊN BẢN KIỂM KÊ HÀNG TỒN KHO', style: 'pdfTitle' },
+                { text: `NGÀY ${reportDate.split('-').reverse().join('.')}`, style: 'pdfSubtitle' }
+              ]
+            },
+            {
+              width: 200,
+              alignment: 'right',
+              stack: [
+                { text: `Tại kho: ${locationName || 'Kho Tổng'}`, style: 'metaRight' },
+                { text: `Ngày in: ${reportDate.split('-').reverse().join('/')}`, style: 'metaRight' }
+              ]
+            }
+          ]
+        } : {
+          stack: [
+            { text: 'PHONGVU.VN', style: 'companyName' },
+            { text: 'CÔNG TY CỔ PHẦN THƯƠNG MẠI DỊCH VỤ PHONG VŨ', style: 'companyName' },
+            { text: 'BIÊN BẢN KIỂM KÊ HÀNG TỒN KHO', style: 'pdfTitle' },
+            { text: `NGÀY ${reportDate.split('-').reverse().join('.')}`, style: 'pdfSubtitle' }
+          ]
+        };
+
         const docDefinition = {
           pageSize: 'A4',
           pageOrientation: 'landscape',
-          pageMargins: [20, 20, 20, 20],
+          pageMargins: [25, 25, 25, 25],
           content: [
-            { text: 'PHONGVU.VN', style: 'brandHeader' },
-            { text: 'CÔNG TY CỔ PHẦN THƯƠNG MẠI DỊCH VỤ PHONG VŨ', style: 'companyName' },
-            { text: 'BIÊN BẢN KIỂM KÊ HÀNG TỒN KHO', style: 'pdfTitle' },
-            { text: `NGÀY ${reportDate.split('-').reverse().join('.')}`, style: 'pdfSubtitle' },
-            { text: '\n' },
-            { text: `Tại kho: ${locationName}`, style: 'metaText' },
+            headerSection,
+            { text: ' ', margin: [0, 4, 0, 4] },
             { text: `Họ tên: ${mgrName} — Chức danh: Quản lý Đơn vị`, style: 'metaText' },
             { text: `Họ tên: ${staffName} — Chức danh: Đại diện Kiểm kê / Kho`, style: 'metaText' },
-            { text: '\n' },
+            { text: ' ', margin: [0, 4, 0, 4] },
             {
               table: {
                 headerRows: 1,
-                widths: [25, 70, 240, 35, 60, 60, 60, 180],
+                widths: [28, 75, 240, 35, 60, 60, 60, 185],
                 body: tableBody
               },
               layout: {
                 fillColor: function (rowIndex) { return (rowIndex === 0) ? '#D9E1F2' : null; }
               }
             },
-            { text: '\n\n' },
+            { text: ' ', margin: [0, 12, 0, 12] },
             {
               table: {
                 widths: ['25%', '25%', '25%', '25%'],
                 body: [
                   [
-                    { text: 'Đại diện Kho\n(Ký, ghi rõ họ tên)', alignment: 'center', bold: true },
-                    { text: 'Đại diện kiểm kê\n(Ký, ghi rõ họ tên)', alignment: 'center', bold: true },
-                    { text: 'Quản lý Đơn vị\n(Ký, ghi rõ họ tên)', alignment: 'center', bold: true },
-                    { text: 'Kiểm soát nội bộ\n(Ký, ghi rõ họ tên)', alignment: 'center', bold: true }
+                    { text: [{ text: 'Đại diện Kho\n', bold: true, fontSize: 10.5 }, { text: '(Ký, ghi rõ họ tên)', italics: true, fontSize: 9, color: '#555555' }], alignment: 'center' },
+                    { text: [{ text: 'Đại diện kiểm kê\n', bold: true, fontSize: 10.5 }, { text: '(Ký, ghi rõ họ tên)', italics: true, fontSize: 9, color: '#555555' }], alignment: 'center' },
+                    { text: [{ text: 'Quản lý Đơn vị\n', bold: true, fontSize: 10.5 }, { text: '(Ký, ghi rõ họ tên)', italics: true, fontSize: 9, color: '#555555' }], alignment: 'center' },
+                    { text: [{ text: 'Kiểm soát nội bộ\n', bold: true, fontSize: 10.5 }, { text: '(Ký, ghi rõ họ tên)', italics: true, fontSize: 9, color: '#555555' }], alignment: 'center' }
                   ]
                 ]
               },
@@ -2561,14 +2710,14 @@
             }
           ],
           styles: {
-            brandHeader: { fontSize: 12, bold: true, color: '#003399' },
-            companyName: { fontSize: 9, color: '#555555' },
-            pdfTitle: { fontSize: 16, bold: true, alignment: 'center', margin: [0, 5, 0, 2] },
+            companyName: { fontSize: 9.5, bold: true, color: '#0958d9' },
+            pdfTitle: { fontSize: 15, bold: true, alignment: 'center', margin: [0, 6, 0, 3] },
             pdfSubtitle: { fontSize: 11, bold: true, color: '#cc0000', alignment: 'center' },
-            metaText: { fontSize: 9, margin: [0, 2, 0, 2] },
-            tableHeader: { fontSize: 9, bold: true, alignment: 'center' }
+            metaRight: { fontSize: 9.5, color: '#475569', margin: [0, 2, 0, 2] },
+            metaText: { fontSize: 10, margin: [0, 2, 0, 2] },
+            tableHeader: { fontSize: 9.5, bold: true, alignment: 'center', margin: [0, 3, 0, 3] }
           },
-          defaultStyle: { fontSize: 8 }
+          defaultStyle: { font: fontName, fontSize: 9 }
         };
 
         pdfMake.createPdf(docDefinition).download(`Bien_Ban_Kiem_Ke_Hang_Ton_Kho_${reportDate.replace(/-/g, '')}.pdf`);
@@ -3416,6 +3565,48 @@
                     </div>
                   )}
                   {isManager && (
+                    <div className="bg-white p-4 rounded-xl border border-brand-200 shadow-sm flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-bold uppercase text-slate-700">📁 Đợt kiểm kê đang chọn:</span>
+                        <select
+                          value={activeSessionId || ""}
+                          onChange={e => {
+                            if (e.target.value) handleLoadSession(e.target.value);
+                          }}
+                          aria-label="Chọn đợt kiểm kê để phân task"
+                          className="bg-slate-50 text-xs font-semibold border border-slate-300 rounded-lg px-3 py-2 text-slate-800 focus:border-brand-500 focus:outline-none min-w-[220px]"
+                        >
+                          <option value="">-- Chưa chọn đợt kiểm kê --</option>
+                          {savedSessions.map(s => (
+                            <option key={s.id} value={s.id}>
+                              {s.session_name} ({new Date(s.updated_at).toLocaleDateString('vi-VN')})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      {activeSessionId ? (
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          <span className="inline-flex items-center px-2.5 py-1 rounded-full font-bold bg-brand-50 text-brand-700">
+                            ✓ {sessionName || 'Đợt kiểm kê'}
+                          </span>
+                          {recountBatch ? (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-100 text-emerald-800">
+                              Đã tạo danh sách kiểm L2
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-amber-100 text-amber-800">
+                              Chưa tạo danh sách kiểm L2
+                            </span>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-xs text-amber-700 bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200 font-medium">
+                          ⚠️ Chọn một đợt kiểm kê để xem lịch sử phân task và kết quả.
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {isManager && (
                     <div className="bg-white p-4 rounded-xl border border-brand-200 shadow-sm space-y-3">
                       <div className="flex flex-wrap items-center justify-between gap-3">
                         <h3 className="font-bold text-slate-800">Danh sách kiểm lần 2</h3>
@@ -3600,20 +3791,51 @@
               {/* TAB 4: BÁO CÁO KIỂM LẦN 2 */}
               {activeTab === "second-count-report" && (
                 <div className="space-y-4">
-                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-                    <h3 className="text-base font-bold text-slate-800">Báo cáo kiểm lần 2</h3>
-                    <p className="mt-1 text-xs text-slate-500">Ghi chú từ counter được lưu theo từng task và tổng hợp theo SKU.</p>
+                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <h3 className="text-base font-bold text-slate-800">Báo cáo kiểm lần 2</h3>
+                      <p className="mt-1 text-xs text-slate-500">Ghi chú từ counter được lưu theo từng task và tổng hợp theo đợt kiểm kê.</p>
+                    </div>
+                    {isManager && (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-bold uppercase text-slate-700">📁 Đợt kiểm kê:</span>
+                        <select
+                          value={activeSessionId || ""}
+                          onChange={e => {
+                            if (e.target.value) handleLoadSession(e.target.value);
+                          }}
+                          aria-label="Chọn đợt kiểm kê để xem báo cáo lần 2"
+                          className="bg-slate-50 text-xs font-semibold border border-slate-300 rounded-lg px-3 py-2 text-slate-800 focus:border-brand-500 focus:outline-none min-w-[220px]"
+                        >
+                          <option value="">-- Chưa chọn đợt kiểm kê --</option>
+                          {savedSessions.map(s => (
+                            <option key={s.id} value={s.id}>
+                              {s.session_name} ({new Date(s.updated_at).toLocaleDateString('vi-VN')})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
                   </div>
-                  <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
-                    <table className="w-full min-w-[900px] text-left text-xs">
-                      <thead className="bg-slate-100 font-bold text-slate-700"><tr><th className="p-3">SKU</th><th className="p-3">Tên sản phẩm</th><th className="p-3">Kết quả lần 1</th><th className="p-3">Trạng thái lần 2</th><th className="p-3">Người kiểm lần 2</th><th className="p-3">Ghi chú / Lý do</th></tr></thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {recountTasks.length === 0 ? <tr><td colSpan="6" className="p-6 text-center text-slate-500">Chưa có dữ liệu kiểm lần 2.</td></tr> : recountTasks.map(task => (
-                          <tr key={task.id} className="align-top hover:bg-slate-50"><td className="p-3 font-mono font-semibold">{task.sku}</td><td className="p-3 max-w-sm whitespace-normal break-words">{task.product_name}</td><td className="p-3">{task.first_count_status || "—"}</td><td className="p-3">{task.state === "completed" ? "Đã hoàn tất" : task.state === "in_progress" ? "Đang thực hiện" : task.state}</td><td className="p-3">{task.completed_by_name_snapshot || task.assigned_name_snapshot || "—"}</td><td className="p-3 whitespace-pre-wrap break-words text-slate-700">{task.reason || "—"}</td></tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                  {isManager && !activeSessionId ? (
+                    <div className="rounded-xl border border-dashed border-amber-300 bg-amber-50/50 p-8 text-center text-sm text-amber-800">
+                      <p className="font-bold text-base mb-1">Chưa chọn đợt kiểm kê</p>
+                      <p className="text-xs text-amber-700 max-w-md mx-auto">Vui lòng chọn một đợt kiểm kê ở trên để xem kết quả và báo cáo kiểm lần 2.</p>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
+                      <table className="w-full min-w-[900px] text-left text-xs">
+                        <thead className="bg-slate-100 font-bold text-slate-700"><tr><th className="p-3">SKU</th><th className="p-3">Tên sản phẩm</th><th className="p-3">Kết quả lần 1</th><th className="p-3">Trạng thái lần 2</th><th className="p-3">Người kiểm lần 2</th><th className="p-3">Ghi chú / Lý do</th></tr></thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {recountTasks.length === 0 ? (
+                            <tr><td colSpan="6" className="p-8 text-center text-slate-500">Đợt kiểm kê {sessionName ? `«${sessionName}» ` : ''}chưa có dữ liệu kết quả kiểm lần 2.</td></tr>
+                          ) : recountTasks.map(task => (
+                            <tr key={task.id} className="align-top hover:bg-slate-50"><td className="p-3 font-mono font-semibold">{task.sku}</td><td className="p-3 max-w-sm whitespace-normal break-words">{task.product_name}</td><td className="p-3">{task.first_count_status || "—"}</td><td className="p-3">{task.state === "completed" ? "Đã hoàn tất" : task.state === "in_progress" ? "Đang thực hiện" : task.state}</td><td className="p-3">{task.completed_by_name_snapshot || task.assigned_name_snapshot || "—"}</td><td className="p-3 whitespace-pre-wrap break-words text-slate-700">{task.reason || "—"}</td></tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               )}
 

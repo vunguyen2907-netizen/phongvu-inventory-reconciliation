@@ -127,6 +127,15 @@ if os.path.exists(html_path):
     domain_path = os.path.join(os.path.dirname(__file__), "recount_domain.js")
     with open(domain_path, "r", encoding="utf-8") as domain_file:
         domain_code = domain_file.read()
+    fonts_path = os.path.join(os.path.dirname(__file__), "times_fonts.js")
+    if os.path.exists(fonts_path):
+        with open(fonts_path, "r", encoding="utf-8") as fonts_file:
+            fonts_code = fonts_file.read().replace("</script", "<\\/script")
+        html_code = html_code.replace(
+            '<script src="./times_fonts.js"></script>',
+            f'<script>{fonts_code}</script>',
+            1
+        )
     html_code = build_embedded_html(
         html_code,
         domain_code,

@@ -222,10 +222,36 @@ export function createLifecycleHandler(dependencies: LifecycleDependencies) {
 
       const serviceClient = dependencies.createServiceClient();
       switch (action) {
+        case "update_role": {
+          if (!["active", "locked"].includes(target.status)) return response(409, { error: "target_not_approved" });
+          const role = typeof body?.role === "string" && ["admin", "manager", "counter"].includes(body.role)
+            ? body.role
+            : undefined;
+          if (!role) return response(400, { error: "role_required" });
+          if (caller.role === "manager" && role !== "counter" && role !== "manager") {
+            return response(403, { error: "manager_cannot_assign_admin_role" });
+          }
+          if (role !== target.role) {
+            const { error: updateError } = await serviceClient.from("profiles").update({ role }).eq("id", targetUserId);
+            if (updateError) {
+              return response(502, {
+                error: "role_update_failed",
+                message: updateError.message || "",
+              });
+            }
+          }
+          return response(200, { ok: true, action, target_user_id: targetUserId, role });
+        }
         case "approve_user": {
           if (target.status !== "pending") return response(409, { error: "target_not_pending" });
           const erpName = typeof body?.erp_name === "string" ? body.erp_name.trim() : "";
           if (!erpName) return response(400, { error: "erp_name_required" });
+          const role = typeof body?.role === "string" && ["admin", "manager", "counter"].includes(body.role)
+            ? body.role
+            : undefined;
+          if (caller.role === "manager" && role && role !== "counter" && role !== "manager") {
+            return response(403, { error: "manager_cannot_assign_admin_role" });
+          }
           const { error: approvalError } = await userClient.rpc("manager_approve_profile", {
             p_user_id: targetUserId,
             p_erp_name: erpName,
@@ -235,6 +261,9 @@ export function createLifecycleHandler(dependencies: LifecycleDependencies) {
               error: "profile_approval_failed",
               message: approvalError.message || "",
             });
+          }
+          if (role && role !== target.role) {
+            await serviceClient.from("profiles").update({ role }).eq("id", targetUserId);
           }
           const { error: confirmationError } = await serviceClient.auth.admin.updateUserById(targetUserId, {
             email_confirm: true,
@@ -246,7 +275,7 @@ export function createLifecycleHandler(dependencies: LifecycleDependencies) {
               message: confirmationError.message || "",
             });
           }
-          return response(200, { ok: true, action, target_user_id: targetUserId });
+          return response(200, { ok: true, action, target_user_id: targetUserId, role: role || target.role });
         }
         case "confirm_email": {
           if (!["active", "locked"].includes(target.status)) return response(409, { error: "target_not_approved" });

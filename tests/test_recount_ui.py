@@ -140,7 +140,7 @@ def _mock_supabase_script(session, profile, legacy=False, behavior=None):
           const query = {{
             select() {{ return query; }},
             eq(column, value) {{
-              if (table === "profiles" && (column !== "id" || value !== fixture.session?.user?.id)) {{
+              if (table === "profiles" && column === "id" && value !== fixture.session?.user?.id) {{
                 throw new Error("Profile query must use the authenticated user id");
               }}
               return query;
@@ -380,6 +380,51 @@ class AuthUiTest(unittest.TestCase):
 
         call = page.evaluate("window.__AUTH_CALLS__.find(call => call.method === 'function.invoke')")
         self.assertEqual(call["payload"], {"name": "admin-user-lifecycle", "body": {"action": "approve_user", "target_user_id": "pending-user", "erp_name": "ERP NEW"}})
+
+    def test_admin_account_panel_approves_with_selected_role(self):
+        session = {"user": {"id": "admin-user", "email": "admin@example.com"}}
+        profile = {"id": "admin-user", "email": "admin@example.com", "full_name": "Admin User", "erp_name": "ERP Admin", "role": "admin", "status": "active"}
+        pending = {"id": "pending-user", "email": "pending@example.com", "full_name": "Pending User", "erp_name": "Old ERP", "role": "counter", "status": "pending"}
+        page = self.open_auth_page(session, profile, behavior={"accountProfiles": [pending]})
+
+        page.get_by_role("button", name="Quản lý tài khoản").click()
+        page.get_by_role("heading", name="Quản lý tài khoản").wait_for()
+        page.get_by_label("ERP cho Pending User").fill("ERP MGR")
+        page.get_by_label("Vai trò cho Pending User").select_option("manager")
+        page.get_by_role("button", name="Phê duyệt Pending User").click()
+
+        call = page.evaluate("window.__AUTH_CALLS__.find(call => call.method === 'function.invoke')")
+        self.assertEqual(call["payload"], {
+            "name": "admin-user-lifecycle",
+            "body": {
+                "action": "approve_user",
+                "target_user_id": "pending-user",
+                "erp_name": "ERP MGR",
+                "role": "manager"
+            }
+        })
+
+    def test_admin_account_panel_updates_role_of_active_account(self):
+        session = {"user": {"id": "admin-user", "email": "admin@example.com"}}
+        profile = {"id": "admin-user", "email": "admin@example.com", "full_name": "Admin User", "erp_name": "ERP Admin", "role": "admin", "status": "active"}
+        active = {"id": "active-user", "email": "active@example.com", "full_name": "Active User", "erp_name": "ERP Active", "role": "counter", "status": "active"}
+        page = self.open_auth_page(session, profile, behavior={"accountProfiles": [active]})
+
+        page.get_by_role("button", name="Quản lý tài khoản").click()
+        page.get_by_role("button", name="Hoạt động", exact=True).click()
+        role_select = page.get_by_label("Vai trò cho Active User")
+        role_select.select_option("manager")
+        page.get_by_role("button", name="Đổi vai trò Active User").click()
+
+        call = page.evaluate("window.__AUTH_CALLS__.find(call => call.method === 'function.invoke')")
+        self.assertEqual(call["payload"], {
+            "name": "admin-user-lifecycle",
+            "body": {
+                "action": "update_role",
+                "target_user_id": "active-user",
+                "role": "manager"
+            }
+        })
 
     def test_manager_account_panel_can_delete_a_pending_registration_with_typed_confirmation(self):
         session = {"user": {"id": "manager-user", "email": "manager@example.com"}}
