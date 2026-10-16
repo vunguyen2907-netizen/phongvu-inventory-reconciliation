@@ -1774,6 +1774,7 @@
       const [filterRecountGuideBin, setFilterRecountGuideBin] = useState("Tất cả");
       const [filterRecountGuideProcessed, setFilterRecountGuideProcessed] = useState("Tất cả");
       const [copiedSerial, setCopiedSerial] = useState("");
+      const [editingNoteRowId, setEditingNoteRowId] = useState(null);
       const [showAdvancedRecount, setShowAdvancedRecount] = useState(false);
 
       useEffect(() => {
@@ -4559,8 +4560,12 @@
                               <th className="p-3 w-32">Phân loại chênh lệch</th>
                               <th className="p-3 min-w-[130px]">Người kiểm L1</th>
                               <th className="p-3 min-w-[110px]">Thời gian kiểm L1</th>
-                              <th className="p-3 min-w-[220px]">Ghi chú xử lý</th>
-                              <th className="p-3 w-24 text-center">Đã xử lý</th>
+                              <th className="p-3 min-w-[200px]">Ghi chú xử lý</th>
+                              {isManager ? (
+                                <th className="p-3 min-w-[180px]">Trạng thái & Người thao tác</th>
+                              ) : (
+                                <th className="p-3 w-28 text-center">Đã xử lý</th>
+                              )}
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100">
@@ -4631,55 +4636,187 @@
                                   <td className="p-3 text-slate-600 font-mono text-[11px]">
                                     {formatInventoryTime(r.inventoryTime) || "—"}
                                   </td>
-                                  <td className="p-2">
-                                    <div className="space-y-1">
-                                      <input
-                                        type="text"
-                                        list={`suggestions-${r.rowId || idx}`}
-                                        defaultValue={r.processNote || ""}
-                                        onBlur={e => {
-                                          if (e.target.value !== (r.processNote || "")) {
-                                            handleUpdateRecountNote(r.rowId, e.target.value);
-                                          }
-                                        }}
-                                        onKeyDown={e => {
-                                          if (e.key === "Enter") {
-                                            e.target.blur();
-                                          }
-                                        }}
-                                        placeholder="Ghi chú (đã xuất bán, k tìm thấy...)"
-                                        className="w-full bg-slate-50 focus:bg-white border border-slate-200 focus:border-brand-500 rounded px-2 py-1 text-xs text-slate-800 placeholder:text-slate-400 transition"
-                                      />
-                                      <datalist id={`suggestions-${r.rowId || idx}`}>
-                                        <option value="Đã xuất bán cho đơn" />
-                                        <option value="Không tìm thấy sản phẩm" />
-                                        <option value="Hàng lỗi chuyển bảo hành" />
-                                        <option value="Tìm thấy ở BIN khác" />
-                                        <option value="Đã quét bổ sung lên hệ thống" />
-                                      </datalist>
-                                      {r.processedBy && (
-                                        <p className="text-[10px] text-slate-500 leading-tight" title={r.processHistory && r.processHistory.length > 0 ? r.processHistory.map(h => `${h.at} - ${h.by}: ${h.action} (${h.note || ''})`).join('\n') : ''}>
-                                          Lịch sử: {r.processedBy} ({r.processedAt || ''})
-                                        </p>
-                                      )}
-                                    </div>
-                                  </td>
-                                  <td className="p-3 text-center">
-                                    <div className="flex flex-col items-center justify-center gap-1">
-                                      <input
-                                        type="checkbox"
-                                        checked={Boolean(r.processed)}
-                                        onChange={e => handleToggleRecountProcessed(r.rowId, e.target.checked)}
-                                        title={r.processed ? "Bỏ đánh dấu đã xử lý" : "Đánh dấu đã xử lý xong"}
-                                        className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500 cursor-pointer"
-                                      />
-                                      {r.processed && (
-                                        <span className="inline-block text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1 py-0.5 rounded border border-emerald-200">
-                                          ✓ Xong
-                                        </span>
-                                      )}
-                                    </div>
-                                  </td>
+                                  {isManager ? (
+                                    <>
+                                      <td className="p-3">
+                                        {editingNoteRowId === r.rowId ? (
+                                          <div className="space-y-1">
+                                            <input
+                                              type="text"
+                                              autoFocus
+                                              list={`suggestions-${r.rowId || idx}`}
+                                              defaultValue={r.processNote || ""}
+                                              onBlur={e => {
+                                                handleUpdateRecountNote(r.rowId, e.target.value);
+                                                setEditingNoteRowId(null);
+                                              }}
+                                              onKeyDown={e => {
+                                                if (e.key === "Enter") {
+                                                  handleUpdateRecountNote(r.rowId, e.target.value);
+                                                  setEditingNoteRowId(null);
+                                                } else if (e.key === "Escape") {
+                                                  setEditingNoteRowId(null);
+                                                }
+                                              }}
+                                              placeholder="Nhập ghi chú xử lý..."
+                                              className="w-full bg-white border border-brand-500 rounded px-2 py-1 text-xs text-slate-800 shadow-xs"
+                                            />
+                                            <div className="text-[10px] text-slate-400">Nhấn Enter để lưu, Esc để hủy</div>
+                                          </div>
+                                        ) : (
+                                          <div className="group flex items-start justify-between gap-1.5">
+                                            <div className="text-xs">
+                                              {r.processNote ? (
+                                                <span className="text-slate-800 font-medium whitespace-pre-wrap">{r.processNote}</span>
+                                              ) : (
+                                                <span className="text-slate-400 italic text-[11px]">— Chưa có ghi chú —</span>
+                                              )}
+                                            </div>
+                                            <button
+                                              type="button"
+                                              onClick={() => setEditingNoteRowId(r.rowId)}
+                                              title="Admin sửa ghi chú"
+                                              className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-brand-600 transition text-[11px] px-1 py-0.5 rounded hover:bg-slate-100 shrink-0"
+                                            >
+                                              ✏️
+                                            </button>
+                                          </div>
+                                        )}
+                                      </td>
+                                      <td className="p-3">
+                                        {r.processed ? (
+                                          <div className="space-y-1">
+                                            <div className="flex items-center gap-1.5">
+                                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-600"></span>
+                                                Đã xử lý
+                                              </span>
+                                              <button
+                                                type="button"
+                                                onClick={() => handleToggleRecountProcessed(r.rowId, false)}
+                                                title="Mở lại trạng thái chưa xử lý"
+                                                className="text-[10px] text-slate-400 hover:text-rose-600 underline transition ml-1"
+                                              >
+                                                Mở lại
+                                              </button>
+                                            </div>
+                                            <div className="text-[11px] text-slate-800 font-semibold leading-tight flex items-center gap-1">
+                                              <span className="text-slate-400 font-normal">Bởi:</span>
+                                              <span className="text-slate-900 font-bold">{r.processedBy || "Nhân viên kiểm lại"}</span>
+                                            </div>
+                                            {r.processedAt && (
+                                              <div className="text-[10px] text-slate-500 font-mono">
+                                                {r.processedAt}
+                                              </div>
+                                            )}
+                                            {r.processHistory && r.processHistory.length > 1 && (
+                                              <details className="text-[10px] text-slate-500 mt-1 cursor-pointer">
+                                                <summary className="hover:text-brand-600 select-none">Xem lịch sử ({r.processHistory.length})</summary>
+                                                <div className="mt-1 p-2 bg-slate-50 rounded border border-slate-200 space-y-1 text-left font-sans">
+                                                  {r.processHistory.map((h, hIdx) => (
+                                                    <div key={hIdx} className="border-b border-slate-100 last:border-0 pb-1 last:pb-0">
+                                                      <span className="font-semibold text-slate-700">{h.by}</span>: {h.action}
+                                                      <div className="text-slate-400 font-mono text-[9px]">{h.at} {h.note ? `— "${h.note}"` : ''}</div>
+                                                    </div>
+                                                  ))}
+                                                </div>
+                                              </details>
+                                            )}
+                                          </div>
+                                        ) : (
+                                          <div className="space-y-1">
+                                            <div className="flex items-center gap-1.5">
+                                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-600 border border-slate-200">
+                                                <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+                                                Chưa xử lý
+                                              </span>
+                                              <button
+                                                type="button"
+                                                onClick={() => handleToggleRecountProcessed(r.rowId, true)}
+                                                title="Đánh dấu đã xử lý xong"
+                                                className="text-[10px] text-slate-400 hover:text-emerald-700 underline transition ml-1"
+                                              >
+                                                Đánh dấu xong
+                                              </button>
+                                            </div>
+                                            {r.processedBy && (
+                                              <div className="text-[11px] text-slate-600 leading-tight">
+                                                <span className="text-slate-400 font-normal">Ghi chú bởi:</span> <span className="font-medium text-slate-800">{r.processedBy}</span>
+                                                {r.processedAt && <span className="block text-[10px] text-slate-400 font-mono">{r.processedAt}</span>}
+                                              </div>
+                                            )}
+                                            {r.processHistory && r.processHistory.length > 0 && (
+                                              <details className="text-[10px] text-slate-500 mt-1 cursor-pointer">
+                                                <summary className="hover:text-brand-600 select-none">Xem lịch sử ({r.processHistory.length})</summary>
+                                                <div className="mt-1 p-2 bg-slate-50 rounded border border-slate-200 space-y-1 text-left font-sans">
+                                                  {r.processHistory.map((h, hIdx) => (
+                                                    <div key={hIdx} className="border-b border-slate-100 last:border-0 pb-1 last:pb-0">
+                                                      <span className="font-semibold text-slate-700">{h.by}</span>: {h.action}
+                                                      <div className="text-slate-400 font-mono text-[9px]">{h.at} {h.note ? `— "${h.note}"` : ''}</div>
+                                                    </div>
+                                                  ))}
+                                                </div>
+                                              </details>
+                                            )}
+                                          </div>
+                                        )}
+                                      </td>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <td className="p-2">
+                                        <div className="space-y-1">
+                                          <input
+                                            type="text"
+                                            list={`suggestions-${r.rowId || idx}`}
+                                            defaultValue={r.processNote || ""}
+                                            onBlur={e => {
+                                              if (e.target.value !== (r.processNote || "")) {
+                                                handleUpdateRecountNote(r.rowId, e.target.value);
+                                              }
+                                            }}
+                                            onKeyDown={e => {
+                                              if (e.key === "Enter") {
+                                                e.target.blur();
+                                              }
+                                            }}
+                                            placeholder="Ghi chú (đã xuất bán, k tìm thấy...)"
+                                            className="w-full bg-slate-50 focus:bg-white border border-slate-200 focus:border-brand-500 rounded px-2 py-1 text-xs text-slate-800 placeholder:text-slate-400 transition"
+                                          />
+                                          <datalist id={`suggestions-${r.rowId || idx}`}>
+                                            <option value="Đã xuất bán cho đơn" />
+                                            <option value="Không tìm thấy sản phẩm" />
+                                            <option value="Hàng lỗi chuyển bảo hành" />
+                                            <option value="Tìm thấy ở BIN khác" />
+                                            <option value="Đã quét bổ sung lên hệ thống" />
+                                          </datalist>
+                                          {r.processedBy && (
+                                            <p className="text-[10px] text-slate-500 leading-tight">
+                                              Lưu gần nhất: {r.processedBy} ({r.processedAt || ''})
+                                            </p>
+                                          )}
+                                        </div>
+                                      </td>
+                                      <td className="p-3 text-center">
+                                        <div className="flex flex-col items-center justify-center gap-1">
+                                          <input
+                                            type="checkbox"
+                                            checked={Boolean(r.processed)}
+                                            onChange={e => handleToggleRecountProcessed(r.rowId, e.target.checked)}
+                                            title={r.processed ? "Bỏ đánh dấu đã xử lý" : "Đánh dấu đã xử lý xong"}
+                                            className="h-5 w-5 rounded border-slate-300 text-brand-600 focus:ring-brand-500 cursor-pointer"
+                                          />
+                                          {r.processed ? (
+                                            <span className="inline-block text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1 py-0.5 rounded border border-emerald-200">
+                                              ✓ Xong
+                                            </span>
+                                          ) : (
+                                            <span className="text-[10px] text-slate-400">Chưa xong</span>
+                                          )}
+                                        </div>
+                                      </td>
+                                    </>
+                                  )}
                                 </tr>
                               );
                             })}
