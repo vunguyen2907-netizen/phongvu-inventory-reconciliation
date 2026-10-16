@@ -8,6 +8,14 @@ for select
 to authenticated
 using (true);
 
+drop policy if exists inventory_sessions_update_authenticated on public.inventory_sessions;
+create policy inventory_sessions_update_authenticated
+on public.inventory_sessions
+for update
+to authenticated
+using (true)
+with check (true);
+
 -- Cập nhật trigger đăng ký để tài khoản nhân sự mới đăng ký được tự động kích hoạt (active)
 -- Nhân sự vào là thấy ngay danh sách kiểm lần 2 để dùng hệ thống kiểm kê nội bộ quét lại
 create or replace function private.handle_registered_user()

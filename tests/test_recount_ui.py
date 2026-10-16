@@ -15,10 +15,9 @@ MANAGER_TABS = [
     "1. Nhập dữ liệu",
     "2. Chi tiết Serial",
     "3. Kiểm đếm lần 2",
-    "4. Báo cáo kiểm lần 2",
-    "5. Bảng tổng hợp chênh lệch",
-    "6. Xuất báo cáo",
-    "7. Lưu trữ hàng tháng",
+    "4. Bảng tổng hợp chênh lệch",
+    "5. Xuất báo cáo",
+    "6. Lưu trữ hàng tháng",
 ]
 
 
