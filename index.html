@@ -495,6 +495,37 @@
       );
     }
 
+    function RecountNoteInput({ initialValue, onSave, placeholder, className, suggestionsId }) {
+      const [val, setVal] = useState(initialValue || "");
+      useEffect(() => {
+        setVal(initialValue || "");
+      }, [initialValue]);
+
+      return (
+        <input
+          type="text"
+          list={suggestionsId}
+          value={val}
+          onChange={e => setVal(e.target.value)}
+          onBlur={() => {
+            if (val !== (initialValue || "")) {
+              onSave(val);
+            }
+          }}
+          onKeyDown={e => {
+            if (e.key === "Enter") {
+              if (val !== (initialValue || "")) {
+                onSave(val);
+              }
+              e.target.blur();
+            }
+          }}
+          placeholder={placeholder}
+          className={className}
+        />
+      );
+    }
+
     // --- PYTHON-EQUIVALENT MAXIMUM SCORE HEADER DETECTOR ---
     function parseSmartSheet(ws) {
       const rows2d = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
@@ -1668,6 +1699,15 @@
     function ApplicationShell({ session, profile, legacyMode = false }) {
       const isManager = legacyMode || profile?.role === "manager" || profile?.role === "admin";
       const allowedTabs = isManager ? MANAGER_TABS : COUNTER_TABS;
+      const currentUser = session?.user || null;
+      const currentUserProfile = profile || null;
+      const ensureRowIds = (rows) => {
+        if (!Array.isArray(rows)) return [];
+        return rows.map((r, idx) => {
+          if (r && r.rowId) return r;
+          return { ...r, rowId: `${r.sku || 'item'}::${r.stockSerial || r.scannedSerial || idx}` };
+        });
+      };
 
       // Đọc đồng bộ ngay từ localStorage để loại bỏ hoàn toàn màn hình trắng khi reload/chụp màn hình
       const syncDraft = React.useMemo(() => readSyncLocalStorage() || {}, []);
@@ -1706,7 +1746,7 @@
 
       // Processed Data States (khởi tạo có ngay dữ liệu đồng bộ, không đợi async)
       const [dfCountL2, setDfCountL2] = useState(() => syncDraft.dfCountL2 || []);
-      const [dfCheckDetail, setDfCheckDetail] = useState(() => syncDraft.dfCheckDetail || []);
+      const [dfCheckDetail, setDfCheckDetail] = useState(() => ensureRowIds(syncDraft.dfCheckDetail || []));
 
       // Secure second-count manager workspace. The legacy SKU recount table is
       // retained as a fallback until a manager creates the normalized batch.
@@ -1775,6 +1815,7 @@
       const [filterRecountGuideProcessed, setFilterRecountGuideProcessed] = useState("Tất cả");
       const [copiedSerial, setCopiedSerial] = useState("");
       const [editingNoteRowId, setEditingNoteRowId] = useState(null);
+      const [recountViewMode, setRecountViewMode] = useState("auto");
       const [showAdvancedRecount, setShowAdvancedRecount] = useState(false);
 
       useEffect(() => {
@@ -1790,7 +1831,7 @@
           const draft = await loadLocalDraft();
           if (!isMounted || !draft) return;
           if (draft.dfCheckDetail && draft.dfCheckDetail.length > 0) {
-            setDfCheckDetail(draft.dfCheckDetail);
+            setDfCheckDetail(ensureRowIds(draft.dfCheckDetail));
             setDfCountL2(draft.dfCountL2 || []);
             if (draft.rawStockData) setRawStockData(draft.rawStockData);
             if (draft.rawErpData) setRawErpData(draft.rawErpData);
@@ -3511,14 +3552,15 @@
 
       const syncRecountToSupabaseTimerRef = useRef(null);
 
-      const handleToggleRecountProcessed = (rowId, checked) => {
+      const handleToggleRecountProcessed = (targetIdentifier, checked) => {
         const now = new Date();
         const timeStr = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")} ${String(now.getDate()).padStart(2, "0")}/${String(now.getMonth() + 1).padStart(2, "0")}/${now.getFullYear()}`;
-        const currentUserName = currentUserProfile?.full_name || currentUserProfile?.erp_name || currentUser?.email || (isManager ? "Quản lý" : "Nhân viên kiểm lại");
+        const currentUserName = profile?.full_name || profile?.erp_name || session?.user?.email || (isManager ? "Quản lý" : "Nhân viên kiểm lại");
 
         setDfCheckDetail(prev => {
-          const next = prev.map(r => {
-            if (r.rowId !== rowId) return r;
+          const next = (prev || []).map((r, idx) => {
+            const rowId = r.rowId || `${r.sku}::${r.stockSerial || r.scannedSerial || idx}`;
+            if (rowId !== targetIdentifier && r.rowId !== targetIdentifier) return r;
             const willBeChecked = Boolean(checked);
             const historyItem = {
               at: timeStr,
@@ -3529,6 +3571,7 @@
             const prevHistory = Array.isArray(r.processHistory) ? r.processHistory : [];
             return {
               ...r,
+              rowId,
               processed: willBeChecked,
               processedBy: willBeChecked ? currentUserName : (r.processNote ? r.processedBy : ""),
               processedAt: willBeChecked ? timeStr : (r.processNote ? r.processedAt : ""),
@@ -3565,16 +3608,23 @@
 
           return next;
         });
+
+        if (checked) {
+          showNotice("✅ Đã ghi nhận: Đã xử lý xong!");
+        } else {
+          showNotice("Đã mở lại dòng kiểm kê (chưa xử lý).");
+        }
       };
 
-      const handleUpdateRecountNote = (rowId, noteValue) => {
+      const handleUpdateRecountNote = (targetIdentifier, noteValue) => {
         const now = new Date();
         const timeStr = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")} ${String(now.getDate()).padStart(2, "0")}/${String(now.getMonth() + 1).padStart(2, "0")}/${now.getFullYear()}`;
-        const currentUserName = currentUserProfile?.full_name || currentUserProfile?.erp_name || currentUser?.email || (isManager ? "Quản lý" : "Nhân viên kiểm lại");
+        const currentUserName = profile?.full_name || profile?.erp_name || session?.user?.email || (isManager ? "Quản lý" : "Nhân viên kiểm lại");
 
         setDfCheckDetail(prev => {
-          const next = prev.map(r => {
-            if (r.rowId !== rowId) return r;
+          const next = (prev || []).map((r, idx) => {
+            const rowId = r.rowId || `${r.sku}::${r.stockSerial || r.scannedSerial || idx}`;
+            if (rowId !== targetIdentifier && r.rowId !== targetIdentifier) return r;
             const historyItem = {
               at: timeStr,
               by: currentUserName,
@@ -3584,6 +3634,7 @@
             const prevHistory = Array.isArray(r.processHistory) ? r.processHistory : [];
             return {
               ...r,
+              rowId,
               processNote: noteValue,
               processedBy: r.processedBy || currentUserName,
               processedAt: r.processedAt || timeStr,
@@ -3620,6 +3671,8 @@
 
           return next;
         });
+
+        showNotice("💾 Đã lưu ghi chú xử lý.");
       };
 
       const filteredRecountGuideRows = useMemo(() => {
@@ -3890,13 +3943,13 @@
               >☰</button>
             )}
             {/* TOP NAVIGATION TABS */}
-            <header className="bg-white border-b border-slate-200 px-6 pt-4 pb-0 shadow-sm">
-              <div className="mb-4 flex items-start justify-between gap-4">
+            <header className="bg-white border-b border-slate-200 px-3 sm:px-6 pt-3 sm:pt-4 pb-0 shadow-sm">
+              <div className="mb-3 sm:mb-4 flex flex-col sm:flex-row sm:items-start justify-between gap-3 sm:gap-4">
                 <div>
-                  <h2 className="text-xl font-bold text-slate-800">Hệ thống Tự động Xử lý & Đối soát Dữ liệu Kiểm kê</h2>
+                  <h2 className="text-lg sm:text-xl font-bold text-slate-800">Hệ thống Tự động Xử lý & Đối soát Dữ liệu Kiểm kê</h2>
                   <p className="text-xs text-slate-500">Công ty Cổ phần Thương mại Dịch vụ Phong Vũ</p>
                 </div>
-                <div className="flex items-center gap-3 text-right">
+                <div className="flex items-center justify-between sm:justify-end gap-3 text-left sm:text-right">
                   <div>
                     <p className="text-sm font-bold text-slate-800">{legacyMode ? "Chế độ chuyển đổi" : (profile?.full_name || profile?.email)}</p>
                     <p className="text-xs text-slate-500">{legacyMode ? "Legacy manager" : `${profile?.role || ""} · ${profile?.erp_name || ""}`}</p>
@@ -3904,28 +3957,28 @@
                     {authActionMessage && <p role="status" className="mt-1 text-xs font-semibold text-emerald-600">{authActionMessage}</p>}
                   </div>
                   {!legacyMode && (
-                    <div className="flex flex-wrap justify-end gap-2">
+                    <div className="flex flex-wrap justify-end gap-1.5 sm:gap-2">
                       {isManager && (
-                        <button type="button" onClick={() => setAccountPanelOpen(true)} className="rounded-lg border border-brand-200 bg-brand-50 px-3 py-2 text-xs font-semibold text-brand-700 hover:bg-brand-100">
+                        <button type="button" onClick={() => setAccountPanelOpen(true)} className="rounded-lg border border-brand-200 bg-brand-50 px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold text-brand-700 hover:bg-brand-100">
                           👥 Quản lý tài khoản
                         </button>
                       )}
-                      <button type="button" onClick={handlePasswordReset} disabled={authActionPending} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-600 disabled:cursor-wait disabled:opacity-50">
-                        {authActionPending ? "⏳ Đang gửi email đổi mật khẩu…" : "Gửi email đổi mật khẩu"}
+                      <button type="button" onClick={handlePasswordReset} disabled={authActionPending} className="rounded-lg border border-slate-300 px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold text-slate-600 disabled:cursor-wait disabled:opacity-50">
+                        {authActionPending ? "⏳ Đang gửi…" : "Đổi mật khẩu"}
                       </button>
-                      <button type="button" onClick={handleShellSignOut} disabled={authActionPending} className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">Đăng xuất</button>
+                      <button type="button" onClick={handleShellSignOut} disabled={authActionPending} className="rounded-lg bg-slate-900 px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold text-white disabled:opacity-50">Đăng xuất</button>
                     </div>
                   )}
                 </div>
               </div>
 
               {/* TABS HEADER */}
-              <nav aria-label="Điều hướng chính" className="flex gap-2 border-b border-slate-200">
+              <nav aria-label="Điều hướng chính" className="flex gap-2 border-b border-slate-200 overflow-x-auto no-scrollbar">
                 {allowedTabs.map(tab => (
                   <button
                     key={tab.id}
                     onClick={() => setActiveTab(tab.id)}
-                    className={`px-4 py-2.5 text-xs font-semibold transition border-b-2 -mb-px ${activeTab === tab.id ? 'border-brand-600 text-brand-600 bg-brand-50/50' : 'border-transparent text-slate-600 hover:text-slate-900 hover:border-slate-300'}`}
+                    className={`px-3 sm:px-4 py-2 sm:py-2.5 text-xs font-semibold whitespace-nowrap transition border-b-2 -mb-px shrink-0 ${activeTab === tab.id ? 'border-brand-600 text-brand-600 bg-brand-50/50' : 'border-transparent text-slate-600 hover:text-slate-900 hover:border-slate-300'}`}
                   >
                     {tab.label}
                   </button>
@@ -3934,7 +3987,7 @@
             </header>
 
             {/* TAB CONTENTS */}
-            <div className="flex-1 p-6 overflow-y-auto">
+            <div className="flex-1 p-3 sm:p-6 overflow-y-auto">
               
               {/* TAB 0: NHẬP DỮ LIỆU */}
               {activeTab === "import" && (
@@ -4224,8 +4277,8 @@
               {activeTab === "second-count" && (
                 <div className="space-y-4">
                   {/* 1. THANH CHỌN ĐỢT KIỂM KÊ (Dành cho tất cả nhân sự) */}
-                  <div className="bg-white p-4 rounded-xl border border-brand-200 shadow-sm flex flex-wrap items-center justify-between gap-3">
-                    <div className="flex flex-wrap items-center gap-2">
+                  <div className="bg-white p-3 sm:p-4 rounded-xl border border-brand-200 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
                       <span className="text-xs font-bold uppercase text-slate-700 flex items-center gap-1.5">
                         <span>📁</span> Chọn đợt kiểm kê:
                       </span>
@@ -4235,7 +4288,7 @@
                           if (e.target.value) handleLoadSession(e.target.value);
                         }}
                         aria-label="Chọn đợt kiểm kê"
-                        className="bg-slate-50 text-xs font-semibold border border-slate-300 rounded-lg px-3 py-2 text-slate-800 focus:border-brand-500 focus:outline-none min-w-[260px]"
+                        className="bg-slate-50 text-xs font-semibold border border-slate-300 rounded-lg px-3 py-2 text-slate-800 focus:border-brand-500 focus:outline-none w-full sm:w-auto min-w-0 sm:min-w-[260px]"
                       >
                         <option value="">-- Chọn đợt kiểm kê để xem --</option>
                         {savedSessions.map(s => (
@@ -4429,15 +4482,15 @@
                   </div>
 
                   {/* 4. THANH CÔNG CỤ: TÌM KIẾM, BỘ LỌC PHÂN LOẠI, VỊ TRÍ BIN, TRẠNG THÁI XỬ LÝ & XUẤT EXCEL */}
-                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-wrap gap-3 items-center justify-between">
-                    <div className="flex flex-wrap items-center gap-3">
-                      <div className="relative">
+                  <div className="bg-white p-3 sm:p-4 rounded-xl border border-slate-200 shadow-sm flex flex-wrap gap-3 items-center justify-between">
+                    <div className="flex flex-wrap items-center gap-2.5 w-full lg:w-auto">
+                      <div className="relative w-full sm:w-auto">
                         <input
                           type="text"
                           placeholder="🔍 Tìm SKU, Serial, BIN, Tên SP, Người kiểm..."
                           value={searchRecountGuide}
                           onChange={e => setSearchRecountGuide(e.target.value)}
-                          className="bg-slate-50 text-xs border border-slate-300 rounded-lg pl-3 pr-8 py-2 w-72 focus:bg-white focus:border-brand-500 focus:outline-none"
+                          className="bg-slate-50 text-xs border border-slate-300 rounded-lg pl-3 pr-8 py-2 w-full sm:w-72 focus:bg-white focus:border-brand-500 focus:outline-none"
                         />
                         {searchRecountGuide && (
                           <button
@@ -4453,7 +4506,7 @@
                       <select
                         value={filterRecountGuideStatus}
                         onChange={e => setFilterRecountGuideStatus(e.target.value)}
-                        className="bg-slate-50 text-xs border border-slate-300 rounded-lg px-3 py-2 font-medium focus:outline-none focus:border-brand-500"
+                        className="bg-slate-50 text-xs border border-slate-300 rounded-lg px-3 py-2 font-medium focus:outline-none focus:border-brand-500 w-full sm:w-auto"
                       >
                         <option value="Tất cả">Tất cả loại chênh lệch</option>
                         <option value="Bắn thiếu (Chưa quét)">Chỉ Bắn thiếu (Chưa quét)</option>
@@ -4464,7 +4517,7 @@
                       <select
                         value={filterRecountGuideBin}
                         onChange={e => setFilterRecountGuideBin(e.target.value)}
-                        className="bg-slate-50 text-xs border border-slate-300 rounded-lg px-3 py-2 font-medium focus:outline-none focus:border-brand-500"
+                        className="bg-slate-50 text-xs border border-slate-300 rounded-lg px-3 py-2 font-medium focus:outline-none focus:border-brand-500 w-full sm:w-auto"
                       >
                         <option value="Tất cả">Tất cả Vị trí BIN ({availableRecountBins.length} BIN)</option>
                         {availableRecountBins.map(b => (
@@ -4475,7 +4528,7 @@
                       <select
                         value={filterRecountGuideProcessed}
                         onChange={e => setFilterRecountGuideProcessed(e.target.value)}
-                        className="bg-slate-50 text-xs border border-slate-300 rounded-lg px-3 py-2 font-medium focus:outline-none focus:border-brand-500"
+                        className="bg-slate-50 text-xs border border-slate-300 rounded-lg px-3 py-2 font-medium focus:outline-none focus:border-brand-500 w-full sm:w-auto"
                       >
                         <option value="Tất cả">Tất cả trạng thái xử lý</option>
                         <option value="Chưa xử lý">Chưa xử lý</option>
@@ -4514,11 +4567,41 @@
                           Dùng danh sách này để xác định vị trí BIN, sản phẩm, serial cần tìm và nhân sự kiểm L1 để dùng hệ thống kiểm kê nội bộ quét lại.
                         </p>
                       </div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="flex items-center bg-white rounded-lg p-0.5 border border-slate-200 shadow-xs">
+                          <button
+                            type="button"
+                            onClick={() => setRecountViewMode("card")}
+                            className={`px-2 py-1 text-xs font-semibold rounded-md transition ${recountViewMode === 'card' ? 'bg-brand-600 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
+                            title="Chế độ xem dạng thẻ tối ưu cho điện thoại"
+                          >
+                            📱 Thẻ
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setRecountViewMode("table")}
+                            className={`px-2 py-1 text-xs font-semibold rounded-md transition ${recountViewMode === 'table' ? 'bg-brand-600 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
+                            title="Chế độ xem dạng bảng đầy đủ cột"
+                          >
+                            📊 Bảng
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setRecountViewMode("auto")}
+                            className={`px-2 py-1 text-xs font-semibold rounded-md transition ${recountViewMode === 'auto' ? 'bg-slate-800 text-white shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                            title="Tự động (Thẻ trên điện thoại, Bảng trên máy tính)"
+                          >
+                            Tự động
+                          </button>
+                        </div>
                         <span className="text-xs font-bold text-slate-600 bg-white px-2.5 py-1 rounded-lg border border-slate-200">
                           Hiển thị: {filteredRecountGuideRows.length} / {recountDiscrepancies.length} dòng
                         </span>
-                        <span className="text-xs font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200">
+                        <span className={`text-xs font-bold px-2.5 py-1 rounded-lg border ${
+                          recountDiscrepancies.filter(r => r.processed).length === recountDiscrepancies.length && recountDiscrepancies.length > 0
+                            ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                            : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                        }`}>
                           Đã xử lý: {recountDiscrepancies.filter(r => r.processed).length} / {recountDiscrepancies.length}
                         </span>
                       </div>
@@ -4547,282 +4630,452 @@
                         </button>
                       </div>
                     ) : (
-                      <div className="overflow-x-auto max-h-[600px]">
-                        <table className="w-full min-w-[1100px] text-left text-xs">
-                          <thead className="bg-slate-100 text-slate-700 font-bold sticky top-0 border-b border-slate-200 shadow-xs">
-                            <tr>
-                              <th className="p-3 w-12 text-center text-slate-500">STT</th>
-                              <th className="p-3 w-28">Mã SKU</th>
-                              <th className="p-3 min-w-[200px]">Tên sản phẩm</th>
-                              <th className="p-3 w-28">Vị trí BIN</th>
-                              <th className="p-3 min-w-[170px]">Serial cần tìm (Sổ sách)</th>
-                              <th className="p-3 min-w-[160px]">Serial quét L1</th>
-                              <th className="p-3 w-32">Phân loại chênh lệch</th>
-                              <th className="p-3 min-w-[130px]">Người kiểm L1</th>
-                              <th className="p-3 min-w-[110px]">Thời gian kiểm L1</th>
-                              <th className="p-3 min-w-[200px]">Ghi chú xử lý</th>
-                              {isManager ? (
-                                <th className="p-3 min-w-[180px]">Trạng thái & Người thao tác</th>
-                              ) : (
-                                <th className="p-3 w-28 text-center">Đã xử lý</th>
-                              )}
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-100">
-                            {filteredRecountGuideRows.map((r, idx) => {
-                              const isMissing = r.status === "Bắn thiếu (Chưa quét)";
-                              const isWrong = r.status === "Bắn sai serial";
+                      <>
+                        {/* 1. CHẾ ĐỘ XEM THẺ CHO ĐIỆN THOẠI (Mobile Card View) */}
+                        <div className={recountViewMode === 'card' ? 'block space-y-3 p-3 bg-slate-100/60' : (recountViewMode === 'table' ? 'hidden' : 'block md:hidden space-y-3 p-3 bg-slate-100/60')}>
+                          {filteredRecountGuideRows.map((r, idx) => {
+                            const rowId = r.rowId || `${r.sku}::${r.stockSerial || r.scannedSerial || idx}`;
+                            const isMissing = r.status === "Bắn thiếu (Chưa quét)";
+                            const isWrong = r.status === "Bắn sai serial";
 
-                              return (
-                                <tr key={r.rowId || `${r.sku}-${idx}`} className={`transition ${r.processed ? 'bg-emerald-50/30 hover:bg-emerald-50/50' : 'hover:bg-slate-50'}`}>
-                                  <td className="p-3 text-center text-slate-400 font-medium">{idx + 1}</td>
-                                  <td className="p-3 font-mono font-bold text-slate-900">{r.sku}</td>
-                                  <td className="p-3 font-medium text-slate-800 whitespace-normal break-words" title={r.name}>
-                                    {r.name}
-                                  </td>
-                                  <td className="p-3 font-semibold text-slate-700">
-                                    {r.bin || "—"}
-                                  </td>
-                                  <td className="p-3 font-mono">
+                            return (
+                              <div
+                                key={rowId}
+                                className={`rounded-xl border p-4 shadow-sm transition space-y-3 ${
+                                  r.processed
+                                    ? 'bg-emerald-50/50 border-emerald-300 ring-1 ring-emerald-200'
+                                    : 'bg-white border-slate-200'
+                                }`}
+                              >
+                                {/* Header Thẻ: STT, SKU, Phân loại */}
+                                <div className="flex items-start justify-between gap-2 border-b border-slate-100 pb-2.5">
+                                  <div>
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-[11px] font-bold text-slate-400">#{idx + 1}</span>
+                                      <span className="font-mono font-extrabold text-sm text-slate-900 select-all">{r.sku}</span>
+                                    </div>
+                                    <p className="text-xs font-semibold text-slate-800 mt-1 leading-snug">{r.name}</p>
+                                  </div>
+                                  <span className={`inline-block rounded px-2 py-0.5 text-[11px] font-semibold border shrink-0 ${
+                                    isMissing
+                                      ? "bg-rose-50 text-rose-700 border-rose-200"
+                                      : isWrong
+                                      ? "bg-amber-50 text-amber-800 border-amber-200"
+                                      : "bg-slate-50 text-slate-700 border-slate-200"
+                                  }`}>
+                                    {r.status}
+                                  </span>
+                                </div>
+
+                                {/* Thông tin vị trí BIN & Người kiểm L1 */}
+                                <div className="grid grid-cols-2 gap-2 text-xs bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+                                  <div>
+                                    <span className="text-[10px] uppercase font-bold text-slate-400 block">Vị trí BIN</span>
+                                    <span className="font-bold text-slate-900 text-sm">{r.bin || "—"}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-[10px] uppercase font-bold text-slate-400 block">Người kiểm L1</span>
+                                    <span className="text-slate-700 font-medium truncate block">{r.performedBy || "—"}</span>
+                                    <span className="text-[10px] text-slate-400 font-mono">{formatInventoryTime(r.inventoryTime)}</span>
+                                  </div>
+                                </div>
+
+                                {/* Serial cần tìm & Serial quét L1 */}
+                                <div className="text-xs space-y-1.5 bg-slate-50/70 p-2.5 rounded-lg border border-slate-100">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="text-slate-500 font-medium text-[11px]">Serial cần tìm:</span>
                                     {r.stockSerial ? (
                                       <div className="flex items-center gap-1.5">
-                                        <span className="font-bold text-brand-700 select-all">{r.stockSerial}</span>
+                                        <span className="font-mono font-bold text-brand-700 select-all">{r.stockSerial}</span>
                                         <button
                                           type="button"
                                           onClick={() => handleCopySingleSerial(r.stockSerial)}
-                                          title="Sao chép serial"
-                                          className="text-slate-400 hover:text-brand-600 transition p-1 text-xs"
+                                          className="px-2 py-0.5 rounded bg-white text-brand-700 font-bold text-[11px] border border-brand-200 active:scale-95 transition shadow-2xs"
                                         >
-                                          {copiedSerial === r.stockSerial ? "✓" : "📋"}
+                                          {copiedSerial === r.stockSerial ? "✓ Đã chép" : "📋 Chép"}
                                         </button>
                                       </div>
                                     ) : (
-                                      <span className="text-slate-400">—</span>
+                                      <span className="text-slate-400 font-mono">—</span>
                                     )}
-                                  </td>
-                                  <td className="p-3 font-mono">
-                                    {r.scannedSerial ? (
-                                      <div className="flex items-center gap-1.5">
-                                        <span className={`font-semibold select-all ${isWrong ? 'text-amber-800 line-through decoration-rose-500' : 'text-slate-700'}`}>
-                                          {r.scannedSerial}
+                                  </div>
+
+                                  {r.scannedSerial && (
+                                    <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-200/60">
+                                      <span className="text-slate-500 font-medium text-[11px]">Serial quét L1:</span>
+                                      <span className={`font-mono text-xs ${isWrong ? 'text-amber-800 line-through decoration-rose-500 font-semibold' : 'text-slate-700'}`}>
+                                        {r.scannedSerial}
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Phần thao tác: Ghi chú xử lý */}
+                                <div className="space-y-1.5 pt-1">
+                                  <label className="text-[11px] font-bold text-slate-700 flex items-center justify-between">
+                                    <span>Ghi chú xử lý:</span>
+                                    {r.processedBy && (
+                                      <span className="font-normal text-[10px] text-slate-500">
+                                        Lưu bởi: {r.processedBy} ({r.processedAt || ''})
+                                      </span>
+                                    )}
+                                  </label>
+                                  {!isManager ? (
+                                    <div className="space-y-2">
+                                      <RecountNoteInput
+                                        initialValue={r.processNote || ""}
+                                        onSave={newNote => handleUpdateRecountNote(rowId, newNote)}
+                                        placeholder="Nhập ghi chú (đã xuất bán, k tìm thấy...)"
+                                        className="w-full bg-slate-50 focus:bg-white border border-slate-300 focus:border-brand-500 rounded-lg px-3 py-2 text-base sm:text-sm text-slate-900 placeholder:text-slate-400 transition"
+                                      />
+                                      {/* Chips gợi ý nhanh 1 chạm */}
+                                      <div className="flex flex-wrap gap-1.5">
+                                        {[
+                                          "Đã xuất bán cho đơn",
+                                          "Không tìm thấy SP",
+                                          "Hàng bảo hành",
+                                          "Tìm thấy ở BIN khác",
+                                          "Đã quét bổ sung lên hệ thống"
+                                        ].map(preset => (
+                                          <button
+                                            key={preset}
+                                            type="button"
+                                            onClick={() => handleUpdateRecountNote(rowId, preset)}
+                                            className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium border border-slate-200 active:scale-95 transition"
+                                          >
+                                            + {preset}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs">
+                                      {r.processNote ? (
+                                        <span className="text-slate-800 font-medium">{r.processNote}</span>
+                                      ) : (
+                                        <span className="text-slate-400 italic text-[11px]">Chưa có ghi chú</span>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Nút xác nhận ĐÃ XỬ LÝ XONG (To, rõ, dễ bấm trên mobile) */}
+                                <div className="pt-2 border-t border-slate-100">
+                                  {!isManager ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleToggleRecountProcessed(rowId, !r.processed)}
+                                      className={`w-full py-3 px-4 rounded-xl font-bold text-sm flex items-center justify-center gap-2 shadow-sm transition active:scale-[0.98] ${
+                                        r.processed
+                                          ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                                          : 'bg-white border-2 border-slate-300 hover:border-brand-500 text-slate-700 hover:text-brand-600'
+                                      }`}
+                                    >
+                                      {r.processed ? (
+                                        <>
+                                          <span className="text-base font-extrabold">✓</span>
+                                          <span>ĐÃ XỬ LÝ XONG (Chạm để mở lại)</span>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <span className="w-5 h-5 rounded border-2 border-slate-400 inline-block"></span>
+                                          <span>Chạm để xác nhận: ĐÃ XỬ LÝ XONG</span>
+                                        </>
+                                      )}
+                                    </button>
+                                  ) : (
+                                    <div className="flex items-center justify-between text-xs">
+                                      <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold ${
+                                        r.processed
+                                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                          : 'bg-slate-100 text-slate-600 border border-slate-200'
+                                      }`}>
+                                        <span className={`w-1.5 h-1.5 rounded-full ${r.processed ? 'bg-emerald-600' : 'bg-slate-400'}`}></span>
+                                        {r.processed ? 'Đã xử lý' : 'Chưa xử lý'}
+                                      </span>
+                                      {r.processedBy && (
+                                        <span className="text-slate-600 text-[11px]">
+                                          Bởi: <strong className="text-slate-900">{r.processedBy}</strong> ({r.processedAt})
                                         </span>
-                                        <button
-                                          type="button"
-                                          onClick={() => handleCopySingleSerial(r.scannedSerial)}
-                                          title="Sao chép serial"
-                                          className="text-slate-400 hover:text-brand-600 transition p-1 text-xs"
-                                        >
-                                          {copiedSerial === r.scannedSerial ? "✓" : "📋"}
-                                        </button>
-                                      </div>
-                                    ) : (
-                                      <span className="text-slate-400">—</span>
-                                    )}
-                                  </td>
-                                  <td className="p-3">
-                                    <span className={`inline-block rounded px-2 py-0.5 text-[11px] font-semibold border ${
-                                      isMissing
-                                        ? "bg-rose-50 text-rose-700 border-rose-200"
-                                        : isWrong
-                                        ? "bg-amber-50 text-amber-800 border-amber-200"
-                                        : "bg-slate-50 text-slate-700 border-slate-200"
-                                    }`}>
-                                      {r.status}
-                                    </span>
-                                  </td>
-                                  <td className="p-3 text-slate-700">
-                                    {r.performedBy || "—"}
-                                  </td>
-                                  <td className="p-3 text-slate-600 font-mono text-[11px]">
-                                    {formatInventoryTime(r.inventoryTime) || "—"}
-                                  </td>
-                                  {isManager ? (
-                                    <>
-                                      <td className="p-3">
-                                        {editingNoteRowId === r.rowId ? (
-                                          <div className="space-y-1">
-                                            <input
-                                              type="text"
-                                              autoFocus
-                                              list={`suggestions-${r.rowId || idx}`}
-                                              defaultValue={r.processNote || ""}
-                                              onBlur={e => {
-                                                handleUpdateRecountNote(r.rowId, e.target.value);
-                                                setEditingNoteRowId(null);
-                                              }}
-                                              onKeyDown={e => {
-                                                if (e.key === "Enter") {
-                                                  handleUpdateRecountNote(r.rowId, e.target.value);
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        {/* 2. CHẾ ĐỘ XEM BẢNG CHO MÁY TÍNH (Desktop Table View) */}
+                        <div className={recountViewMode === 'table' ? 'block overflow-x-auto max-h-[650px]' : (recountViewMode === 'card' ? 'hidden' : 'hidden md:block overflow-x-auto max-h-[650px]')}>
+                          <table className="w-full min-w-[1100px] text-left text-xs">
+                            <thead className="bg-slate-100 text-slate-700 font-bold sticky top-0 border-b border-slate-200 shadow-xs z-10">
+                              <tr>
+                                <th className="p-3 w-12 text-center text-slate-500">STT</th>
+                                <th className="p-3 w-28">Mã SKU</th>
+                                <th className="p-3 min-w-[200px]">Tên sản phẩm</th>
+                                <th className="p-3 w-28">Vị trí BIN</th>
+                                <th className="p-3 min-w-[170px]">Serial cần tìm (Sổ sách)</th>
+                                <th className="p-3 min-w-[160px]">Serial quét L1</th>
+                                <th className="p-3 w-32">Phân loại chênh lệch</th>
+                                <th className="p-3 min-w-[130px]">Người kiểm L1</th>
+                                <th className="p-3 min-w-[110px]">Thời gian kiểm L1</th>
+                                <th className="p-3 min-w-[220px]">Ghi chú xử lý</th>
+                                {isManager ? (
+                                  <th className="p-3 min-w-[180px]">Trạng thái & Người thao tác</th>
+                                ) : (
+                                  <th className="p-3 w-36 text-center">Xác nhận xử lý</th>
+                                )}
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {filteredRecountGuideRows.map((r, idx) => {
+                                const rowId = r.rowId || `${r.sku}::${r.stockSerial || r.scannedSerial || idx}`;
+                                const isMissing = r.status === "Bắn thiếu (Chưa quét)";
+                                const isWrong = r.status === "Bắn sai serial";
+
+                                return (
+                                  <tr key={rowId} className={`transition ${r.processed ? 'bg-emerald-50/30 hover:bg-emerald-50/50' : 'hover:bg-slate-50'}`}>
+                                    <td className="p-3 text-center text-slate-400 font-medium">{idx + 1}</td>
+                                    <td className="p-3 font-mono font-bold text-slate-900">{r.sku}</td>
+                                    <td className="p-3 font-medium text-slate-800 whitespace-normal break-words" title={r.name}>
+                                      {r.name}
+                                    </td>
+                                    <td className="p-3 font-semibold text-slate-700">
+                                      {r.bin || "—"}
+                                    </td>
+                                    <td className="p-3 font-mono">
+                                      {r.stockSerial ? (
+                                        <div className="flex items-center gap-1.5">
+                                          <span className="font-bold text-brand-700 select-all">{r.stockSerial}</span>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleCopySingleSerial(r.stockSerial)}
+                                            title="Sao chép serial"
+                                            className="text-slate-400 hover:text-brand-600 transition p-1 text-xs"
+                                          >
+                                            {copiedSerial === r.stockSerial ? "✓" : "📋"}
+                                          </button>
+                                        </div>
+                                      ) : (
+                                        <span className="text-slate-400">—</span>
+                                      )}
+                                    </td>
+                                    <td className="p-3 font-mono">
+                                      {r.scannedSerial ? (
+                                        <div className="flex items-center gap-1.5">
+                                          <span className={`font-semibold select-all ${isWrong ? 'text-amber-800 line-through decoration-rose-500' : 'text-slate-700'}`}>
+                                            {r.scannedSerial}
+                                          </span>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleCopySingleSerial(r.scannedSerial)}
+                                            title="Sao chép serial"
+                                            className="text-slate-400 hover:text-brand-600 transition p-1 text-xs"
+                                          >
+                                            {copiedSerial === r.scannedSerial ? "✓" : "📋"}
+                                          </button>
+                                        </div>
+                                      ) : (
+                                        <span className="text-slate-400">—</span>
+                                      )}
+                                    </td>
+                                    <td className="p-3">
+                                      <span className={`inline-block rounded px-2 py-0.5 text-[11px] font-semibold border ${
+                                        isMissing
+                                          ? "bg-rose-50 text-rose-700 border-rose-200"
+                                          : isWrong
+                                          ? "bg-amber-50 text-amber-800 border-amber-200"
+                                          : "bg-slate-50 text-slate-700 border-slate-200"
+                                      }`}>
+                                        {r.status}
+                                      </span>
+                                    </td>
+                                    <td className="p-3 text-slate-700">
+                                      {r.performedBy || "—"}
+                                    </td>
+                                    <td className="p-3 text-slate-600 font-mono text-[11px]">
+                                      {formatInventoryTime(r.inventoryTime) || "—"}
+                                    </td>
+                                    {isManager ? (
+                                      <>
+                                        <td className="p-3">
+                                          {editingNoteRowId === rowId ? (
+                                            <div className="space-y-1">
+                                              <input
+                                                type="text"
+                                                autoFocus
+                                                list={`suggestions-${rowId}`}
+                                                defaultValue={r.processNote || ""}
+                                                onBlur={e => {
+                                                  handleUpdateRecountNote(rowId, e.target.value);
                                                   setEditingNoteRowId(null);
-                                                } else if (e.key === "Escape") {
-                                                  setEditingNoteRowId(null);
-                                                }
-                                              }}
-                                              placeholder="Nhập ghi chú xử lý..."
-                                              className="w-full bg-white border border-brand-500 rounded px-2 py-1 text-xs text-slate-800 shadow-xs"
-                                            />
-                                            <div className="text-[10px] text-slate-400">Nhấn Enter để lưu, Esc để hủy</div>
-                                          </div>
-                                        ) : (
-                                          <div className="group flex items-start justify-between gap-1.5">
-                                            <div className="text-xs">
-                                              {r.processNote ? (
-                                                <span className="text-slate-800 font-medium whitespace-pre-wrap">{r.processNote}</span>
-                                              ) : (
-                                                <span className="text-slate-400 italic text-[11px]">— Chưa có ghi chú —</span>
+                                                }}
+                                                onKeyDown={e => {
+                                                  if (e.key === "Enter") {
+                                                    handleUpdateRecountNote(rowId, e.target.value);
+                                                    setEditingNoteRowId(null);
+                                                  } else if (e.key === "Escape") {
+                                                    setEditingNoteRowId(null);
+                                                  }
+                                                }}
+                                                placeholder="Nhập ghi chú xử lý..."
+                                                className="w-full bg-white border border-brand-500 rounded px-2 py-1 text-xs text-slate-800 shadow-xs"
+                                              />
+                                              <div className="text-[10px] text-slate-400">Nhấn Enter để lưu, Esc để hủy</div>
+                                            </div>
+                                          ) : (
+                                            <div className="group flex items-start justify-between gap-1.5">
+                                              <div className="text-xs">
+                                                {r.processNote ? (
+                                                  <span className="text-slate-800 font-medium whitespace-pre-wrap">{r.processNote}</span>
+                                                ) : (
+                                                  <span className="text-slate-400 italic text-[11px]">— Chưa có ghi chú —</span>
+                                                )}
+                                              </div>
+                                              <button
+                                                type="button"
+                                                onClick={() => setEditingNoteRowId(rowId)}
+                                                title="Admin sửa ghi chú"
+                                                className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-brand-600 transition text-[11px] px-1 py-0.5 rounded hover:bg-slate-100 shrink-0"
+                                              >
+                                                ✏️
+                                              </button>
+                                            </div>
+                                          )}
+                                        </td>
+                                        <td className="p-3">
+                                          {r.processed ? (
+                                            <div className="space-y-1">
+                                              <div className="flex items-center gap-1.5">
+                                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-600"></span>
+                                                  Đã xử lý
+                                                </span>
+                                                <button
+                                                  type="button"
+                                                  onClick={() => handleToggleRecountProcessed(rowId, false)}
+                                                  title="Mở lại trạng thái chưa xử lý"
+                                                  className="text-[10px] text-slate-400 hover:text-rose-600 underline transition ml-1"
+                                                >
+                                                  Mở lại
+                                                </button>
+                                              </div>
+                                              <div className="text-[11px] text-slate-800 font-semibold leading-tight flex items-center gap-1">
+                                                <span className="text-slate-400 font-normal">Bởi:</span>
+                                                <span className="text-slate-900 font-bold">{r.processedBy || "Nhân viên kiểm lại"}</span>
+                                              </div>
+                                              {r.processedAt && (
+                                                <div className="text-[10px] text-slate-500 font-mono">
+                                                  {r.processedAt}
+                                                </div>
+                                              )}
+                                              {r.processHistory && r.processHistory.length > 1 && (
+                                                <details className="text-[10px] text-slate-500 mt-1 cursor-pointer">
+                                                  <summary className="hover:text-brand-600 select-none">Xem lịch sử ({r.processHistory.length})</summary>
+                                                  <div className="mt-1 p-2 bg-slate-50 rounded border border-slate-200 space-y-1 text-left font-sans">
+                                                    {r.processHistory.map((h, hIdx) => (
+                                                      <div key={hIdx} className="border-b border-slate-100 last:border-0 pb-1 last:pb-0">
+                                                        <span className="font-semibold text-slate-700">{h.by}</span>: {h.action}
+                                                        <div className="text-slate-400 font-mono text-[9px]">{h.at} {h.note ? `— "${h.note}"` : ''}</div>
+                                                      </div>
+                                                    ))}
+                                                  </div>
+                                                </details>
                                               )}
                                             </div>
-                                            <button
-                                              type="button"
-                                              onClick={() => setEditingNoteRowId(r.rowId)}
-                                              title="Admin sửa ghi chú"
-                                              className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-brand-600 transition text-[11px] px-1 py-0.5 rounded hover:bg-slate-100 shrink-0"
-                                            >
-                                              ✏️
-                                            </button>
-                                          </div>
-                                        )}
-                                      </td>
-                                      <td className="p-3">
-                                        {r.processed ? (
-                                          <div className="space-y-1">
-                                            <div className="flex items-center gap-1.5">
-                                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
-                                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-600"></span>
-                                                Đã xử lý
-                                              </span>
-                                              <button
-                                                type="button"
-                                                onClick={() => handleToggleRecountProcessed(r.rowId, false)}
-                                                title="Mở lại trạng thái chưa xử lý"
-                                                className="text-[10px] text-slate-400 hover:text-rose-600 underline transition ml-1"
-                                              >
-                                                Mở lại
-                                              </button>
-                                            </div>
-                                            <div className="text-[11px] text-slate-800 font-semibold leading-tight flex items-center gap-1">
-                                              <span className="text-slate-400 font-normal">Bởi:</span>
-                                              <span className="text-slate-900 font-bold">{r.processedBy || "Nhân viên kiểm lại"}</span>
-                                            </div>
-                                            {r.processedAt && (
-                                              <div className="text-[10px] text-slate-500 font-mono">
-                                                {r.processedAt}
-                                              </div>
-                                            )}
-                                            {r.processHistory && r.processHistory.length > 1 && (
-                                              <details className="text-[10px] text-slate-500 mt-1 cursor-pointer">
-                                                <summary className="hover:text-brand-600 select-none">Xem lịch sử ({r.processHistory.length})</summary>
-                                                <div className="mt-1 p-2 bg-slate-50 rounded border border-slate-200 space-y-1 text-left font-sans">
-                                                  {r.processHistory.map((h, hIdx) => (
-                                                    <div key={hIdx} className="border-b border-slate-100 last:border-0 pb-1 last:pb-0">
-                                                      <span className="font-semibold text-slate-700">{h.by}</span>: {h.action}
-                                                      <div className="text-slate-400 font-mono text-[9px]">{h.at} {h.note ? `— "${h.note}"` : ''}</div>
-                                                    </div>
-                                                  ))}
-                                                </div>
-                                              </details>
-                                            )}
-                                          </div>
-                                        ) : (
-                                          <div className="space-y-1">
-                                            <div className="flex items-center gap-1.5">
-                                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-600 border border-slate-200">
-                                                <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
-                                                Chưa xử lý
-                                              </span>
-                                              <button
-                                                type="button"
-                                                onClick={() => handleToggleRecountProcessed(r.rowId, true)}
-                                                title="Đánh dấu đã xử lý xong"
-                                                className="text-[10px] text-slate-400 hover:text-emerald-700 underline transition ml-1"
-                                              >
-                                                Đánh dấu xong
-                                              </button>
-                                            </div>
-                                            {r.processedBy && (
-                                              <div className="text-[11px] text-slate-600 leading-tight">
-                                                <span className="text-slate-400 font-normal">Ghi chú bởi:</span> <span className="font-medium text-slate-800">{r.processedBy}</span>
-                                                {r.processedAt && <span className="block text-[10px] text-slate-400 font-mono">{r.processedAt}</span>}
-                                              </div>
-                                            )}
-                                            {r.processHistory && r.processHistory.length > 0 && (
-                                              <details className="text-[10px] text-slate-500 mt-1 cursor-pointer">
-                                                <summary className="hover:text-brand-600 select-none">Xem lịch sử ({r.processHistory.length})</summary>
-                                                <div className="mt-1 p-2 bg-slate-50 rounded border border-slate-200 space-y-1 text-left font-sans">
-                                                  {r.processHistory.map((h, hIdx) => (
-                                                    <div key={hIdx} className="border-b border-slate-100 last:border-0 pb-1 last:pb-0">
-                                                      <span className="font-semibold text-slate-700">{h.by}</span>: {h.action}
-                                                      <div className="text-slate-400 font-mono text-[9px]">{h.at} {h.note ? `— "${h.note}"` : ''}</div>
-                                                    </div>
-                                                  ))}
-                                                </div>
-                                              </details>
-                                            )}
-                                          </div>
-                                        )}
-                                      </td>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <td className="p-2">
-                                        <div className="space-y-1">
-                                          <input
-                                            type="text"
-                                            list={`suggestions-${r.rowId || idx}`}
-                                            defaultValue={r.processNote || ""}
-                                            onBlur={e => {
-                                              if (e.target.value !== (r.processNote || "")) {
-                                                handleUpdateRecountNote(r.rowId, e.target.value);
-                                              }
-                                            }}
-                                            onKeyDown={e => {
-                                              if (e.key === "Enter") {
-                                                e.target.blur();
-                                              }
-                                            }}
-                                            placeholder="Ghi chú (đã xuất bán, k tìm thấy...)"
-                                            className="w-full bg-slate-50 focus:bg-white border border-slate-200 focus:border-brand-500 rounded px-2 py-1 text-xs text-slate-800 placeholder:text-slate-400 transition"
-                                          />
-                                          <datalist id={`suggestions-${r.rowId || idx}`}>
-                                            <option value="Đã xuất bán cho đơn" />
-                                            <option value="Không tìm thấy sản phẩm" />
-                                            <option value="Hàng lỗi chuyển bảo hành" />
-                                            <option value="Tìm thấy ở BIN khác" />
-                                            <option value="Đã quét bổ sung lên hệ thống" />
-                                          </datalist>
-                                          {r.processedBy && (
-                                            <p className="text-[10px] text-slate-500 leading-tight">
-                                              Lưu gần nhất: {r.processedBy} ({r.processedAt || ''})
-                                            </p>
-                                          )}
-                                        </div>
-                                      </td>
-                                      <td className="p-3 text-center">
-                                        <div className="flex flex-col items-center justify-center gap-1">
-                                          <input
-                                            type="checkbox"
-                                            checked={Boolean(r.processed)}
-                                            onChange={e => handleToggleRecountProcessed(r.rowId, e.target.checked)}
-                                            title={r.processed ? "Bỏ đánh dấu đã xử lý" : "Đánh dấu đã xử lý xong"}
-                                            className="h-5 w-5 rounded border-slate-300 text-brand-600 focus:ring-brand-500 cursor-pointer"
-                                          />
-                                          {r.processed ? (
-                                            <span className="inline-block text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1 py-0.5 rounded border border-emerald-200">
-                                              ✓ Xong
-                                            </span>
                                           ) : (
-                                            <span className="text-[10px] text-slate-400">Chưa xong</span>
+                                            <div className="space-y-1">
+                                              <div className="flex items-center gap-1.5">
+                                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-600 border border-slate-200">
+                                                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+                                                  Chưa xử lý
+                                                </span>
+                                                <button
+                                                  type="button"
+                                                  onClick={() => handleToggleRecountProcessed(rowId, true)}
+                                                  title="Đánh dấu đã xử lý xong"
+                                                  className="text-[10px] text-slate-400 hover:text-emerald-700 underline transition ml-1"
+                                                >
+                                                  Đánh dấu xong
+                                                </button>
+                                              </div>
+                                              {r.processedBy && (
+                                                <div className="text-[11px] text-slate-600 leading-tight">
+                                                  <span className="text-slate-400 font-normal">Ghi chú bởi:</span> <span className="font-medium text-slate-800">{r.processedBy}</span>
+                                                  {r.processedAt && <span className="block text-[10px] text-slate-400 font-mono">{r.processedAt}</span>}
+                                                </div>
+                                              )}
+                                              {r.processHistory && r.processHistory.length > 0 && (
+                                                <details className="text-[10px] text-slate-500 mt-1 cursor-pointer">
+                                                  <summary className="hover:text-brand-600 select-none">Xem lịch sử ({r.processHistory.length})</summary>
+                                                  <div className="mt-1 p-2 bg-slate-50 rounded border border-slate-200 space-y-1 text-left font-sans">
+                                                    {r.processHistory.map((h, hIdx) => (
+                                                      <div key={hIdx} className="border-b border-slate-100 last:border-0 pb-1 last:pb-0">
+                                                        <span className="font-semibold text-slate-700">{h.by}</span>: {h.action}
+                                                        <div className="text-slate-400 font-mono text-[9px]">{h.at} {h.note ? `— "${h.note}"` : ''}</div>
+                                                      </div>
+                                                    ))}
+                                                  </div>
+                                                </details>
+                                              )}
+                                            </div>
                                           )}
-                                        </div>
-                                      </td>
-                                    </>
-                                  )}
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
+                                        </td>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <td className="p-2">
+                                          <div className="space-y-1">
+                                            <RecountNoteInput
+                                              initialValue={r.processNote || ""}
+                                              onSave={newNote => handleUpdateRecountNote(rowId, newNote)}
+                                              suggestionsId={`suggestions-${rowId}`}
+                                              placeholder="Ghi chú (đã xuất bán, k tìm thấy...)"
+                                              className="w-full bg-slate-50 focus:bg-white border border-slate-200 focus:border-brand-500 rounded px-2.5 py-1.5 text-xs text-slate-800 placeholder:text-slate-400 transition"
+                                            />
+                                            <datalist id={`suggestions-${rowId}`}>
+                                              <option value="Đã xuất bán cho đơn" />
+                                              <option value="Không tìm thấy sản phẩm" />
+                                              <option value="Hàng lỗi chuyển bảo hành" />
+                                              <option value="Tìm thấy ở BIN khác" />
+                                              <option value="Đã quét bổ sung lên hệ thống" />
+                                            </datalist>
+                                            {r.processedBy && (
+                                              <p className="text-[10px] text-slate-500 leading-tight">
+                                                Lưu gần nhất: {r.processedBy} ({r.processedAt || ''})
+                                              </p>
+                                            )}
+                                          </div>
+                                        </td>
+                                        <td className="p-3 text-center">
+                                          <button
+                                            type="button"
+                                            onClick={() => handleToggleRecountProcessed(rowId, !r.processed)}
+                                            title={r.processed ? "Bấm để mở lại (chưa xử lý)" : "Bấm để đánh dấu đã xử lý xong"}
+                                            className={`w-full py-2 px-2.5 rounded-lg font-bold text-xs flex items-center justify-center gap-1.5 transition active:scale-95 shadow-2xs ${
+                                              r.processed
+                                                ? 'bg-emerald-100 text-emerald-800 border border-emerald-300 hover:bg-emerald-200'
+                                                : 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-50 hover:border-brand-500'
+                                            }`}
+                                          >
+                                            <span className={`w-4 h-4 rounded flex items-center justify-center border text-[11px] ${
+                                              r.processed ? 'bg-emerald-600 border-emerald-600 text-white' : 'border-slate-400 bg-white'
+                                            }`}>
+                                              {r.processed ? "✓" : ""}
+                                            </span>
+                                            <span>{r.processed ? "Đã xong" : "Chưa xong"}</span>
+                                          </button>
+                                        </td>
+                                      </>
+                                    )}
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </>
                     )}
                   </div>
 
