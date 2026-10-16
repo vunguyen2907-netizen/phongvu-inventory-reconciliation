@@ -38,6 +38,15 @@ def build_auth_parent_bridge_script() -> str:
       hostWindow.history.replaceState({}, hostWindow.document.title, clean.toString());
     }
   };
+  hostWindow.addEventListener("keydown", event => {
+    if ((event.key === "r" || event.key === "R") && !event.metaKey && !event.ctrlKey) {
+      const activeEl = hostWindow.document?.activeElement;
+      const tag = activeEl ? activeEl.tagName : "";
+      if (tag !== "INPUT" && tag !== "TEXTAREA") {
+        event.stopImmediatePropagation();
+      }
+    }
+  }, true);
   hostWindow.addEventListener("message", handleMessage);
   hostWindow.addEventListener("hashchange", forward);
   hostWindow.addEventListener("popstate", forward);

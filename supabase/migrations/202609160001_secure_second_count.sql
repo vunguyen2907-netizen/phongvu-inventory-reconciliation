@@ -913,6 +913,7 @@ declare
   v_completed_count integer := 0;
   v_has_assignee boolean := false;
 begin
+  perform set_config('statement_timeout', '60000', true);
   select * into v_actor
   from public.profiles
   where id = (select auth.uid())

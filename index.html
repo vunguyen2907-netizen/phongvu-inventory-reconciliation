@@ -564,6 +564,191 @@
       return [];
     }
 
+    // --- LOCAL DRAFT PERSISTENCE (Chống mất dữ liệu khi reload / chụp màn hình) ---
+    const DRAFT_DB_NAME = "PV_Inventory_DB";
+    const DRAFT_STORE_NAME = "inventory_draft";
+    const DRAFT_KEY = "current_active_draft";
+
+    function encodePakoData(data) {
+      if (!data) return "";
+      try {
+        const jsonStr = JSON.stringify(data);
+        if (!window.pako) return jsonStr;
+        const compressed = window.pako.deflate(jsonStr);
+        let binary = "";
+        const len = compressed.byteLength;
+        for (let i = 0; i < len; i++) {
+          binary += String.fromCharCode(compressed[i]);
+        }
+        return btoa(binary);
+      } catch (_e) {
+        return "";
+      }
+    }
+
+    function decodePakoData(str) {
+      if (!str) return null;
+      try {
+        if (str.startsWith("[") || str.startsWith("{")) return JSON.parse(str);
+        const binary = atob(str);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        const jsonStr = window.pako.inflate(bytes, { to: "string" });
+        return JSON.parse(jsonStr);
+      } catch (_e) {
+        return null;
+      }
+    }
+
+    function saveSyncLocalStorage(data) {
+      if (!data) return;
+      try {
+        if (data.activeTab) localStorage.setItem("PV_ACTIVE_TAB", data.activeTab);
+        if (data.activeSessionId !== undefined) localStorage.setItem("PV_ACTIVE_SESSION_ID", data.activeSessionId || "");
+        if (data.sessionName) localStorage.setItem("PV_ACTIVE_SESSION_NAME", data.sessionName);
+        if (data.lastSavedTime) localStorage.setItem("PV_LAST_SAVED_TIME", data.lastSavedTime || "");
+        if (data.rawStockFileName) localStorage.setItem("PV_STOCK_FILE_NAME", data.rawStockFileName);
+        if (data.rawErpFileName) localStorage.setItem("PV_ERP_FILE_NAME", data.rawErpFileName);
+        if (data.filterDetailStatus) localStorage.setItem("PV_FILTER_DETAIL", data.filterDetailStatus);
+
+        // Lưu nén đồng bộ rows
+        if (data.dfCheckDetail && data.dfCheckDetail.length > 0) {
+          const encodedDetail = encodePakoData(data.dfCheckDetail);
+          if (encodedDetail) localStorage.setItem("PV_SYNC_DETAIL", encodedDetail);
+        }
+        if (data.dfCountL2 && data.dfCountL2.length > 0) {
+          const encodedL2 = encodePakoData(data.dfCountL2);
+          if (encodedL2) localStorage.setItem("PV_SYNC_COUNT_L2", encodedL2);
+        }
+      } catch (e) {
+        console.warn("Sync localStorage save warning:", e);
+      }
+    }
+
+    function readSyncLocalStorage() {
+      try {
+        const detailRaw = localStorage.getItem("PV_SYNC_DETAIL");
+        const countL2Raw = localStorage.getItem("PV_SYNC_COUNT_L2");
+        const dfCheckDetail = decodePakoData(detailRaw) || [];
+        const dfCountL2 = decodePakoData(countL2Raw) || [];
+        return {
+          activeTab: localStorage.getItem("PV_ACTIVE_TAB") || null,
+          activeSessionId: localStorage.getItem("PV_ACTIVE_SESSION_ID") || null,
+          sessionName: localStorage.getItem("PV_ACTIVE_SESSION_NAME") || null,
+          lastSavedTime: localStorage.getItem("PV_LAST_SAVED_TIME") || null,
+          rawStockFileName: localStorage.getItem("PV_STOCK_FILE_NAME") || "",
+          rawErpFileName: localStorage.getItem("PV_ERP_FILE_NAME") || "",
+          filterDetailStatus: localStorage.getItem("PV_FILTER_DETAIL") || null,
+          dfCheckDetail,
+          dfCountL2
+        };
+      } catch (_e) {
+        return null;
+      }
+    }
+
+    function openDraftDB() {
+      return new Promise((resolve) => {
+        if (!window.indexedDB) {
+          resolve(null);
+          return;
+        }
+        try {
+          const req = window.indexedDB.open(DRAFT_DB_NAME, 1);
+          req.onupgradeneeded = (e) => {
+            const db = e.target.result;
+            if (!db.objectStoreNames.contains(DRAFT_STORE_NAME)) {
+              db.createObjectStore(DRAFT_STORE_NAME);
+            }
+          };
+          req.onsuccess = (e) => resolve(e.target.result);
+          req.onerror = () => resolve(null);
+        } catch (_err) {
+          resolve(null);
+        }
+      });
+    }
+
+    async function saveLocalDraft(data) {
+      if (!data) return;
+      saveSyncLocalStorage(data);
+      try {
+        const db = await openDraftDB();
+        if (db) {
+          const tx = db.transaction(DRAFT_STORE_NAME, "readwrite");
+          tx.objectStore(DRAFT_STORE_NAME).put(data, DRAFT_KEY);
+        }
+      } catch (e) {
+        console.warn("IndexedDB save draft failed:", e);
+      }
+      try {
+        const meta = {
+          activeTab: data.activeTab,
+          activeSessionId: data.activeSessionId,
+          sessionName: data.sessionName,
+          lastSavedTime: data.lastSavedTime,
+          rawStockFileName: data.rawStockFileName,
+          rawErpFileName: data.rawErpFileName,
+          hasDetails: Boolean(data.dfCheckDetail && data.dfCheckDetail.length > 0),
+          savedAt: Date.now()
+        };
+        localStorage.setItem("PV_INVENTORY_DRAFT_META", JSON.stringify(meta));
+      } catch (_e) {}
+    }
+
+    async function loadLocalDraft() {
+      // Ưu tiên đọc đồng bộ từ localStorage trước
+      const syncData = readSyncLocalStorage();
+      if (syncData && syncData.dfCheckDetail && syncData.dfCheckDetail.length > 0) {
+        return syncData;
+      }
+      try {
+        const db = await openDraftDB();
+        if (db) {
+          const draft = await new Promise((resolve) => {
+            try {
+              const tx = db.transaction(DRAFT_STORE_NAME, "readonly");
+              const req = tx.objectStore(DRAFT_STORE_NAME).get(DRAFT_KEY);
+              req.onsuccess = () => resolve(req.result || null);
+              req.onerror = () => resolve(null);
+            } catch (_err) {
+              resolve(null);
+            }
+          });
+          if (draft && draft.dfCheckDetail && draft.dfCheckDetail.length > 0) {
+            return draft;
+          }
+        }
+      } catch (e) {
+        console.warn("IndexedDB load draft failed:", e);
+      }
+      return null;
+    }
+
+    async function clearLocalDraft() {
+      try {
+        const db = await openDraftDB();
+        if (db) {
+          const tx = db.transaction(DRAFT_STORE_NAME, "readwrite");
+          tx.objectStore(DRAFT_STORE_NAME).delete(DRAFT_KEY);
+        }
+      } catch (_e) {}
+      try {
+        localStorage.removeItem("PV_INVENTORY_DRAFT_META");
+        localStorage.removeItem("PV_SYNC_DETAIL");
+        localStorage.removeItem("PV_SYNC_COUNT_L2");
+        localStorage.removeItem("PV_ACTIVE_TAB");
+        localStorage.removeItem("PV_ACTIVE_SESSION_ID");
+        localStorage.removeItem("PV_ACTIVE_SESSION_NAME");
+        localStorage.removeItem("PV_LAST_SAVED_TIME");
+        localStorage.removeItem("PV_STOCK_FILE_NAME");
+        localStorage.removeItem("PV_ERP_FILE_NAME");
+        localStorage.removeItem("PV_FILTER_DETAIL");
+      } catch (_e) {}
+    }
+
     // --- SUPABASE CONFIG ---
     const getSupabaseConfig = () => {
       let url = window.SUPABASE_URL || localStorage.getItem('SUPABASE_URL') || '';
@@ -1450,11 +1635,20 @@
     function ApplicationShell({ session, profile, legacyMode = false }) {
       const isManager = legacyMode || profile?.role === "manager" || profile?.role === "admin";
       const allowedTabs = isManager ? MANAGER_TABS : COUNTER_TABS;
-      const [activeTab, setActiveTab] = useState(() => isManager ? "import" : "second-count");
+
+      // Đọc đồng bộ ngay từ localStorage để loại bỏ hoàn toàn màn hình trắng khi reload/chụp màn hình
+      const syncDraft = React.useMemo(() => readSyncLocalStorage() || {}, []);
+
+      const [activeTab, setActiveTab] = useState(() => {
+        if (syncDraft.activeTab && allowedTabs.some(t => t.id === syncDraft.activeTab)) {
+          return syncDraft.activeTab;
+        }
+        return isManager ? "import" : "second-count";
+      });
       const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-      const [sessionName, setSessionName] = useState(`Kiểm kê ${new Date().toLocaleDateString('vi-VN')}`);
-      const [activeSessionId, setActiveSessionId] = useState(null);
-      const [lastSavedTime, setLastSavedTime] = useState(null);
+      const [sessionName, setSessionName] = useState(() => syncDraft.sessionName || `Kiểm kê ${new Date().toLocaleDateString('vi-VN')}`);
+      const [activeSessionId, setActiveSessionId] = useState(() => syncDraft.activeSessionId || null);
+      const [lastSavedTime, setLastSavedTime] = useState(() => syncDraft.lastSavedTime || null);
       const [isDirty, setIsDirty] = useState(false);
       const [savedSessions, setSavedSessions] = useState([]);
       const [monthlyArchives, setMonthlyArchives] = useState([]);
@@ -1473,13 +1667,13 @@
 
       // Raw Uploaded Files States
       const [rawStockData, setRawStockData] = useState([]);
-      const [rawStockFileName, setRawStockFileName] = useState("");
+      const [rawStockFileName, setRawStockFileName] = useState(() => syncDraft.rawStockFileName || "");
       const [rawErpData, setRawErpData] = useState([]);
-      const [rawErpFileName, setRawErpFileName] = useState("");
+      const [rawErpFileName, setRawErpFileName] = useState(() => syncDraft.rawErpFileName || "");
 
-      // Processed Data States
-      const [dfCountL2, setDfCountL2] = useState([]);
-      const [dfCheckDetail, setDfCheckDetail] = useState([]);
+      // Processed Data States (khởi tạo có ngay dữ liệu đồng bộ, không đợi async)
+      const [dfCountL2, setDfCountL2] = useState(() => syncDraft.dfCountL2 || []);
+      const [dfCheckDetail, setDfCheckDetail] = useState(() => syncDraft.dfCheckDetail || []);
 
       // Secure second-count manager workspace. The legacy SKU recount table is
       // retained as a fallback until a manager creates the normalized batch.
@@ -1546,6 +1740,117 @@
           allowedTabs.some(tab => tab.id === currentTab) ? currentTab : allowedTabs[0].id
         ));
       }, [profile?.role, legacyMode]);
+
+      // Khôi phục draft khi component mount (chống mất dữ liệu khi chụp màn hình / reload)
+      useEffect(() => {
+        let isMounted = true;
+        (async () => {
+          const draft = await loadLocalDraft();
+          if (!isMounted || !draft) return;
+          if (draft.dfCheckDetail && draft.dfCheckDetail.length > 0) {
+            setDfCheckDetail(draft.dfCheckDetail);
+            setDfCountL2(draft.dfCountL2 || []);
+            if (draft.rawStockData) setRawStockData(draft.rawStockData);
+            if (draft.rawErpData) setRawErpData(draft.rawErpData);
+            if (draft.rawStockFileName) setRawStockFileName(draft.rawStockFileName);
+            if (draft.rawErpFileName) setRawErpFileName(draft.rawErpFileName);
+            if (draft.sessionName) setSessionName(draft.sessionName);
+            if (draft.activeSessionId) setActiveSessionId(draft.activeSessionId);
+            if (draft.lastSavedTime) setLastSavedTime(draft.lastSavedTime);
+            if (draft.activeTab && allowedTabs.some(t => t.id === draft.activeTab)) {
+              setActiveTab(draft.activeTab);
+            }
+            if (draft.filterDetailStatus) setFilterDetailStatus(draft.filterDetailStatus);
+            if (draft.filterL2Mode) setFilterL2Mode(draft.filterL2Mode);
+            if (draft.filterL2Status) setFilterL2Status(draft.filterL2Status);
+            showNotice("✅ Đã tự động khôi phục dữ liệu phiên làm việc.");
+          }
+        })();
+        return () => { isMounted = false; };
+      }, []);
+
+      // Tự động lưu draft vào IndexedDB để chống mất dữ liệu khi reload/chụp màn hình
+      useEffect(() => {
+        if (!dfCheckDetail || dfCheckDetail.length === 0) return;
+        const timer = setTimeout(() => {
+          saveLocalDraft({
+            activeTab,
+            activeSessionId,
+            sessionName,
+            lastSavedTime,
+            isDirty,
+            rawStockFileName,
+            rawErpFileName,
+            rawStockData,
+            rawErpData,
+            dfCheckDetail,
+            dfCountL2,
+            filterDetailStatus,
+            searchDetail,
+            filterL2Mode,
+            filterL2Status,
+            searchL2,
+            wrapDetailText,
+            wrapL2Text,
+            wrapMainText
+          });
+        }, 500);
+        return () => clearTimeout(timer);
+      }, [
+        activeTab, activeSessionId, sessionName, lastSavedTime, isDirty,
+        rawStockFileName, rawErpFileName, dfCheckDetail, dfCountL2,
+        filterDetailStatus, searchDetail, filterL2Mode, filterL2Status, searchL2,
+        wrapDetailText, wrapL2Text, wrapMainText
+      ]);
+
+      // Lưu tức thì khi chụp màn hình (phím tắt Cmd/Ctrl + Shift + S/3/4/5) hoặc blur / beforeunload
+      useEffect(() => {
+        const handleSaveImmediate = () => {
+          if (dfCheckDetail && dfCheckDetail.length > 0) {
+            saveLocalDraft({
+              activeTab,
+              activeSessionId,
+              sessionName,
+              lastSavedTime,
+              isDirty,
+              rawStockFileName,
+              rawErpFileName,
+              rawStockData,
+              rawErpData,
+              dfCheckDetail,
+              dfCountL2,
+              filterDetailStatus,
+              searchDetail,
+              filterL2Mode,
+              filterL2Status,
+              searchL2,
+              wrapDetailText,
+              wrapL2Text,
+              wrapMainText
+            });
+          }
+        };
+
+        const handleKeydown = (e) => {
+          if ((e.metaKey || e.ctrlKey) && e.shiftKey) {
+            handleSaveImmediate();
+          }
+        };
+
+        window.addEventListener("keydown", handleKeydown);
+        window.addEventListener("blur", handleSaveImmediate);
+        window.addEventListener("beforeunload", handleSaveImmediate);
+        return () => {
+          window.removeEventListener("keydown", handleKeydown);
+          window.removeEventListener("blur", handleSaveImmediate);
+          window.removeEventListener("beforeunload", handleSaveImmediate);
+        };
+      }, [
+        activeTab, activeSessionId, sessionName, lastSavedTime, isDirty,
+        rawStockFileName, rawErpFileName, dfCheckDetail, dfCountL2,
+        filterDetailStatus, searchDetail, filterL2Mode, filterL2Status, searchL2,
+        wrapDetailText, wrapL2Text, wrapMainText
+      ]);
 
       const toggleSort = (setter) => (key) => {
         setter(prev => ({
@@ -1777,7 +2082,7 @@
 
       const handleCreateRecountBatch = async () => {
         if (recountLoading) return;
-        if (!supabaseClient || !activeSessionId || dfCheckDetail.length === 0) {
+        if (!supabaseClient || dfCheckDetail.length === 0) {
           showNotice('Vui lòng lưu đợt kiểm kê lên Supabase trước khi tạo danh sách kiểm lần 2.');
           return;
         }
@@ -1785,14 +2090,58 @@
         try {
           const client = await getReadySupabaseClient();
           if (!client) throw new Error('Chưa cấu hình Supabase.');
+
+          // Tự động lưu lên Supabase nếu chưa có ID phiên kiểm kê
+          let targetSessionId = activeSessionId;
+          if (!targetSessionId) {
+            const payload = {
+              df_count_l2: dfCountL2,
+              df_check_detail: dfCheckDetail,
+            };
+            const rowData = {
+              session_name: sessionName.trim() || `Kiểm kê ${new Date().toLocaleDateString('vi-VN')}`,
+              data: payload
+            };
+            const { data: savedData, error: saveErr } = await client
+              .from('inventory_sessions')
+              .upsert(rowData)
+              .select();
+            if (saveErr) throw saveErr;
+            if (savedData && savedData.length > 0) {
+              targetSessionId = savedData[0].id;
+              setActiveSessionId(targetSessionId);
+              setLastSavedTime(new Date().toLocaleTimeString('vi-VN'));
+              setIsDirty(false);
+              fetchSavedSessions();
+            }
+          }
+
+          if (!targetSessionId) {
+            throw new Error('Vui lòng lưu đợt kiểm kê lên Supabase trước khi tạo danh sách kiểm lần 2.');
+          }
+
           const profileRows = recountCounters.filter(counter => counter.status === 'active');
           const domain = window.InventoryRecountDomain;
           if (!domain?.buildRecountDraft) throw new Error('Chưa tải mô-đun kiểm đếm an toàn.');
           const draft = domain.buildRecountDraft(dfCheckDetail, profileRows);
+          if (!draft.tasks || draft.tasks.length === 0) {
+            showNotice('Không có sản phẩm nào bị chênh lệch cần tạo danh sách kiểm lần 2.');
+            return;
+          }
+
+          // Tối ưu hóa: Chỉ gửi các dòng bằng chứng (evidence) liên quan trực tiếp đến các task kiểm lần 2
+          // và các SKU có task kiểm lần 2, tránh gửi hàng ngàn dòng evidence không liên quan gây lỗi
+          // "canceling statement due to statement timeout" trên Supabase.
+          const taskSourceIds = new Set(draft.tasks.map(t => t.source_detail_row_id));
+          const taskSkus = new Set(draft.tasks.map(t => t.sku));
+          const targetedEvidence = (draft.evidence || []).filter(e =>
+            taskSourceIds.has(e.source_detail_row_id) || taskSkus.has(e.sku)
+          );
+
           const { data, error } = await client.rpc('manager_create_recount_batch', {
-            p_inventory_session_id: activeSessionId,
+            p_inventory_session_id: targetSessionId,
             p_tasks: draft.tasks,
-            p_evidence: draft.evidence
+            p_evidence: targetedEvidence
           });
           if (error) throw error;
           const summary = data && typeof data === 'object' ? data : {};
@@ -3751,7 +4100,7 @@
                           </div>
                         </div>
                       </div>
-                      {recountTasks.length > 0 && (
+                      {recountTasks.length > 0 ? (
                         <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
                           <div className="mb-3 flex items-center justify-between gap-3"><h4 className="font-bold text-slate-800">Danh sách task</h4><span className="text-xs text-slate-500">Hiển thị {recountTasks.length} dòng</span></div>
                           <div className="overflow-x-auto rounded-lg border border-slate-200">
@@ -3769,6 +4118,71 @@
                               })}
                             </tbody></table>
                           </div>
+                        </div>
+                      ) : (
+                        <div className="rounded-xl border border-amber-200 bg-amber-50/40 p-4 shadow-sm space-y-3">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <h4 className="font-bold text-amber-900 text-sm">Danh sách sản phẩm chênh lệch cần kiểm lần 2 (Chờ tạo task)</h4>
+                              <p className="text-xs text-amber-700 mt-0.5">
+                                {dfCheckDetail.filter(r => r.status === "Bắn thiếu (Chưa quét)" || r.status === "Bắn sai serial" || r.status.startsWith("Bắn dư")).length > 0
+                                  ? `Đang có ${dfCheckDetail.filter(r => r.status === "Bắn thiếu (Chưa quét)" || r.status === "Bắn sai serial" || r.status.startsWith("Bắn dư")).length} dòng sản phẩm/serial chênh lệch cần kiểm lại. Nhấn "Tạo danh sách kiểm lần 2" ở trên để phân công task.`
+                                  : "Chưa có sản phẩm chênh lệch hoặc chưa có dữ liệu đối soát."}
+                              </p>
+                            </div>
+                            {dfCheckDetail.filter(r => r.status === "Bắn thiếu (Chưa quét)" || r.status === "Bắn sai serial" || r.status.startsWith("Bắn dư")).length > 0 && (
+                              <button
+                                type="button"
+                                onClick={handleCreateRecountBatch}
+                                disabled={recountLoading}
+                                aria-busy={recountLoading}
+                                className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-brand-700 disabled:opacity-60"
+                              >
+                                {recountLoading ? "⏳ Đang tạo…" : "⚡ Tạo danh sách kiểm lần 2"}
+                              </button>
+                            )}
+                          </div>
+                          {dfCheckDetail.filter(r => r.status === "Bắn thiếu (Chưa quét)" || r.status === "Bắn sai serial" || r.status.startsWith("Bắn dư")).length > 0 && (
+                            <div className="max-h-72 overflow-y-auto rounded-lg border border-amber-200 bg-white">
+                              <table className="w-full text-left text-xs">
+                                <thead className="bg-amber-100/70 text-amber-900 sticky top-0 font-bold">
+                                  <tr>
+                                    <th className="p-2.5">SKU</th>
+                                    <th className="p-2.5">Tên sản phẩm</th>
+                                    <th className="p-2.5">Serial sổ sách</th>
+                                    <th className="p-2.5">Serial đã quét</th>
+                                    <th className="p-2.5">Mã Bin</th>
+                                    <th className="p-2.5">Phân loại chênh lệch</th>
+                                    <th className="p-2.5">Người quét L1</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {dfCheckDetail
+                                    .filter(r => r.status === "Bắn thiếu (Chưa quét)" || r.status === "Bắn sai serial" || r.status.startsWith("Bắn dư"))
+                                    .slice(0, 100)
+                                    .map((r, i) => (
+                                      <tr key={r.rowId || i} className="border-t border-amber-100 hover:bg-amber-50/40">
+                                        <td className="p-2.5 font-mono font-semibold">{r.sku}</td>
+                                        <td className="p-2.5 max-w-[200px] truncate" title={r.name}>{r.name}</td>
+                                        <td className="p-2.5 font-mono">{r.stockSerial || "—"}</td>
+                                        <td className="p-2.5 font-mono">{r.scannedSerial || "—"}</td>
+                                        <td className="p-2.5">{r.bin || "—"}</td>
+                                        <td className="p-2.5">
+                                          <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-bold ${
+                                            r.status === "Bắn thiếu (Chưa quét)" ? "bg-rose-100 text-rose-700" :
+                                            r.status === "Bắn sai serial" ? "bg-amber-100 text-amber-800" :
+                                            "bg-indigo-100 text-indigo-700"
+                                          }`}>
+                                            {r.status}
+                                          </span>
+                                        </td>
+                                        <td className="p-2.5">{r.performedBy || "—"}</td>
+                                      </tr>
+                                    ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
