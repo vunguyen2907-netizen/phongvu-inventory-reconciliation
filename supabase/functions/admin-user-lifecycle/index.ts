@@ -198,7 +198,7 @@ export function createLifecycleHandler(dependencies: LifecycleDependencies) {
       : null;
     const action = typeof body?.action === "string" ? body.action : "";
     const targetUserId = typeof body?.target_user_id === "string" ? body.target_user_id.trim() : "";
-    if (!targetUserId || !["approve_user", "confirm_email", "delete_user", "unlock_user"].includes(action)) {
+    if (!targetUserId || !["approve_user", "confirm_email", "delete_user", "unlock_user", "update_role", "update_branch"].includes(action)) {
       return response(400, { error: "invalid_request" });
     }
 
@@ -222,6 +222,23 @@ export function createLifecycleHandler(dependencies: LifecycleDependencies) {
 
       const serviceClient = dependencies.createServiceClient();
       switch (action) {
+        case "update_branch": {
+          const branchCode = typeof (body as any)?.branch_code === "string" ? (body as any).branch_code.trim() : undefined;
+          const managedBranches = Array.isArray((body as any)?.managed_branches) ? (body as any).managed_branches : undefined;
+          if (caller.role !== "admin") {
+            return response(403, { error: "admin_required_to_manage_branches" });
+          }
+          const updates: Record<string, unknown> = {};
+          if (branchCode) updates.branch_code = branchCode;
+          if (managedBranches !== undefined) updates.managed_branches = managedBranches;
+          if (Object.keys(updates).length > 0) {
+            const { error: updateError } = await serviceClient.from("profiles").update(updates).eq("id", targetUserId);
+            if (updateError) {
+              return response(502, { error: "branch_update_failed", message: updateError.message || "" });
+            }
+          }
+          return response(200, { ok: true, action, target_user_id: targetUserId, ...updates });
+        }
         case "update_role": {
           if (!["active", "locked"].includes(target.status)) return response(409, { error: "target_not_approved" });
           const role = typeof body?.role === "string" && ["admin", "manager", "counter"].includes(body.role)

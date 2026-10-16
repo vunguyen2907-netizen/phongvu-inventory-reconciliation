@@ -986,12 +986,18 @@
         const loadAuthoritativeProfile = async (client, session, version) => {
           try {
             if (mounted) {
-              setAuthState({ session, profile: null, loading: true, error: "", legacyMode: false, profileMissing: false });
+              setAuthState(current => {
+                if (current.session?.user?.id === session.user.id && current.profile) {
+                  // Giữ nguyên profile hiện tại khi refresh ngầm, tránh giật màn hình loading khi chuyển tab
+                  return { ...current, session };
+                }
+                return { session, profile: null, loading: true, error: "", legacyMode: false, profileMissing: false };
+              });
             }
 
             const { data, error } = await client
               .from("profiles")
-              .select("id, email, full_name, erp_name, role, status")
+              .select("id, email, full_name, erp_name, role, status, branch_code, managed_branches")
               .eq("id", session.user.id)
               .maybeSingle();
             if (error) throw error;
@@ -1119,6 +1125,11 @@
                 return;
               }
               if (recoveryInProgress && event !== "SIGNED_OUT") return;
+              if (event === "TOKEN_REFRESHED") {
+                // Token tự động làm mới ngầm khi đổi tab, cập nhật session mà không gián đoạn UI
+                setAuthState(current => ({ ...current, session: nextSession }));
+                return;
+              }
               const version = invalidateProfileRequests();
               scheduleSessionAcceptance(client, nextSession, version);
             });
@@ -1250,9 +1261,31 @@
       );
     }
 
+    const SYSTEM_BRANCHES = [
+      { code: "KHO-TONG", name: "Kho Tổng (Trung tâm)" },
+      { code: "KHO-HCM", name: "Kho TP. Hồ Chí Minh" },
+      { code: "KHO-HN", name: "Kho Hà Nội" },
+      { code: "KHO-DN", name: "Kho Đà Nẵng" },
+      { code: "SR-Q10", name: "Showroom Q.10 (CMT8)" },
+      { code: "SR-TB", name: "Showroom Tân Bình" },
+      { code: "SR-CVD", name: "Showroom Cao Thắng" }
+    ];
+
     function AuthForm() {
       const [mode, setMode] = useState("sign-in");
-      const [email, setEmail] = useState("");
+      const [rememberAccount, setRememberAccount] = useState(() => {
+        try {
+          return localStorage.getItem("inventory_remember_account") === "true";
+        } catch (_e) { return false; }
+      });
+      const [email, setEmail] = useState(() => {
+        try {
+          if (localStorage.getItem("inventory_remember_account") === "true") {
+            return localStorage.getItem("inventory_saved_email") || "";
+          }
+        } catch (_e) {}
+        return "";
+      });
       const [password, setPassword] = useState("");
       const [fullName, setFullName] = useState("");
       const [erpName, setErpName] = useState("");
@@ -1280,6 +1313,16 @@
           if (result.error) throw result.error;
           if (isSignUp) {
             setMessage("Tài khoản đã được tạo. Hãy xác nhận email (nếu được yêu cầu) và chờ quản lý phê duyệt.");
+          } else {
+            try {
+              if (rememberAccount) {
+                localStorage.setItem("inventory_remember_account", "true");
+                localStorage.setItem("inventory_saved_email", email.trim());
+              } else {
+                localStorage.removeItem("inventory_remember_account");
+                localStorage.removeItem("inventory_saved_email");
+              }
+            } catch (_e) {}
           }
         } catch (submitError) {
           setError(submitError?.message || "Không thể xác thực tài khoản.");
@@ -1316,6 +1359,19 @@
               <input id="auth-password" name="password" type="password" required minLength="6" autoComplete={isSignUp ? "new-password" : "current-password"} value={password} onChange={event => setPassword(event.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
               {isSignUp && <p className="mt-1 text-[11px] text-slate-500">Mật khẩu chỉ dùng đăng nhập, không lưu vào hồ sơ nhân sự.</p>}
             </div>
+            {!isSignUp && (
+              <div className="flex items-center justify-between">
+                <label className="flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={rememberAccount}
+                    onChange={event => setRememberAccount(event.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500 cursor-pointer"
+                  />
+                  <span>Ghi nhớ tài khoản trên thiết bị này</span>
+                </label>
+              </div>
+            )}
             {error && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-xs text-rose-700">{error}</p>}
             {message && <p role="status" className="rounded-lg bg-emerald-50 p-3 text-xs text-emerald-700">{message}</p>}
             <button type="submit" disabled={submitting} className="w-full rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">
@@ -1367,7 +1423,8 @@
       );
     }
 
-    function AccountManagementPanel({ callerRole, onClose }) {
+    function AccountManagementPanel({ callerRole, callerProfile, onClose }) {
+      const activeCallerRole = callerRole || callerProfile?.role || "counter";
       const filters = [
         { id: "pending", label: "Chờ duyệt" },
         { id: "active", label: "Hoạt động" },
@@ -1376,8 +1433,11 @@
       ];
       const [accounts, setAccounts] = useState([]);
       const [filter, setFilter] = useState("pending");
+      const [branchFilter, setBranchFilter] = useState("ALL");
       const [aliases, setAliases] = useState({});
       const [roles, setRoles] = useState({});
+      const [branches, setBranches] = useState({});
+      const [managedBranchesMap, setManagedBranchesMap] = useState({});
       const [loading, setLoading] = useState(true);
       const [busyId, setBusyId] = useState("");
       const [error, setError] = useState("");
@@ -1395,12 +1455,26 @@
           if (!client) throw new Error("Chưa cấu hình Supabase Auth.");
           const { data, error } = await client
             .from("profiles")
-            .select("id, email, full_name, erp_name, role, status, approved_at, locked_at, deleted_at, created_at")
+            .select("id, email, full_name, erp_name, role, status, branch_code, managed_branches, approved_at, locked_at, deleted_at, created_at")
             .order("created_at", { ascending: true });
           if (error) throw error;
-          const manageable = (data || []).filter(account => (
-            account.role !== "admin" && (callerRole === "admin" || account.role === "counter")
-          ));
+
+          const callerManaged = (callerProfile?.managed_branches && callerProfile.managed_branches.length > 0)
+            ? callerProfile.managed_branches
+            : (callerProfile?.branch_code ? [callerProfile.branch_code] : []);
+          const hasBranchRestriction = Boolean(callerProfile && callerManaged.length > 0);
+
+          const manageable = (data || []).filter(account => {
+            if (activeCallerRole === "admin") {
+              return account.role !== "admin" || (callerProfile && account.id !== callerProfile.id);
+            }
+            if (account.role !== "counter") return false;
+            if (hasBranchRestriction && account.branch_code) {
+              return callerManaged.includes(account.branch_code);
+            }
+            return true;
+          });
+
           setAccounts(manageable);
           setAliases(previous => ({
             ...Object.fromEntries(manageable.map(account => [account.id, account.erp_name || ""])),
@@ -1408,6 +1482,14 @@
           }));
           setRoles(previous => ({
             ...Object.fromEntries(manageable.map(account => [account.id, account.role || "counter"])),
+            ...previous
+          }));
+          setBranches(previous => ({
+            ...Object.fromEntries(manageable.map(account => [account.id, account.branch_code || "KHO-TONG"])),
+            ...previous
+          }));
+          setManagedBranchesMap(previous => ({
+            ...Object.fromEntries(manageable.map(account => [account.id, Array.isArray(account.managed_branches) ? account.managed_branches : []])),
             ...previous
           }));
         } catch (actionError) {
@@ -1448,7 +1530,7 @@
         const roleLabel = selectedRole === "admin" ? "Quản trị viên" : selectedRole === "manager" ? "Quản lý" : "Kiểm đếm";
         await runAction(account, `Đã phê duyệt ${account.full_name} (${roleLabel}).`, async client => {
           const extra = { erp_name: erpName };
-          if (callerRole === "admin" || (roles[account.id] && roles[account.id] !== account.role)) {
+          if (activeCallerRole === "admin" || (roles[account.id] && roles[account.id] !== account.role)) {
             extra.role = selectedRole;
           }
           await invokeLifecycle(client, "approve_user", account, extra);
@@ -1461,6 +1543,25 @@
         const roleLabel = newRole === "admin" ? "Quản trị viên" : newRole === "manager" ? "Quản lý" : "Kiểm đếm";
         await runAction(account, `Đã cập nhật vai trò của ${account.full_name} thành ${roleLabel}.`, async client => {
           await invokeLifecycle(client, "update_role", account, { role: newRole });
+        });
+      };
+
+      const updateBranch = async account => {
+        const newBranch = branches[account.id] || account.branch_code || "KHO-TONG";
+        const newManaged = managedBranchesMap[account.id] || account.managed_branches || [];
+        await runAction(account, `Đã cập nhật chi nhánh của ${account.full_name}.`, async client => {
+          try {
+            await invokeLifecycle(client, "update_branch", account, {
+              branch_code: newBranch,
+              managed_branches: newManaged
+            });
+          } catch (_fnError) {
+            const { error: dbError } = await client
+              .from("profiles")
+              .update({ branch_code: newBranch, managed_branches: newManaged })
+              .eq("id", account.id);
+            if (dbError) throw dbError;
+          }
         });
       };
 
@@ -1517,7 +1618,9 @@
         }
       };
 
-      const visibleAccounts = accounts.filter(account => account.status === filter);
+      const visibleAccounts = accounts
+        .filter(account => account.status === filter)
+        .filter(account => branchFilter === "ALL" || (account.branch_code || "KHO-TONG") === branchFilter);
 
       return (
         <div className="fixed inset-0 z-50 bg-slate-950/60 flex justify-end" role="dialog" aria-modal="true" aria-labelledby="account-management-title">
@@ -1525,7 +1628,7 @@
             <header className="bg-white border-b border-slate-200 px-6 py-5 flex items-start justify-between gap-4">
               <div>
                 <h2 id="account-management-title" className="text-xl font-extrabold text-slate-900">Quản lý tài khoản</h2>
-                <p className="mt-1 text-sm text-slate-500">Phê duyệt và vô hiệu hóa tài khoản kiểm đếm. Lịch sử đã hoàn tất luôn được giữ lại.</p>
+                <p className="mt-1 text-sm text-slate-500">Phê duyệt và quản lý tài khoản kiểm đếm, phân quyền chi nhánh (Branch). Lịch sử đã hoàn tất luôn được giữ lại.</p>
               </div>
               <button type="button" onClick={onClose} aria-label="Đóng quản lý tài khoản" className="w-9 h-9 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold">×</button>
             </header>
@@ -1538,6 +1641,24 @@
                   </button>
                 ))}
               </div>
+              {activeCallerRole === "admin" && (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-bold text-slate-600">🏢 Lọc theo chi nhánh:</span>
+                  <select
+                    aria-label="Lọc theo chi nhánh"
+                    value={branchFilter}
+                    onChange={event => setBranchFilter(event.target.value)}
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700"
+                  >
+                    <option value="ALL">Tất cả chi nhánh ({accounts.length})</option>
+                    {SYSTEM_BRANCHES.map(b => (
+                      <option key={b.code} value={b.code}>
+                        {b.code} — {b.name} ({accounts.filter(a => (a.branch_code || "KHO-TONG") === b.code).length})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               {error && <p role="alert" className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">{error}</p>}
               {message && <p role="status" className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">{message}</p>}
             </div>
@@ -1564,6 +1685,14 @@
                             }`}>
                               {account.role === "admin" ? "Quản trị viên (Admin)" : account.role === "manager" ? "Quản lý (Manager)" : "Kiểm đếm (Counter)"}
                             </span>
+                            <span className="rounded-md bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-700 border border-slate-200">
+                              🏢 {account.branch_code || "KHO-TONG"}
+                            </span>
+                            {account.role === "manager" && Array.isArray(account.managed_branches) && account.managed_branches.length > 0 && (
+                              <span className="rounded-md bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 border border-amber-200">
+                                Phụ trách: {account.managed_branches.join(", ")}
+                              </span>
+                            )}
                           </div>
                           <p className="text-sm text-slate-500 break-all">{account.email}</p>
                           <p className="mt-1 text-xs text-slate-400">ERP: {account.erp_name || "Chưa có ERP"}</p>
@@ -1653,6 +1782,58 @@
                         )}
                         {account.status === "deleted" && <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-500">Đã vô hiệu hóa</span>}
                       </div>
+
+                      {activeCallerRole === "admin" && (
+                        <div className="mt-3 pt-3 border-t border-slate-100 flex flex-wrap items-center gap-2">
+                          <label className="text-xs font-bold text-slate-600 flex items-center gap-1.5">
+                            <span>Chi nhánh:</span>
+                            <select
+                              aria-label={`Chi nhánh cho ${account.full_name}`}
+                              value={branches[account.id] || account.branch_code || "KHO-TONG"}
+                              onChange={event => setBranches(prev => ({ ...prev, [account.id]: event.target.value }))}
+                              className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium"
+                            >
+                              {SYSTEM_BRANCHES.map(b => (
+                                <option key={b.code} value={b.code}>{b.code} — {b.name}</option>
+                              ))}
+                            </select>
+                          </label>
+                          {((roles[account.id] || account.role) === "manager") && (
+                            <div className="flex flex-wrap items-center gap-1 text-xs text-slate-600 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200">
+                              <span className="font-bold text-slate-700 mr-1">Phụ trách branches:</span>
+                              {SYSTEM_BRANCHES.map(b => {
+                                const currentManaged = managedBranchesMap[account.id] || account.managed_branches || [];
+                                const isChecked = currentManaged.includes(b.code);
+                                return (
+                                  <label key={b.code} className="inline-flex items-center gap-1 text-[11px] px-1 py-0.5 rounded hover:bg-slate-200 cursor-pointer select-none">
+                                    <input
+                                      type="checkbox"
+                                      checked={isChecked}
+                                      onChange={event => {
+                                        const updated = event.target.checked
+                                          ? [...currentManaged, b.code]
+                                          : currentManaged.filter(c => c !== b.code);
+                                        setManagedBranchesMap(prev => ({ ...prev, [account.id]: updated }));
+                                      }}
+                                      className="h-3 w-3 rounded border-slate-300 text-brand-600"
+                                    />
+                                    <span>{b.code}</span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          )}
+                          <button
+                            type="button"
+                            aria-label={`Lưu chi nhánh ${account.full_name}`}
+                            onClick={() => updateBranch(account)}
+                            disabled={busyId === account.id}
+                            className="rounded-lg px-2.5 py-1 text-xs font-bold bg-brand-50 text-brand-700 border border-brand-200 hover:bg-brand-100 disabled:opacity-50"
+                          >
+                            {busyId === account.id ? "Đang lưu…" : "Lưu chi nhánh"}
+                          </button>
+                        </div>
+                      )}
                     </article>
                   ))}
                 </div>
@@ -3951,7 +4132,24 @@
                 </div>
                 <div className="flex items-center justify-between sm:justify-end gap-3 text-left sm:text-right">
                   <div>
-                    <p className="text-sm font-bold text-slate-800">{legacyMode ? "Chế độ chuyển đổi" : (profile?.full_name || profile?.email)}</p>
+                    <div className="flex items-center justify-start sm:justify-end gap-2">
+                      <p className="text-sm font-bold text-slate-800">{legacyMode ? "Chế độ chuyển đổi" : (profile?.full_name || profile?.email)}</p>
+                      {!legacyMode && profile && (
+                        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                          profile.role === "admin"
+                            ? "bg-purple-100 text-purple-800 border border-purple-200"
+                            : profile.role === "manager"
+                            ? "bg-blue-100 text-blue-800 border border-blue-200"
+                            : "bg-emerald-100 text-emerald-800 border border-emerald-200"
+                        }`}>
+                          {profile.role === "admin"
+                            ? "🏢 Toàn hệ thống"
+                            : profile.role === "manager"
+                            ? `🏢 QL: ${(profile.managed_branches && profile.managed_branches.length > 0) ? profile.managed_branches.join(", ") : (profile.branch_code || "KHO-TONG")}`
+                            : `🏢 ${profile.branch_code || "KHO-TONG"}`}
+                        </span>
+                      )}
+                    </div>
                     <p className="text-xs text-slate-500">{legacyMode ? "Legacy manager" : `${profile?.role || ""} · ${profile?.erp_name || ""}`}</p>
                     {authActionError && <p role="alert" className="mt-1 text-xs font-semibold text-rose-600">{authActionError}</p>}
                     {authActionMessage && <p role="status" className="mt-1 text-xs font-semibold text-emerald-600">{authActionMessage}</p>}
@@ -3964,7 +4162,7 @@
                         </button>
                       )}
                       <button type="button" onClick={handlePasswordReset} disabled={authActionPending} className="rounded-lg border border-slate-300 px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold text-slate-600 disabled:cursor-wait disabled:opacity-50">
-                        {authActionPending ? "⏳ Đang gửi…" : "Đổi mật khẩu"}
+                        {authActionPending ? "Đang gửi email đổi mật khẩu…" : "Gửi email đổi mật khẩu"}
                       </button>
                       <button type="button" onClick={handleShellSignOut} disabled={authActionPending} className="rounded-lg bg-slate-900 px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold text-white disabled:opacity-50">Đăng xuất</button>
                     </div>
@@ -5419,7 +5617,7 @@
           )}
 
           {accountPanelOpen && !legacyMode && (
-            <AccountManagementPanel callerRole={profile?.role} onClose={() => { setAccountPanelOpen(false); fetchRecountCounters(); }} />
+            <AccountManagementPanel callerRole={profile?.role} callerProfile={profile} onClose={() => { setAccountPanelOpen(false); fetchRecountCounters(); }} />
           )}
 
           {recountReopenTarget && (
