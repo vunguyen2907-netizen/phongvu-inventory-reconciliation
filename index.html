@@ -995,11 +995,24 @@
               });
             }
 
-            const { data, error } = await client
+            let { data, error } = await client
               .from("profiles")
               .select("id, email, full_name, erp_name, role, status, branch_code, managed_branches")
               .eq("id", session.user.id)
               .maybeSingle();
+
+            if (error && /branch_code|managed_branches/i.test(error.message || "")) {
+              // Tương thích ngược: database Supabase từ xa chưa chạy migration branch
+              const fallback = await client
+                .from("profiles")
+                .select("id, email, full_name, erp_name, role, status")
+                .eq("id", session.user.id)
+                .maybeSingle();
+              if (!fallback.error) {
+                data = fallback.data ? { ...fallback.data, branch_code: "KHO-TONG", managed_branches: [] } : null;
+                error = null;
+              }
+            }
             if (error) throw error;
 
             if (!mounted || version !== requestVersion) return;
@@ -1453,10 +1466,22 @@
         try {
           const client = await getReadySupabaseClient();
           if (!client) throw new Error("Chưa cấu hình Supabase Auth.");
-          const { data, error } = await client
+          let { data, error } = await client
             .from("profiles")
             .select("id, email, full_name, erp_name, role, status, branch_code, managed_branches, approved_at, locked_at, deleted_at, created_at")
             .order("created_at", { ascending: true });
+
+          if (error && /branch_code|managed_branches/i.test(error.message || "")) {
+            // Tương thích ngược: database Supabase từ xa chưa chạy migration branch
+            const fallback = await client
+              .from("profiles")
+              .select("id, email, full_name, erp_name, role, status, approved_at, locked_at, deleted_at, created_at")
+              .order("created_at", { ascending: true });
+            if (!fallback.error) {
+              data = (fallback.data || []).map(p => ({ ...p, branch_code: "KHO-TONG", managed_branches: [] }));
+              error = null;
+            }
+          }
           if (error) throw error;
 
           const callerManaged = (callerProfile?.managed_branches && callerProfile.managed_branches.length > 0)
