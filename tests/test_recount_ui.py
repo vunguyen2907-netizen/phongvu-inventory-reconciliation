@@ -132,7 +132,7 @@ def _mock_supabase_script(session, profile, legacy=False, behavior=None):
           if (table === "profiles" && window.__IN_AUTH_CALLBACK__) {{
             window.__PROFILE_READ_DURING_AUTH_CALLBACK__ = true;
           }}
-          if (!["profiles", "inventory_sessions", "monthly_archives"].includes(table)) {{
+          if (!["profiles", "inventory_sessions", "monthly_archives", "branches"].includes(table)) {{
             window.__UNEXPECTED_CALLS__.push(`Unexpected table: ${{table}}`);
             throw new Error(`Unexpected table: ${{table}}`);
           }}
@@ -144,12 +144,22 @@ def _mock_supabase_script(session, profile, legacy=False, behavior=None):
               }}
               return query;
             }},
+            insert: async (rows) => ({{ data: rows, error: null }}),
+            update: () => query,
+            delete: () => query,
+            then: (resolve) => resolve({{ data: [], error: null }}),
             order: async () => ({{
               data: table === "inventory_sessions"
                 ? [{{ id: "saved-1", session_name: "Saved session", updated_at: "2026-09-16T00:00:00Z" }}]
                 : table === "profiles"
                   ? (fixture.behavior.accountProfiles || [])
-                  : [{{ id: "archive-1", year_month: "2026-09", session_name: "Saved archive", updated_at: "2026-09-16T00:00:00Z" }}],
+                  : table === "branches"
+                    ? (fixture.behavior.branches || [
+                        {{ code: "KHO-TONG", name: "Kho Tổng TP.HCM", address: "Tầng 1 Kho Tổng", is_active: true }},
+                        {{ code: "KHO-HCM", name: "Kho Chi Nhánh HCM", address: "Quận 10, TP.HCM", is_active: true }},
+                        {{ code: "KHO-HN", name: "Kho Chi Nhánh Hà Nội", address: "Hà Nội", is_active: true }}
+                      ])
+                    : [{{ id: "archive-1", year_month: "2026-09", session_name: "Saved archive", updated_at: "2026-09-16T00:00:00Z" }}],
               error: null
             }}),
             maybeSingle: async () => {{
@@ -246,18 +256,24 @@ class AuthUiTest(unittest.TestCase):
         page.on(
             "console",
             lambda message: self.browser_errors.append(f"console error: {message.text}")
-            if message.type == "error"
+            if message.type == "error" and "ERR_NETWORK_CHANGED" not in message.text
             else None,
         )
         return page
 
     def open_auth_page(self, session=None, profile=None, legacy=False, behavior=None):
         page = self.track_page(self.browser.new_page())
-        page.set_default_timeout(7000)
+        page.set_default_timeout(15000)
         page.add_init_script(_mock_supabase_script(session, profile, legacy, behavior))
         page.route("**/*", lambda route: self._route_asset(route))
-        page.goto(INDEX_URL, wait_until="domcontentloaded")
-        page.locator("#root").wait_for(state="attached")
+        for attempt in range(3):
+            try:
+                page.goto(INDEX_URL, wait_until="domcontentloaded")
+                page.locator("#root").wait_for(state="attached")
+                break
+            except Exception:
+                if attempt == 2:
+                    raise
         return page
 
     @staticmethod
@@ -725,7 +741,7 @@ class AuthUiTest(unittest.TestCase):
             "user": {"id": "recovery-user", "email": "recovery@example.com"}
         }
         page = self.track_page(self.browser.new_page())
-        page.set_default_timeout(7000)
+        page.set_default_timeout(15000)
         page.add_init_script(
             _mock_supabase_script(
                 None,

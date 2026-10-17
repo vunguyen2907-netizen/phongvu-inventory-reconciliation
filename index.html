@@ -1274,15 +1274,42 @@
       );
     }
 
-    const SYSTEM_BRANCHES = [
-      { code: "KHO-TONG", name: "Kho Tổng (Trung tâm)" },
-      { code: "KHO-HCM", name: "Kho TP. Hồ Chí Minh" },
-      { code: "KHO-HN", name: "Kho Hà Nội" },
-      { code: "KHO-DN", name: "Kho Đà Nẵng" },
-      { code: "SR-Q10", name: "Showroom Q.10 (CMT8)" },
-      { code: "SR-TB", name: "Showroom Tân Bình" },
-      { code: "SR-CVD", name: "Showroom Cao Thắng" }
+    const DEFAULT_SYSTEM_BRANCHES = [
+      { code: "KHO-TONG", name: "Kho Tổng (Trung tâm)", address: "Kho Tổng Trung Tâm Phong Vũ" },
+      { code: "KHO-HCM", name: "Kho TP. Hồ Chí Minh", address: "TP. Hồ Chí Minh" },
+      { code: "KHO-HN", name: "Kho Hà Nội", address: "Hà Nội" },
+      { code: "KHO-DN", name: "Kho Đà Nẵng", address: "Đà Nẵng" },
+      { code: "SR-Q10", name: "Showroom Q.10 (CMT8)", address: "Cách Mạng Tháng 8, Q.10, TP.HCM" },
+      { code: "SR-TB", name: "Showroom Tân Bình", address: "Hoàng Hoa Thám, Tân Bình, TP.HCM" },
+      { code: "SR-CVD", name: "Showroom Cao Thắng", address: "Cao Thắng, Q.3, TP.HCM" }
     ];
+
+    function getStoredBranches() {
+      try {
+        const raw = localStorage.getItem("PV_SYSTEM_BRANCHES");
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        }
+      } catch (_e) {}
+      return DEFAULT_SYSTEM_BRANCHES;
+    }
+
+    function saveStoredBranches(list) {
+      try {
+        localStorage.setItem("PV_SYSTEM_BRANCHES", JSON.stringify(list));
+        window.dispatchEvent(new CustomEvent("pv_branches_updated", { detail: list }));
+      } catch (_e) {}
+    }
+
+    let SYSTEM_BRANCHES = getStoredBranches();
+    if (typeof window !== "undefined") {
+      window.addEventListener("pv_branches_updated", event => {
+        if (Array.isArray(event.detail)) {
+          SYSTEM_BRANCHES = event.detail;
+        }
+      });
+    }
 
     function AuthForm() {
       const [mode, setMode] = useState("sign-in");
@@ -1436,8 +1463,10 @@
       );
     }
 
-    function AccountManagementPanel({ callerRole, callerProfile, onClose }) {
+    function AccountManagementPanel({ callerRole, callerProfile, initialTab = "accounts", onClose }) {
       const activeCallerRole = callerRole || callerProfile?.role || "counter";
+      const [panelTab, setPanelTab] = useState(initialTab || "accounts");
+      const [systemBranches, setSystemBranches] = useState(getStoredBranches);
       const filters = [
         { id: "pending", label: "Chờ duyệt" },
         { id: "active", label: "Hoạt động" },
@@ -1459,6 +1488,32 @@
       const [lockReason, setLockReason] = useState("");
       const [deleteTarget, setDeleteTarget] = useState(null);
       const [deleteConfirmation, setDeleteConfirmation] = useState("");
+
+      // Branch CRUD states
+      const [branchModal, setBranchModal] = useState(null); // 'add' | 'edit' | 'delete'
+      const [branchTarget, setBranchTarget] = useState(null);
+      const [branchFormCode, setBranchFormCode] = useState("");
+      const [branchFormName, setBranchFormName] = useState("");
+      const [branchFormAddress, setBranchFormAddress] = useState("");
+      const [branchBusy, setBranchBusy] = useState(false);
+      const [branchError, setBranchError] = useState("");
+      const [branchMessage, setBranchMessage] = useState("");
+      const [branchSearch, setBranchSearch] = useState("");
+
+      const loadBranches = async () => {
+        try {
+          const client = await getReadySupabaseClient();
+          if (!client) return;
+          const { data, error } = await client
+            .from("branches")
+            .select("code, name, address, is_active")
+            .order("code", { ascending: true });
+          if (!error && Array.isArray(data) && data.length > 0) {
+            setSystemBranches(data);
+            saveStoredBranches(data);
+          }
+        } catch (_err) {}
+      };
 
       const loadAccounts = async () => {
         setLoading(true);
@@ -1524,7 +1579,10 @@
         }
       };
 
-      useEffect(() => { loadAccounts(); }, []);
+      useEffect(() => {
+        loadAccounts();
+        loadBranches();
+      }, []);
 
       const runAction = async (account, successMessage, action) => {
         setBusyId(account.id);
@@ -1643,9 +1701,120 @@
         }
       };
 
+      // Branch CRUD action handlers
+      const openAddBranch = () => {
+        setBranchTarget(null);
+        setBranchFormCode("");
+        setBranchFormName("");
+        setBranchFormAddress("");
+        setBranchError("");
+        setBranchMessage("");
+        setBranchModal("add");
+      };
+
+      const openEditBranch = (branch) => {
+        setBranchTarget(branch);
+        setBranchFormCode(branch.code);
+        setBranchFormName(branch.name);
+        setBranchFormAddress(branch.address || "");
+        setBranchError("");
+        setBranchMessage("");
+        setBranchModal("edit");
+      };
+
+      const openDeleteBranch = (branch) => {
+        setBranchTarget(branch);
+        setBranchError("");
+        setBranchMessage("");
+        setBranchModal("delete");
+      };
+
+      const saveBranch = async (e) => {
+        if (e) e.preventDefault();
+        setBranchBusy(true);
+        setBranchError("");
+        setBranchMessage("");
+        try {
+          const client = await getReadySupabaseClient();
+          if (branchModal === "add") {
+            const cleanCode = branchFormCode.trim().toUpperCase().replace(/\s+/g, "-");
+            const cleanName = branchFormName.trim();
+            const cleanAddress = branchFormAddress.trim();
+            if (!cleanCode || !cleanName) {
+              throw new Error("Mã chi nhánh và Tên chi nhánh không được để trống.");
+            }
+            if (systemBranches.some(b => b.code.toUpperCase() === cleanCode)) {
+              throw new Error(`Mã chi nhánh "${cleanCode}" đã tồn tại trong hệ thống.`);
+            }
+            const newBranch = { code: cleanCode, name: cleanName, address: cleanAddress, is_active: true };
+            if (client) {
+              try {
+                await client.from("branches").insert([newBranch]);
+              } catch (_dbErr) {}
+            }
+            const nextList = [...systemBranches, newBranch];
+            setSystemBranches(nextList);
+            saveStoredBranches(nextList);
+            setBranchMessage(`Đã thêm chi nhánh mới: ${cleanCode} — ${cleanName}`);
+            setBranchModal(null);
+          } else if (branchModal === "edit") {
+            const cleanName = branchFormName.trim();
+            const cleanAddress = branchFormAddress.trim();
+            if (!cleanName) {
+              throw new Error("Tên chi nhánh không được để trống.");
+            }
+            if (client && branchTarget) {
+              try {
+                await client.from("branches").update({ name: cleanName, address: cleanAddress, updated_at: new Date().toISOString() }).eq("code", branchTarget.code);
+              } catch (_dbErr) {}
+            }
+            const nextList = systemBranches.map(b => b.code === branchTarget.code ? { ...b, name: cleanName, address: cleanAddress } : b);
+            setSystemBranches(nextList);
+            saveStoredBranches(nextList);
+            setBranchMessage(`Đã cập nhật chi nhánh: ${branchTarget.code} — ${cleanName}`);
+            setBranchModal(null);
+          }
+        } catch (err) {
+          setBranchError(err.message || "Không thể lưu thông tin chi nhánh.");
+        } finally {
+          setBranchBusy(false);
+        }
+      };
+
+      const confirmDeleteBranch = async () => {
+        if (!branchTarget) return;
+        setBranchBusy(true);
+        setBranchError("");
+        setBranchMessage("");
+        try {
+          const client = await getReadySupabaseClient();
+          if (client) {
+            try {
+              await client.from("branches").delete().eq("code", branchTarget.code);
+            } catch (_dbErr) {}
+          }
+          const nextList = systemBranches.filter(b => b.code !== branchTarget.code);
+          setSystemBranches(nextList);
+          saveStoredBranches(nextList);
+          setBranchMessage(`Đã xóa chi nhánh: ${branchTarget.code} — ${branchTarget.name}`);
+          setBranchModal(null);
+          setBranchTarget(null);
+        } catch (err) {
+          setBranchError(err.message || "Không thể xóa chi nhánh.");
+        } finally {
+          setBranchBusy(false);
+        }
+      };
+
       const visibleAccounts = accounts
         .filter(account => account.status === filter)
         .filter(account => branchFilter === "ALL" || (account.branch_code || "KHO-TONG") === branchFilter);
+
+      const filteredBranches = systemBranches.filter(b => {
+        if (!branchSearch.trim()) return true;
+        const kw = branchSearch.trim().toLowerCase();
+        return b.code.toLowerCase().includes(kw) || (b.name && b.name.toLowerCase().includes(kw)) || (b.address && b.address.toLowerCase().includes(kw));
+      });
 
       return (
         <div className="fixed inset-0 z-50 bg-slate-950/60 flex justify-end" role="dialog" aria-modal="true" aria-labelledby="account-management-title">
@@ -1653,218 +1822,407 @@
             <header className="bg-white border-b border-slate-200 px-6 py-5 flex items-start justify-between gap-4">
               <div>
                 <h2 id="account-management-title" className="text-xl font-extrabold text-slate-900">Quản lý tài khoản</h2>
-                <p className="mt-1 text-sm text-slate-500">Phê duyệt và quản lý tài khoản kiểm đếm, phân quyền chi nhánh (Branch). Lịch sử đã hoàn tất luôn được giữ lại.</p>
+                <p className="mt-1 text-sm text-slate-500">Phê duyệt và quản lý tài khoản kiểm đếm, phân quyền và danh mục chi nhánh (Branch).</p>
               </div>
               <button type="button" onClick={onClose} aria-label="Đóng quản lý tài khoản" className="w-9 h-9 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold">×</button>
             </header>
 
-            <div className="px-6 pt-5">
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2" role="group" aria-label="Lọc trạng thái tài khoản">
-                {filters.map(item => (
-                  <button key={item.id} type="button" aria-label={item.label} onClick={() => setFilter(item.id)} className={`rounded-xl border px-3 py-2.5 text-sm font-bold ${filter === item.id ? 'border-brand-600 bg-brand-600 text-white' : 'border-slate-200 bg-white text-slate-600 hover:border-brand-300'}`}>
-                    {item.label} <span className="ml-1 opacity-75">{accounts.filter(account => account.status === item.id).length}</span>
-                  </button>
-                ))}
+            {activeCallerRole === "admin" && (
+              <div className="flex border-b border-slate-200 bg-white px-6 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setPanelTab("accounts")}
+                  className={`pb-3 px-4 text-xs font-bold border-b-2 transition ${
+                    panelTab === "accounts"
+                      ? "border-brand-600 text-brand-600"
+                      : "border-transparent text-slate-500 hover:text-slate-800"
+                  }`}
+                >
+                  👥 Tài khoản nhân sự ({accounts.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPanelTab("branches")}
+                  className={`pb-3 px-4 text-xs font-bold border-b-2 transition ${
+                    panelTab === "branches"
+                      ? "border-brand-600 text-brand-600"
+                      : "border-transparent text-slate-500 hover:text-slate-800"
+                  }`}
+                >
+                  🏢 Quản lý chi nhánh ({systemBranches.length})
+                </button>
               </div>
-              {activeCallerRole === "admin" && (
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <span className="text-xs font-bold text-slate-600">🏢 Lọc theo chi nhánh:</span>
-                  <select
-                    aria-label="Lọc theo chi nhánh"
-                    value={branchFilter}
-                    onChange={event => setBranchFilter(event.target.value)}
-                    className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700"
+            )}
+
+            {panelTab === "branches" && activeCallerRole === "admin" ? (
+              <div className="flex-1 overflow-y-auto p-6 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                  <div className="flex-1 max-w-sm">
+                    <input
+                      type="text"
+                      placeholder="🔍 Tìm theo mã hoặc tên chi nhánh..."
+                      value={branchSearch}
+                      onChange={e => setBranchSearch(e.target.value)}
+                      className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={openAddBranch}
+                    className="rounded-lg bg-brand-600 px-3.5 py-2 text-xs font-bold text-white hover:bg-brand-700 shadow-sm flex items-center justify-center gap-1.5"
                   >
-                    <option value="ALL">Tất cả chi nhánh ({accounts.length})</option>
-                    {SYSTEM_BRANCHES.map(b => (
-                      <option key={b.code} value={b.code}>
-                        {b.code} — {b.name} ({accounts.filter(a => (a.branch_code || "KHO-TONG") === b.code).length})
-                      </option>
-                    ))}
-                  </select>
+                    <span>➕</span> Thêm chi nhánh mới
+                  </button>
                 </div>
-              )}
-              {error && <p role="alert" className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">{error}</p>}
-              {message && <p role="status" className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">{message}</p>}
-            </div>
 
-            <div className="flex-1 overflow-y-auto p-6">
-              {loading ? (
-                <p className="text-sm text-slate-500">Đang tải tài khoản…</p>
-              ) : visibleAccounts.length === 0 ? (
-                <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500">Không có tài khoản trong nhóm này.</div>
-              ) : (
-                <div className="space-y-3">
-                  {visibleAccounts.map(account => (
-                    <article key={account.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm hover:border-slate-300 transition">
-                      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <h3 className="font-bold text-slate-900">{account.full_name}</h3>
-                            <span className={`rounded-md px-2 py-0.5 text-xs font-semibold ${
-                              account.role === "admin"
-                                ? "bg-purple-100 text-purple-800 border border-purple-200"
-                                : account.role === "manager"
-                                ? "bg-blue-100 text-blue-800 border border-blue-200"
-                                : "bg-emerald-100 text-emerald-800 border border-emerald-200"
-                            }`}>
-                              {account.role === "admin" ? "Quản trị viên (Admin)" : account.role === "manager" ? "Quản lý (Manager)" : "Kiểm đếm (Counter)"}
-                            </span>
-                            <span className="rounded-md bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-700 border border-slate-200">
-                              🏢 {account.branch_code || "KHO-TONG"}
-                            </span>
-                            {account.role === "manager" && Array.isArray(account.managed_branches) && account.managed_branches.length > 0 && (
-                              <span className="rounded-md bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 border border-amber-200">
-                                Phụ trách: {account.managed_branches.join(", ")}
-                              </span>
+                {branchMessage && (
+                  <p role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs font-semibold text-emerald-700">
+                    {branchMessage}
+                  </p>
+                )}
+                {branchError && (
+                  <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-semibold text-rose-700">
+                    {branchError}
+                  </p>
+                )}
+
+                <div className="rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-sm">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-50 border-b border-slate-200 text-slate-700 font-bold uppercase text-[11px]">
+                        <tr>
+                          <th className="p-3.5">Mã Branch</th>
+                          <th className="p-3.5">Tên chi nhánh</th>
+                          <th className="p-3.5">Địa chỉ / Ghi chú</th>
+                          <th className="p-3.5 text-center">Nhân sự</th>
+                          <th className="p-3.5 text-right">Thao tác</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {filteredBranches.map(branch => {
+                          const userCount = accounts.filter(a => (a.branch_code || "KHO-TONG") === branch.code).length;
+                          return (
+                            <tr key={branch.code} className="hover:bg-slate-50 transition">
+                              <td className="p-3.5 font-mono font-bold text-slate-800">
+                                <span className="rounded bg-slate-100 border border-slate-200 px-2 py-0.5 text-brand-700">
+                                  {branch.code}
+                                </span>
+                              </td>
+                              <td className="p-3.5 font-bold text-slate-900">{branch.name}</td>
+                              <td className="p-3.5 text-slate-500">{branch.address || "—"}</td>
+                              <td className="p-3.5 text-center">
+                                <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-semibold text-slate-700">
+                                  👤 {userCount}
+                                </span>
+                              </td>
+                              <td className="p-3.5 text-right">
+                                <div className="inline-flex items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => openEditBranch(branch)}
+                                    className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 shadow-sm"
+                                  >
+                                    ✏️ Sửa
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => openDeleteBranch(branch)}
+                                    className="rounded-md border border-rose-200 bg-rose-50 px-2.5 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-100 shadow-sm"
+                                  >
+                                    🗑️ Xóa
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="px-6 pt-5">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2" role="group" aria-label="Lọc trạng thái tài khoản">
+                    {filters.map(item => (
+                      <button key={item.id} type="button" aria-label={item.label} onClick={() => setFilter(item.id)} className={`rounded-xl border px-3 py-2.5 text-sm font-bold ${filter === item.id ? 'border-brand-600 bg-brand-600 text-white' : 'border-slate-200 bg-white text-slate-600 hover:border-brand-300'}`}>
+                        {item.label} <span className="ml-1 opacity-75">{accounts.filter(account => account.status === item.id).length}</span>
+                      </button>
+                    ))}
+                  </div>
+                  {activeCallerRole === "admin" && (
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <span className="text-xs font-bold text-slate-600">🏢 Lọc theo chi nhánh:</span>
+                      <select
+                        aria-label="Lọc theo chi nhánh"
+                        value={branchFilter}
+                        onChange={event => setBranchFilter(event.target.value)}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700"
+                      >
+                        <option value="ALL">Tất cả chi nhánh ({accounts.length})</option>
+                        {systemBranches.map(b => (
+                          <option key={b.code} value={b.code}>
+                            {b.code} — {b.name} ({accounts.filter(a => (a.branch_code || "KHO-TONG") === b.code).length})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  {error && <p role="alert" className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">{error}</p>}
+                  {message && <p role="status" className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">{message}</p>}
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-6">
+                  {loading ? (
+                    <p className="text-sm text-slate-500">Đang tải tài khoản…</p>
+                  ) : visibleAccounts.length === 0 ? (
+                    <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center text-sm text-slate-500">Không có tài khoản trong nhóm này.</div>
+                  ) : (
+                    <div className="space-y-3">
+                      {visibleAccounts.map(account => (
+                        <article key={account.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm hover:border-slate-300 transition">
+                          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <h3 className="font-bold text-slate-900">{account.full_name}</h3>
+                                <span className={`rounded-md px-2 py-0.5 text-xs font-semibold ${
+                                  account.role === "admin"
+                                    ? "bg-purple-100 text-purple-800 border border-purple-200"
+                                    : account.role === "manager"
+                                    ? "bg-blue-100 text-blue-800 border border-blue-200"
+                                    : "bg-emerald-100 text-emerald-800 border border-emerald-200"
+                                }`}>
+                                  {account.role === "admin" ? "Quản trị viên (Admin)" : account.role === "manager" ? "Quản lý (Manager)" : "Kiểm đếm (Counter)"}
+                                </span>
+                                <span className="rounded-md bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-700 border border-slate-200">
+                                  🏢 {account.branch_code || "KHO-TONG"}
+                                </span>
+                                {account.role === "manager" && Array.isArray(account.managed_branches) && account.managed_branches.length > 0 && (
+                                  <span className="rounded-md bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 border border-amber-200">
+                                    Phụ trách: {account.managed_branches.join(", ")}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-sm text-slate-500 break-all">{account.email}</p>
+                              <p className="mt-1 text-xs text-slate-400">ERP: {account.erp_name || "Chưa có ERP"}</p>
+                            </div>
+                            {account.status === "pending" && (
+                              <div className="flex flex-col sm:flex-row gap-2 sm:items-end">
+                                <label className="text-xs font-bold text-slate-600">
+                                  Tên nhân viên ERP
+                                  <input aria-label={`ERP cho ${account.full_name}`} value={aliases[account.id] || ""} onChange={event => setAliases(previous => ({ ...previous, [account.id]: event.target.value }))} className="mt-1 block w-full sm:w-44 rounded-lg border border-slate-300 px-3 py-2 text-sm font-normal" />
+                                </label>
+                                <label className="text-xs font-bold text-slate-600">
+                                  Vai trò / Phân quyền
+                                  <select aria-label={`Vai trò cho ${account.full_name}`} value={roles[account.id] || account.role || "counter"} onChange={event => setRoles(previous => ({ ...previous, [account.id]: event.target.value }))} className="mt-1 block w-full sm:w-48 rounded-lg border border-slate-300 px-3 py-2 text-sm font-normal bg-white">
+                                    <option value="counter">Nhân viên kiểm đếm (Counter)</option>
+                                    <option value="manager">Quản lý kiểm kê (Manager)</option>
+                                    <option value="admin">Quản trị viên (Admin)</option>
+                                  </select>
+                                </label>
+                                <button type="button" aria-label={`Phê duyệt ${account.full_name}`} onClick={() => approve(account)} disabled={busyId === account.id} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700 disabled:opacity-50">Phê duyệt</button>
+                                <button type="button" aria-label={`Xóa ${account.full_name}`} onClick={() => { setDeleteTarget(account); setDeleteConfirmation(""); }} className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-bold text-white hover:bg-rose-700">Xóa</button>
+                              </div>
                             )}
+                            {account.status === "active" && (
+                              <div className="flex flex-wrap items-center gap-2">
+                                <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg p-1">
+                                  <select
+                                    aria-label={`Vai trò cho ${account.full_name}`}
+                                    value={roles[account.id] || account.role || "counter"}
+                                    onChange={event => setRoles(previous => ({ ...previous, [account.id]: event.target.value }))}
+                                    className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+                                  >
+                                    <option value="counter">Kiểm đếm (Counter)</option>
+                                    <option value="manager">Quản lý (Manager)</option>
+                                    <option value="admin">Quản trị viên (Admin)</option>
+                                  </select>
+                                  <button
+                                    type="button"
+                                    aria-label={`Đổi vai trò ${account.full_name}`}
+                                    onClick={() => updateRole(account)}
+                                    disabled={busyId === account.id || (roles[account.id] || account.role) === account.role}
+                                    className={`rounded-md px-3 py-1.5 text-xs font-bold transition shadow-sm ${
+                                      (roles[account.id] || account.role) !== account.role
+                                        ? 'bg-brand-600 text-white hover:bg-brand-700 ring-2 ring-brand-300'
+                                        : 'bg-slate-200 text-slate-500 hover:bg-slate-300 disabled:opacity-40'
+                                    }`}
+                                    title="Lưu thay đổi vai trò"
+                                  >
+                                    {busyId === account.id ? "Đang lưu…" : "Đổi role"}
+                                  </button>
+                                </div>
+                                <button type="button" aria-label={`Xác nhận email ${account.full_name}`} onClick={() => confirmEmail(account)} disabled={busyId === account.id} className="rounded-lg bg-sky-600 px-3 py-2 text-xs sm:text-sm font-bold text-white hover:bg-sky-700 disabled:opacity-50">Xác nhận email</button>
+                                <button type="button" aria-label={`Khóa ${account.full_name}`} onClick={() => { setLockTarget(account); setLockReason(""); }} className="rounded-lg bg-amber-500 px-3 py-2 text-xs sm:text-sm font-bold text-white hover:bg-amber-600">Khóa</button>
+                                <button type="button" aria-label={`Xóa ${account.full_name}`} onClick={() => { setDeleteTarget(account); setDeleteConfirmation(""); }} className="rounded-lg bg-rose-600 px-3 py-2 text-xs sm:text-sm font-bold text-white hover:bg-rose-700">Xóa</button>
+                              </div>
+                            )}
+                            {account.status === "locked" && (
+                              <div className="flex flex-wrap items-center gap-2">
+                                <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg p-1">
+                                  <select
+                                    aria-label={`Vai trò cho ${account.full_name}`}
+                                    value={roles[account.id] || account.role || "counter"}
+                                    onChange={event => setRoles(previous => ({ ...previous, [account.id]: event.target.value }))}
+                                    className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
+                                  >
+                                    <option value="counter">Kiểm đếm (Counter)</option>
+                                    <option value="manager">Quản lý (Manager)</option>
+                                    <option value="admin">Quản trị viên (Admin)</option>
+                                  </select>
+                                  <button
+                                    type="button"
+                                    aria-label={`Đổi vai trò ${account.full_name}`}
+                                    onClick={() => updateRole(account)}
+                                    disabled={busyId === account.id || (roles[account.id] || account.role) === account.role}
+                                    className={`rounded-md px-3 py-1.5 text-xs font-bold transition shadow-sm ${
+                                      (roles[account.id] || account.role) !== account.role
+                                        ? 'bg-brand-600 text-white hover:bg-brand-700 ring-2 ring-brand-300'
+                                        : 'bg-slate-200 text-slate-500 hover:bg-slate-300 disabled:opacity-40'
+                                    }`}
+                                    title="Lưu thay đổi vai trò"
+                                  >
+                                    {busyId === account.id ? "Đang lưu…" : "Đổi role"}
+                                  </button>
+                                </div>
+                                <button type="button" aria-label={`Mở khóa ${account.full_name}`} onClick={() => unlock(account)} disabled={busyId === account.id} className="rounded-lg bg-brand-600 px-3 py-2 text-xs sm:text-sm font-bold text-white hover:bg-brand-700 disabled:opacity-50">Mở khóa</button>
+                                <button type="button" aria-label={`Xóa ${account.full_name}`} onClick={() => { setDeleteTarget(account); setDeleteConfirmation(""); }} className="rounded-lg bg-rose-600 px-3 py-2 text-xs sm:text-sm font-bold text-white hover:bg-rose-700">Xóa</button>
+                              </div>
+                            )}
+                            {account.status === "deleted" && <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-500">Đã vô hiệu hóa</span>}
                           </div>
-                          <p className="text-sm text-slate-500 break-all">{account.email}</p>
-                          <p className="mt-1 text-xs text-slate-400">ERP: {account.erp_name || "Chưa có ERP"}</p>
-                        </div>
-                        {account.status === "pending" && (
-                          <div className="flex flex-col sm:flex-row gap-2 sm:items-end">
-                            <label className="text-xs font-bold text-slate-600">
-                              Tên nhân viên ERP
-                              <input aria-label={`ERP cho ${account.full_name}`} value={aliases[account.id] || ""} onChange={event => setAliases(previous => ({ ...previous, [account.id]: event.target.value }))} className="mt-1 block w-full sm:w-44 rounded-lg border border-slate-300 px-3 py-2 text-sm font-normal" />
-                            </label>
-                            <label className="text-xs font-bold text-slate-600">
-                              Vai trò / Phân quyền
-                              <select aria-label={`Vai trò cho ${account.full_name}`} value={roles[account.id] || account.role || "counter"} onChange={event => setRoles(previous => ({ ...previous, [account.id]: event.target.value }))} className="mt-1 block w-full sm:w-48 rounded-lg border border-slate-300 px-3 py-2 text-sm font-normal bg-white">
-                                <option value="counter">Nhân viên kiểm đếm (Counter)</option>
-                                <option value="manager">Quản lý kiểm kê (Manager)</option>
-                                <option value="admin">Quản trị viên (Admin)</option>
-                              </select>
-                            </label>
-                            <button type="button" aria-label={`Phê duyệt ${account.full_name}`} onClick={() => approve(account)} disabled={busyId === account.id} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700 disabled:opacity-50">Phê duyệt</button>
-                            <button type="button" aria-label={`Xóa ${account.full_name}`} onClick={() => { setDeleteTarget(account); setDeleteConfirmation(""); }} className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-bold text-white hover:bg-rose-700">Xóa</button>
-                          </div>
-                        )}
-                        {account.status === "active" && (
-                          <div className="flex flex-wrap items-center gap-2">
-                            <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg p-1">
-                              <select
-                                aria-label={`Vai trò cho ${account.full_name}`}
-                                value={roles[account.id] || account.role || "counter"}
-                                onChange={event => setRoles(previous => ({ ...previous, [account.id]: event.target.value }))}
-                                className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
-                              >
-                                <option value="counter">Kiểm đếm (Counter)</option>
-                                <option value="manager">Quản lý (Manager)</option>
-                                <option value="admin">Quản trị viên (Admin)</option>
-                              </select>
-                              <button
-                                type="button"
-                                aria-label={`Đổi vai trò ${account.full_name}`}
-                                onClick={() => updateRole(account)}
-                                disabled={busyId === account.id || (roles[account.id] || account.role) === account.role}
-                                className={`rounded-md px-3 py-1.5 text-xs font-bold transition shadow-sm ${
-                                  (roles[account.id] || account.role) !== account.role
-                                    ? 'bg-brand-600 text-white hover:bg-brand-700 ring-2 ring-brand-300'
-                                    : 'bg-slate-200 text-slate-500 hover:bg-slate-300 disabled:opacity-40'
-                                }`}
-                                title="Lưu thay đổi vai trò"
-                              >
-                                {busyId === account.id ? "Đang lưu…" : "Đổi role"}
-                              </button>
-                            </div>
-                            <button type="button" aria-label={`Xác nhận email ${account.full_name}`} onClick={() => confirmEmail(account)} disabled={busyId === account.id} className="rounded-lg bg-sky-600 px-3 py-2 text-xs sm:text-sm font-bold text-white hover:bg-sky-700 disabled:opacity-50">Xác nhận email</button>
-                            <button type="button" aria-label={`Khóa ${account.full_name}`} onClick={() => { setLockTarget(account); setLockReason(""); }} className="rounded-lg bg-amber-500 px-3 py-2 text-xs sm:text-sm font-bold text-white hover:bg-amber-600">Khóa</button>
-                            <button type="button" aria-label={`Xóa ${account.full_name}`} onClick={() => { setDeleteTarget(account); setDeleteConfirmation(""); }} className="rounded-lg bg-rose-600 px-3 py-2 text-xs sm:text-sm font-bold text-white hover:bg-rose-700">Xóa</button>
-                          </div>
-                        )}
-                        {account.status === "locked" && (
-                          <div className="flex flex-wrap items-center gap-2">
-                            <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg p-1">
-                              <select
-                                aria-label={`Vai trò cho ${account.full_name}`}
-                                value={roles[account.id] || account.role || "counter"}
-                                onChange={event => setRoles(previous => ({ ...previous, [account.id]: event.target.value }))}
-                                className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
-                              >
-                                <option value="counter">Kiểm đếm (Counter)</option>
-                                <option value="manager">Quản lý (Manager)</option>
-                                <option value="admin">Quản trị viên (Admin)</option>
-                              </select>
-                              <button
-                                type="button"
-                                aria-label={`Đổi vai trò ${account.full_name}`}
-                                onClick={() => updateRole(account)}
-                                disabled={busyId === account.id || (roles[account.id] || account.role) === account.role}
-                                className={`rounded-md px-3 py-1.5 text-xs font-bold transition shadow-sm ${
-                                  (roles[account.id] || account.role) !== account.role
-                                    ? 'bg-brand-600 text-white hover:bg-brand-700 ring-2 ring-brand-300'
-                                    : 'bg-slate-200 text-slate-500 hover:bg-slate-300 disabled:opacity-40'
-                                }`}
-                                title="Lưu thay đổi vai trò"
-                              >
-                                {busyId === account.id ? "Đang lưu…" : "Đổi role"}
-                              </button>
-                            </div>
-                            <button type="button" aria-label={`Mở khóa ${account.full_name}`} onClick={() => unlock(account)} disabled={busyId === account.id} className="rounded-lg bg-brand-600 px-3 py-2 text-xs sm:text-sm font-bold text-white hover:bg-brand-700 disabled:opacity-50">Mở khóa</button>
-                            <button type="button" aria-label={`Xóa ${account.full_name}`} onClick={() => { setDeleteTarget(account); setDeleteConfirmation(""); }} className="rounded-lg bg-rose-600 px-3 py-2 text-xs sm:text-sm font-bold text-white hover:bg-rose-700">Xóa</button>
-                          </div>
-                        )}
-                        {account.status === "deleted" && <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-500">Đã vô hiệu hóa</span>}
-                      </div>
 
-                      {activeCallerRole === "admin" && (
-                        <div className="mt-3 pt-3 border-t border-slate-100 flex flex-wrap items-center gap-2">
-                          <label className="text-xs font-bold text-slate-600 flex items-center gap-1.5">
-                            <span>Chi nhánh:</span>
-                            <select
-                              aria-label={`Chi nhánh cho ${account.full_name}`}
-                              value={branches[account.id] || account.branch_code || "KHO-TONG"}
-                              onChange={event => setBranches(prev => ({ ...prev, [account.id]: event.target.value }))}
-                              className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium"
-                            >
-                              {SYSTEM_BRANCHES.map(b => (
-                                <option key={b.code} value={b.code}>{b.code} — {b.name}</option>
-                              ))}
-                            </select>
-                          </label>
-                          {((roles[account.id] || account.role) === "manager") && (
-                            <div className="flex flex-wrap items-center gap-1 text-xs text-slate-600 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200">
-                              <span className="font-bold text-slate-700 mr-1">Phụ trách branches:</span>
-                              {SYSTEM_BRANCHES.map(b => {
-                                const currentManaged = managedBranchesMap[account.id] || account.managed_branches || [];
-                                const isChecked = currentManaged.includes(b.code);
-                                return (
-                                  <label key={b.code} className="inline-flex items-center gap-1 text-[11px] px-1 py-0.5 rounded hover:bg-slate-200 cursor-pointer select-none">
-                                    <input
-                                      type="checkbox"
-                                      checked={isChecked}
-                                      onChange={event => {
-                                        const updated = event.target.checked
-                                          ? [...currentManaged, b.code]
-                                          : currentManaged.filter(c => c !== b.code);
-                                        setManagedBranchesMap(prev => ({ ...prev, [account.id]: updated }));
-                                      }}
-                                      className="h-3 w-3 rounded border-slate-300 text-brand-600"
-                                    />
-                                    <span>{b.code}</span>
-                                  </label>
-                                );
-                              })}
+                          {activeCallerRole === "admin" && (
+                            <div className="mt-3 pt-3 border-t border-slate-100 flex flex-wrap items-center gap-2">
+                              <label className="text-xs font-bold text-slate-600 flex items-center gap-1.5">
+                                <span>Chi nhánh:</span>
+                                <select
+                                  aria-label={`Chi nhánh cho ${account.full_name}`}
+                                  value={branches[account.id] || account.branch_code || "KHO-TONG"}
+                                  onChange={event => setBranches(prev => ({ ...prev, [account.id]: event.target.value }))}
+                                  className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium"
+                                >
+                                  {systemBranches.map(b => (
+                                    <option key={b.code} value={b.code}>{b.code} — {b.name}</option>
+                                  ))}
+                                </select>
+                              </label>
+                              {((roles[account.id] || account.role) === "manager") && (
+                                <div className="flex flex-wrap items-center gap-1 text-xs text-slate-600 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200">
+                                  <span className="font-bold text-slate-700 mr-1">Phụ trách branches:</span>
+                                  {systemBranches.map(b => {
+                                    const currentManaged = managedBranchesMap[account.id] || account.managed_branches || [];
+                                    const isChecked = currentManaged.includes(b.code);
+                                    return (
+                                      <label key={b.code} className="inline-flex items-center gap-1 text-[11px] px-1 py-0.5 rounded hover:bg-slate-200 cursor-pointer select-none">
+                                        <input
+                                          type="checkbox"
+                                          checked={isChecked}
+                                          onChange={event => {
+                                            const updated = event.target.checked
+                                              ? [...currentManaged, b.code]
+                                              : currentManaged.filter(c => c !== b.code);
+                                            setManagedBranchesMap(prev => ({ ...prev, [account.id]: updated }));
+                                          }}
+                                          className="h-3 w-3 rounded border-slate-300 text-brand-600"
+                                        />
+                                        <span>{b.code}</span>
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                              <button
+                                type="button"
+                                aria-label={`Lưu chi nhánh ${account.full_name}`}
+                                onClick={() => updateBranch(account)}
+                                disabled={busyId === account.id}
+                                className="rounded-lg px-2.5 py-1 text-xs font-bold bg-brand-50 text-brand-700 border border-brand-200 hover:bg-brand-100 disabled:opacity-50"
+                              >
+                                {busyId === account.id ? "Đang lưu…" : "Lưu chi nhánh"}
+                              </button>
                             </div>
                           )}
-                          <button
-                            type="button"
-                            aria-label={`Lưu chi nhánh ${account.full_name}`}
-                            onClick={() => updateBranch(account)}
-                            disabled={busyId === account.id}
-                            className="rounded-lg px-2.5 py-1 text-xs font-bold bg-brand-50 text-brand-700 border border-brand-200 hover:bg-brand-100 disabled:opacity-50"
-                          >
-                            {busyId === account.id ? "Đang lưu…" : "Lưu chi nhánh"}
-                          </button>
-                        </div>
-                      )}
-                    </article>
-                  ))}
+                        </article>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
+              </>
+            )}
           </section>
+
+          {branchModal && (
+            <div className="fixed inset-0 z-[70] bg-slate-950/60 flex items-center justify-center p-4">
+              <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl space-y-4">
+                <h3 className="text-base font-extrabold text-slate-900">
+                  {branchModal === "add" ? "Thêm chi nhánh mới" : branchModal === "edit" ? "Chỉnh sửa chi nhánh" : "Xác nhận xóa chi nhánh"}
+                </h3>
+                
+                {branchModal === "delete" ? (
+                  <div className="space-y-3">
+                    <p className="text-sm text-slate-600">
+                      Bạn có chắc chắn muốn xóa chi nhánh <strong className="text-rose-600">{branchTarget?.code} — {branchTarget?.name}</strong>?
+                    </p>
+                    {accounts.filter(a => (a.branch_code || "KHO-TONG") === branchTarget?.code).length > 0 && (
+                      <p className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-xs text-amber-800">
+                        ⚠️ Cảnh báo: Hiện đang có <strong>{accounts.filter(a => (a.branch_code || "KHO-TONG") === branchTarget?.code).length} nhân sự</strong> thuộc chi nhánh này.
+                      </p>
+                    )}
+                    <div className="flex justify-end gap-2 pt-2">
+                      <button type="button" onClick={() => setBranchModal(null)} className="rounded-lg bg-slate-100 px-4 py-2 text-xs font-bold text-slate-700">Hủy</button>
+                      <button type="button" onClick={confirmDeleteBranch} disabled={branchBusy} className="rounded-lg bg-rose-600 px-4 py-2 text-xs font-bold text-white hover:bg-rose-700 disabled:opacity-50">
+                        {branchBusy ? "Đang xóa…" : "Xác nhận xóa"}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <form onSubmit={saveBranch} className="space-y-3">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Mã chi nhánh <span className="text-rose-600">*</span></label>
+                      <input
+                        type="text"
+                        required
+                        disabled={branchModal === "edit"}
+                        placeholder="VD: KHO-BD, SR-VT..."
+                        value={branchFormCode}
+                        onChange={e => setBranchFormCode(e.target.value.toUpperCase())}
+                        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-mono uppercase disabled:bg-slate-100"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Tên chi nhánh <span className="text-rose-600">*</span></label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="VD: Kho Bình Dương, Showroom Vũng Tàu..."
+                        value={branchFormName}
+                        onChange={e => setBranchFormName(e.target.value)}
+                        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Địa chỉ / Ghi chú</label>
+                      <input
+                        type="text"
+                        placeholder="VD: 123 Đại lộ Bình Dương..."
+                        value={branchFormAddress}
+                        onChange={e => setBranchFormAddress(e.target.value)}
+                        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs"
+                      />
+                    </div>
+                    <div className="flex justify-end gap-2 pt-2">
+                      <button type="button" onClick={() => setBranchModal(null)} className="rounded-lg bg-slate-100 px-4 py-2 text-xs font-bold text-slate-700">Hủy</button>
+                      <button type="submit" disabled={branchBusy} className="rounded-lg bg-brand-600 px-4 py-2 text-xs font-bold text-white hover:bg-brand-700 disabled:opacity-50">
+                        {branchBusy ? "Đang lưu…" : (branchModal === "add" ? "Thêm chi nhánh" : "Lưu thay đổi")}
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
+            </div>
+          )}
 
           {lockTarget && (
             <div className="fixed inset-0 z-[60] bg-slate-950/50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="lock-account-title">
@@ -1935,6 +2293,7 @@
       const [authActionMessage, setAuthActionMessage] = useState("");
       const [authActionPending, setAuthActionPending] = useState(false);
       const [accountPanelOpen, setAccountPanelOpen] = useState(false);
+      const [accountPanelInitialTab, setAccountPanelInitialTab] = useState("accounts");
       const [appNotice, setAppNotice] = useState("");
       const showNotice = (message) => setAppNotice(String(message || ""));
 
@@ -4182,8 +4541,13 @@
                   {!legacyMode && (
                     <div className="flex flex-wrap justify-end gap-1.5 sm:gap-2">
                       {isManager && (
-                        <button type="button" onClick={() => setAccountPanelOpen(true)} className="rounded-lg border border-brand-200 bg-brand-50 px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold text-brand-700 hover:bg-brand-100">
+                        <button type="button" onClick={() => { setAccountPanelInitialTab("accounts"); setAccountPanelOpen(true); }} className="rounded-lg border border-brand-200 bg-brand-50 px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold text-brand-700 hover:bg-brand-100">
                           👥 Quản lý tài khoản
+                        </button>
+                      )}
+                      {profile?.role === "admin" && (
+                        <button type="button" onClick={() => { setAccountPanelInitialTab("branches"); setAccountPanelOpen(true); }} className="rounded-lg border border-purple-200 bg-purple-50 px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold text-purple-700 hover:bg-purple-100">
+                          🏢 Quản lý chi nhánh
                         </button>
                       )}
                       <button type="button" onClick={handlePasswordReset} disabled={authActionPending} className="rounded-lg border border-slate-300 px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold text-slate-600 disabled:cursor-wait disabled:opacity-50">
@@ -5642,7 +6006,7 @@
           )}
 
           {accountPanelOpen && !legacyMode && (
-            <AccountManagementPanel callerRole={profile?.role} callerProfile={profile} onClose={() => { setAccountPanelOpen(false); fetchRecountCounters(); }} />
+            <AccountManagementPanel callerRole={profile?.role} callerProfile={profile} initialTab={accountPanelInitialTab} onClose={() => { setAccountPanelOpen(false); fetchRecountCounters(); }} />
           )}
 
           {recountReopenTarget && (
