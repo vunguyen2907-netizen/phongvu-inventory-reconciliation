@@ -1327,6 +1327,17 @@
       } catch (_e) {}
     }
 
+    function removeStoredAccountBranchOverride(accountId) {
+      try {
+        const current = getStoredAccountBranchOverrides();
+        if (current[accountId]) {
+          delete current[accountId];
+          localStorage.setItem("PV_ACCOUNT_BRANCH_OVERRIDES", JSON.stringify(current));
+          window.dispatchEvent(new CustomEvent("pv_account_branches_updated", { detail: current }));
+        }
+      } catch (_e) {}
+    }
+
     let SYSTEM_BRANCHES = getStoredBranches();
     if (typeof window !== "undefined") {
       window.addEventListener("pv_branches_updated", event => {
@@ -1703,15 +1714,17 @@
           }
 
           if (dbError) {
-            if (/branch_code|managed_branches|schema cache/i.test(dbError.message || "")) {
+            if (/branch_code|managed_branches|schema cache|permission denied|42501/i.test(`${dbError.code || ""} ${dbError.message || ""}`)) {
               saveStoredAccountBranchOverride(account.id, newBranch, newManaged);
               setAccounts(prev => prev.map(a => a.id === account.id ? { ...a, branch_code: newBranch, managed_branches: newManaged } : a));
               setBranches(prev => ({ ...prev, [account.id]: newBranch }));
               setManagedBranchesMap(prev => ({ ...prev, [account.id]: newManaged }));
-              setMessage(`Đã lưu chi nhánh ${newBranch} cho ${account.full_name} (lưu tạm cục bộ do Supabase chưa có cột branch_code). Hãy chạy SQL migration để đồng bộ toàn hệ thống.`);
+              setMessage(`Đã lưu chi nhánh ${newBranch} cho ${account.full_name} (lưu tạm cục bộ do database chưa mở quyền cập nhật trực tiếp). Hãy chạy file SQL migration trên Supabase để đồng bộ toàn hệ thống.`);
               return;
             }
             throw dbError;
+          } else {
+            removeStoredAccountBranchOverride(account.id);
           }
         });
       };
