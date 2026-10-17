@@ -1009,7 +1009,12 @@
                 .eq("id", session.user.id)
                 .maybeSingle();
               if (!fallback.error) {
-                data = fallback.data ? { ...fallback.data, branch_code: "KHO-TONG", managed_branches: [] } : null;
+                const ov = getStoredAccountBranchOverrides()[session.user.id];
+                data = fallback.data ? {
+                  ...fallback.data,
+                  branch_code: (ov && ov.branch_code) || "KHO-TONG",
+                  managed_branches: (ov && ov.managed_branches) || []
+                } : null;
                 error = null;
               }
             }
@@ -1302,6 +1307,26 @@
       } catch (_e) {}
     }
 
+    function getStoredAccountBranchOverrides() {
+      try {
+        const raw = localStorage.getItem("PV_ACCOUNT_BRANCH_OVERRIDES");
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object") return parsed;
+        }
+      } catch (_e) {}
+      return {};
+    }
+
+    function saveStoredAccountBranchOverride(accountId, branchCode, managedBranches) {
+      try {
+        const current = getStoredAccountBranchOverrides();
+        current[accountId] = { branch_code: branchCode, managed_branches: managedBranches };
+        localStorage.setItem("PV_ACCOUNT_BRANCH_OVERRIDES", JSON.stringify(current));
+        window.dispatchEvent(new CustomEvent("pv_account_branches_updated", { detail: current }));
+      } catch (_e) {}
+    }
+
     let SYSTEM_BRANCHES = getStoredBranches();
     if (typeof window !== "undefined") {
       window.addEventListener("pv_branches_updated", event => {
@@ -1539,6 +1564,22 @@
           }
           if (error) throw error;
 
+          // Luôn merge override từ localStorage nếu database chưa có hoặc đang lưu offline
+          const branchOverrides = getStoredAccountBranchOverrides();
+          data = (data || []).map(p => {
+            const ov = branchOverrides[p.id];
+            if (ov) {
+              return {
+                ...p,
+                branch_code: (ov.branch_code && ov.branch_code !== "KHO-TONG") ? ov.branch_code : (p.branch_code || "KHO-TONG"),
+                managed_branches: (Array.isArray(ov.managed_branches) && ov.managed_branches.length > 0)
+                  ? ov.managed_branches
+                  : (p.managed_branches || [])
+              };
+            }
+            return p;
+          });
+
           const callerManaged = (callerProfile?.managed_branches && callerProfile.managed_branches.length > 0)
             ? callerProfile.managed_branches
             : (callerProfile?.branch_code ? [callerProfile.branch_code] : []);
@@ -1592,7 +1633,7 @@
           const client = await getReadySupabaseClient();
           if (!client) throw new Error("Chưa cấu hình Supabase Auth.");
           await action(client);
-          setMessage(successMessage);
+          setMessage(previous => previous || successMessage);
           await loadAccounts();
           return true;
         } catch (actionError) {
@@ -1632,18 +1673,45 @@
       const updateBranch = async account => {
         const newBranch = branches[account.id] || account.branch_code || "KHO-TONG";
         const newManaged = managedBranchesMap[account.id] || account.managed_branches || [];
-        await runAction(account, `Đã cập nhật chi nhánh của ${account.full_name}.`, async client => {
+        await runAction(account, `Đã cập nhật chi nhánh của ${account.full_name} sang ${newBranch}.`, async client => {
+          let dbError = null;
           try {
             await invokeLifecycle(client, "update_branch", account, {
               branch_code: newBranch,
               managed_branches: newManaged
             });
           } catch (_fnError) {
-            const { error: dbError } = await client
-              .from("profiles")
-              .update({ branch_code: newBranch, managed_branches: newManaged })
-              .eq("id", account.id);
-            if (dbError) throw dbError;
+            let rpcFailed = false;
+            try {
+              const rpcRes = await client.rpc("update_profile_branch", {
+                p_target_user_id: account.id,
+                p_branch_code: newBranch,
+                p_managed_branches: newManaged
+              });
+              if (rpcRes && rpcRes.error) rpcFailed = true;
+            } catch (_rpcErr) {
+              rpcFailed = true;
+            }
+
+            if (rpcFailed) {
+              const res = await client
+                .from("profiles")
+                .update({ branch_code: newBranch, managed_branches: newManaged })
+                .eq("id", account.id);
+              dbError = res.error;
+            }
+          }
+
+          if (dbError) {
+            if (/branch_code|managed_branches|schema cache/i.test(dbError.message || "")) {
+              saveStoredAccountBranchOverride(account.id, newBranch, newManaged);
+              setAccounts(prev => prev.map(a => a.id === account.id ? { ...a, branch_code: newBranch, managed_branches: newManaged } : a));
+              setBranches(prev => ({ ...prev, [account.id]: newBranch }));
+              setManagedBranchesMap(prev => ({ ...prev, [account.id]: newManaged }));
+              setMessage(`Đã lưu chi nhánh ${newBranch} cho ${account.full_name} (lưu tạm cục bộ do Supabase chưa có cột branch_code). Hãy chạy SQL migration để đồng bộ toàn hệ thống.`);
+              return;
+            }
+            throw dbError;
           }
         });
       };
@@ -1900,7 +1968,12 @@
                       </thead>
                       <tbody className="divide-y divide-slate-100">
                         {filteredBranches.map(branch => {
-                          const userCount = accounts.filter(a => (a.branch_code || "KHO-TONG") === branch.code).length;
+                          const bCode = String(branch.code || "").trim().toUpperCase();
+                          const userCount = accounts.filter(a => {
+                            const direct = String(a.branch_code || "KHO-TONG").trim().toUpperCase() === bCode;
+                            const managed = Array.isArray(a.managed_branches) && a.managed_branches.map(m => String(m).trim().toUpperCase()).includes(bCode);
+                            return direct || managed;
+                          }).length;
                           return (
                             <tr key={branch.code} className="hover:bg-slate-50 transition">
                               <td className="p-3.5 font-mono font-bold text-slate-800">
@@ -2165,11 +2238,19 @@
                     <p className="text-sm text-slate-600">
                       Bạn có chắc chắn muốn xóa chi nhánh <strong className="text-rose-600">{branchTarget?.code} — {branchTarget?.name}</strong>?
                     </p>
-                    {accounts.filter(a => (a.branch_code || "KHO-TONG") === branchTarget?.code).length > 0 && (
-                      <p className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-xs text-amber-800">
-                        ⚠️ Cảnh báo: Hiện đang có <strong>{accounts.filter(a => (a.branch_code || "KHO-TONG") === branchTarget?.code).length} nhân sự</strong> thuộc chi nhánh này.
-                      </p>
-                    )}
+                    {(() => {
+                      const btCode = String(branchTarget?.code || "").trim().toUpperCase();
+                      const count = accounts.filter(a => {
+                        const direct = String(a.branch_code || "KHO-TONG").trim().toUpperCase() === btCode;
+                        const managed = Array.isArray(a.managed_branches) && a.managed_branches.map(m => String(m).trim().toUpperCase()).includes(btCode);
+                        return direct || managed;
+                      }).length;
+                      return count > 0 ? (
+                        <p className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-xs text-amber-800">
+                          ⚠️ Cảnh báo: Hiện đang có <strong>{count} nhân sự</strong> thuộc hoặc do chi nhánh này phụ trách.
+                        </p>
+                      ) : null;
+                    })()}
                     <div className="flex justify-end gap-2 pt-2">
                       <button type="button" onClick={() => setBranchModal(null)} className="rounded-lg bg-slate-100 px-4 py-2 text-xs font-bold text-slate-700">Hủy</button>
                       <button type="button" onClick={confirmDeleteBranch} disabled={branchBusy} className="rounded-lg bg-rose-600 px-4 py-2 text-xs font-bold text-white hover:bg-rose-700 disabled:opacity-50">
