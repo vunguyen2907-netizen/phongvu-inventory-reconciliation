@@ -387,6 +387,7 @@ class AuthUiTest(unittest.TestCase):
         pending = {"id": "pending-user", "email": "pending@example.com", "full_name": "Pending User", "erp_name": "Old ERP", "role": "counter", "status": "pending"}
         page = self.open_auth_page(session, profile, behavior={"accountProfiles": [pending]})
 
+        page.get_by_role("button", name="Tùy chọn").click()
         page.get_by_role("button", name="Quản lý tài khoản").click()
         page.get_by_role("heading", name="Quản lý tài khoản").wait_for()
         alias = page.get_by_label("ERP cho Pending User")
@@ -402,6 +403,7 @@ class AuthUiTest(unittest.TestCase):
         pending = {"id": "pending-user", "email": "pending@example.com", "full_name": "Pending User", "erp_name": "Old ERP", "role": "counter", "status": "pending"}
         page = self.open_auth_page(session, profile, behavior={"accountProfiles": [pending]})
 
+        page.get_by_role("button", name="Tùy chọn").click()
         page.get_by_role("button", name="Quản lý tài khoản").click()
         page.get_by_role("heading", name="Quản lý tài khoản").wait_for()
         page.get_by_label("ERP cho Pending User").fill("ERP MGR")
@@ -425,6 +427,7 @@ class AuthUiTest(unittest.TestCase):
         active = {"id": "active-user", "email": "active@example.com", "full_name": "Active User", "erp_name": "ERP Active", "role": "counter", "status": "active"}
         page = self.open_auth_page(session, profile, behavior={"accountProfiles": [active]})
 
+        page.get_by_role("button", name="Tùy chọn").click()
         page.get_by_role("button", name="Quản lý tài khoản").click()
         page.get_by_role("button", name="Hoạt động", exact=True).click()
         role_select = page.get_by_label("Vai trò cho Active User")
@@ -446,6 +449,7 @@ class AuthUiTest(unittest.TestCase):
         profile = {"id": "manager-user", "email": "manager@example.com", "full_name": "Manager User", "erp_name": "ERP Manager", "role": "manager", "status": "active"}
         pending = {"id": "pending-user", "email": "pending@example.com", "full_name": "Pending User", "erp_name": "Old ERP", "role": "counter", "status": "pending"}
         page = self.open_auth_page(session, profile, behavior={"accountProfiles": [pending]})
+        page.get_by_role("button", name="Tùy chọn").click()
         page.get_by_role("button", name="Quản lý tài khoản").click()
 
         page.get_by_role("button", name="Xóa Pending User").click()
@@ -463,6 +467,7 @@ class AuthUiTest(unittest.TestCase):
             profile,
             behavior={"accountProfiles": [active], "functionInvokeError": "lifecycle unavailable"},
         )
+        page.get_by_role("button", name="Tùy chọn").click()
         page.get_by_role("button", name="Quản lý tài khoản").click()
         page.get_by_role("button", name="Hoạt động", exact=True).click()
         page.get_by_role("button", name="Xóa Active User").click()
@@ -484,6 +489,7 @@ class AuthUiTest(unittest.TestCase):
             {"id": "deleted-user", "email": "deleted@example.com", "full_name": "Deleted User", "erp_name": "ERP Deleted", "role": "counter", "status": "deleted"},
         ]
         page = self.open_auth_page(session, profile, behavior={"accountProfiles": accounts})
+        page.get_by_role("button", name="Tùy chọn").click()
         page.get_by_role("button", name="Quản lý tài khoản").click()
 
         page.get_by_role("button", name="Hoạt động", exact=True).click()
@@ -622,6 +628,7 @@ class AuthUiTest(unittest.TestCase):
             profile,
             behavior={"authRedirectUrl": "https://inventory.example.com/auth"},
         )
+        page.get_by_role("button", name="Tùy chọn").click()
         page.get_by_role("button", name="Gửi email đổi mật khẩu").click()
 
         call = page.evaluate("window.__AUTH_CALLS__.find(call => call.method === 'resetPasswordForEmail')")
