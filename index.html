@@ -13,11 +13,13 @@
         extend: {
           colors: {
             brand: {
-              50: '#f0f5ff',
-              100: '#e0ebff',
-              500: '#177ddc',
-              600: '#0958d9',
-              700: '#003eb3',
+              50: '#f8fafc',
+              100: '#f1f5f9',
+              200: '#e2e8f0',
+              300: '#cbd5e1',
+              500: '#334155',
+              600: '#1e293b',
+              700: '#0f172a',
             }
           }
         }
@@ -297,24 +299,43 @@
       });
     }
 
+    const SERIAL_AUDIT_TAG_REGEX = /\s*\[(?:Sửa Serial:|Đã xóa Serial sai\b|Đã loại bỏ Serial dư\b)[^\]]*\]/g;
+
+    function stripSerialAuditTags(note) {
+      return String(note || "")
+        .replace(SERIAL_AUDIT_TAG_REGEX, "")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+
     function compactSerialAudit(note) {
-      const audits = String(note || "").match(/\[Sửa Serial:[^\]]*\]/g) || [];
-      const baseNote = String(note || "").replace(/\s*\[Sửa Serial:[^\]]*\]/g, "").trim();
-      return [baseNote, audits.at(-1)].filter(Boolean).join(" ");
+      const raw = String(note || "");
+      const editAudits = raw.match(/\[Sửa Serial:[^\]]*\]/g) || [];
+      const removalAudits = raw.match(/\[(?:Đã xóa Serial sai\b|Đã loại bỏ Serial dư\b)[^\]]*\]/g) || [];
+      const baseNote = stripSerialAuditTags(raw);
+      return [baseNote, removalAudits.at(-1), editAudits.at(-1)].filter(Boolean).join(" ");
     }
 
     function dedupeReportNotes(...values) {
       const seen = new Set();
+      const seenBase = new Set();
       const notes = [];
       values.flatMap(value => String(value || "").split("|")).forEach(value => {
-        const note = value.replace(/\s+/g, " ").trim();
+        const note = compactSerialAudit(value.replace(/\s+/g, " ").trim());
         if (!note) return;
         const key = normalizedText(note);
+        const baseKey = normalizedText(stripSerialAuditTags(note));
         if (seen.has(key)) return;
+        if (baseKey && key === baseKey && seenBase.has(baseKey)) return;
         seen.add(key);
+        if (baseKey) seenBase.add(baseKey);
         notes.push(note);
       });
       return notes.join(" | ");
+    }
+
+    function formatReportNote(note) {
+      return dedupeReportNotes(stripSerialAuditTags(note));
     }
 
     function serialsMatch(stockSerial, scannedSerial) {
@@ -1919,7 +1940,7 @@
                       : "border-transparent text-slate-500 hover:text-slate-800"
                   }`}
                 >
-                  👥 Tài khoản nhân sự ({accounts.length})
+                  Tài khoản nhân sự ({accounts.length})
                 </button>
                 <button
                   type="button"
@@ -1930,7 +1951,7 @@
                       : "border-transparent text-slate-500 hover:text-slate-800"
                   }`}
                 >
-                  🏢 Quản lý chi nhánh ({systemBranches.length})
+                  Quản lý chi nhánh ({systemBranches.length})
                 </button>
               </div>
             )}
@@ -1941,7 +1962,7 @@
                   <div className="flex-1 max-w-sm">
                     <input
                       type="text"
-                      placeholder="🔍 Tìm theo mã hoặc tên chi nhánh..."
+                      placeholder="Tìm theo mã hoặc tên chi nhánh..."
                       value={branchSearch}
                       onChange={e => setBranchSearch(e.target.value)}
                       className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs"
@@ -1952,7 +1973,7 @@
                     onClick={openAddBranch}
                     className="rounded-lg bg-brand-600 px-3.5 py-2 text-xs font-bold text-white hover:bg-brand-700 shadow-sm flex items-center justify-center gap-1.5"
                   >
-                    <span>➕</span> Thêm chi nhánh mới
+                    Thêm chi nhánh mới
                   </button>
                 </div>
 
@@ -1998,7 +2019,7 @@
                               <td className="p-3.5 text-slate-500">{branch.address || "—"}</td>
                               <td className="p-3.5 text-center">
                                 <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-semibold text-slate-700">
-                                  👤 {userCount}
+                                  {userCount} nhân sự
                                 </span>
                               </td>
                               <td className="p-3.5 text-right">
@@ -2008,14 +2029,14 @@
                                     onClick={() => openEditBranch(branch)}
                                     className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 shadow-sm"
                                   >
-                                    ✏️ Sửa
+                                    Sửa
                                   </button>
                                   <button
                                     type="button"
                                     onClick={() => openDeleteBranch(branch)}
                                     className="rounded-md border border-rose-200 bg-rose-50 px-2.5 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-100 shadow-sm"
                                   >
-                                    🗑️ Xóa
+                                    Xóa
                                   </button>
                                 </div>
                               </td>
@@ -2039,7 +2060,7 @@
                   </div>
                   {activeCallerRole === "admin" && (
                     <div className="mt-3 flex flex-wrap items-center gap-2">
-                      <span className="text-xs font-bold text-slate-600">🏢 Lọc theo chi nhánh:</span>
+                      <span className="text-xs font-bold text-slate-600">Lọc theo chi nhánh:</span>
                       <select
                         aria-label="Lọc theo chi nhánh"
                         value={branchFilter}
@@ -2082,7 +2103,7 @@
                                   {account.role === "admin" ? "Quản trị viên (Admin)" : account.role === "manager" ? "Quản lý (Manager)" : "Kiểm đếm (Counter)"}
                                 </span>
                                 <span className="rounded-md bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-700 border border-slate-200">
-                                  🏢 {account.branch_code || "KHO-TONG"}
+                                  {account.branch_code || "KHO-TONG"}
                                 </span>
                                 {account.role === "manager" && Array.isArray(account.managed_branches) && account.managed_branches.length > 0 && (
                                   <span className="rounded-md bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 border border-amber-200">
@@ -2260,7 +2281,7 @@
                       }).length;
                       return count > 0 ? (
                         <p className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-xs text-amber-800">
-                          ⚠️ Cảnh báo: Hiện đang có <strong>{count} nhân sự</strong> thuộc hoặc do chi nhánh này phụ trách.
+                          Cảnh báo: Hiện đang có <strong>{count} nhân sự</strong> thuộc hoặc do chi nhánh này phụ trách.
                         </p>
                       ) : null;
                     })()}
@@ -2475,6 +2496,7 @@
       const [copiedSerial, setCopiedSerial] = useState("");
       const [editingNoteRowId, setEditingNoteRowId] = useState(null);
       const [recountViewMode, setRecountViewMode] = useState("auto");
+      const [secondCountSection, setSecondCountSection] = useState("guide");
       const [showAdvancedRecount, setShowAdvancedRecount] = useState(false);
 
       useEffect(() => {
@@ -2505,7 +2527,7 @@
             if (draft.filterDetailStatus) setFilterDetailStatus(draft.filterDetailStatus);
             if (draft.filterL2Mode) setFilterL2Mode(draft.filterL2Mode);
             if (draft.filterL2Status) setFilterL2Status(draft.filterL2Status);
-            showNotice("✅ Đã tự động khôi phục dữ liệu phiên làm việc.");
+            showNotice("Đã tự động khôi phục dữ liệu phiên làm việc.");
           }
         })();
         return () => { isMounted = false; };
@@ -2710,7 +2732,7 @@
           if (error) throw error;
           if (data?.result === "completed") {
             setCounterSessionFinished(true);
-            showNotice("✅ Đã kết thúc phiên kiểm lần 2.");
+            showNotice("Đã kết thúc phiên kiểm lần 2.");
           } else if (data?.result === "awaiting_other_counters") {
             showNotice(`Còn ${data.pending_count || 0} dòng của nhân sự khác chưa hoàn tất.`);
           } else {
@@ -2743,7 +2765,7 @@
           } else if (result === "wrong_sku" || result === "unknown_serial") {
             showNotice("Mã serial chưa khớp sản phẩm. Task vẫn đang thực hiện, hãy quét lại serial đúng.");
           } else {
-            showNotice("✅ Đã ghi nhận kết quả kiểm lần 2.");
+            showNotice("Đã ghi nhận kết quả kiểm lần 2.");
           }
         } catch (e) {
           showNotice("Lỗi ghi nhận kiểm lần 2: " + e.message);
@@ -2903,7 +2925,7 @@
           setRecountPage(1);
           await fetchRecountTasks(1, summary.batch_id);
           await refreshRecountSummary(summary.batch_id);
-          showNotice(`✅ Đã tạo danh sách kiểm lần 2 (${summary.task_count || draft.tasks.length} task).`);
+          showNotice(`Đã tạo danh sách kiểm lần 2 (${summary.task_count || draft.tasks.length} task).`);
         } catch (e) { showNotice('Lỗi tạo danh sách kiểm lần 2: ' + e.message); }
         finally { setRecountLoading(false); }
       };
@@ -2924,7 +2946,7 @@
           await fetchRecountTasks(recountPage);
           await refreshRecountSummary();
           setRecountAssignee("");
-          showNotice('✅ Đã phân công các dòng đã chọn.');
+          showNotice('Đã phân công các dòng đã chọn.');
         } catch (e) { showNotice('Lỗi phân công kiểm lần 2: ' + e.message); }
         finally { setRecountLoading(false); }
       };
@@ -3256,7 +3278,7 @@
             setLastSavedTime(new Date().toLocaleTimeString('vi-VN'));
             setIsDirty(false);
             fetchSavedSessions();
-            showNotice("✅ Đã lưu thành công đợt kiểm kê lên Supabase!");
+            showNotice("Đã lưu thành công đợt kiểm kê lên Supabase!");
           }
         } catch (e) { showNotice("Lỗi khi lưu Supabase: " + e.message); }
       };
@@ -3344,7 +3366,7 @@
                 .in('id', oldIds);
               if (pruneError) console.error("Không thể xóa archive cũ:", pruneError);
             }
-            showNotice(`✅ Đã lưu báo cáo ${label} thành công!`);
+            showNotice(`Đã lưu báo cáo ${label} thành công!`);
             fetchMonthlyArchives();
           } else { showNotice("Lỗi lưu archive: " + error.message); }
         } catch (e) { showNotice("Lỗi: " + e.message); }
@@ -3466,7 +3488,8 @@
             : `[Đã loại bỏ Serial dư ${serial} - Lý do: ${clearReasonInput.trim()}]`;
           r.diff = removalKind === "wrong" ? -1 : 0;
           r.status = removalKind === "wrong" ? "Bắn thiếu (Chưa quét)" : "Đã loại bỏ Serial dư";
-          r.note = [String(r.note || "").trim(), removalAudit].filter(Boolean).join(" ");
+          const baseNote = stripSerialAuditTags(r.note);
+          r.note = [baseNote, removalAudit].filter(Boolean).join(" ");
           return updated;
         });
         setDfCountL2(countRows => countRows.map(row => {
@@ -3580,7 +3603,7 @@
           r.qtySys,
           r.totalActual,
           r.diff,
-          r.note || ""
+          formatReportNote(r.note)
         ]);
         const totalSys = dfMainRows.reduce((sum, row) => sum + row.qtySys, 0);
         const totalActual = dfMainRows.reduce((sum, row) => sum + row.totalActual, 0);
@@ -3772,7 +3795,7 @@
             { text: `${r.qtySys}`, alignment: 'right' },
             { text: `${r.totalActual}`, alignment: 'right' },
             { text: diffText, alignment: 'right', color: r.diff !== 0 ? '#cc0000' : '#000000', bold: r.diff !== 0 },
-            { text: r.note || '-', alignment: 'left' }
+            { text: formatReportNote(r.note) || '-', alignment: 'left' }
           ]);
         });
 
@@ -3923,7 +3946,7 @@
           row.qtySys,
           Math.max(row.diff, 0),
           Math.max(-row.diff, 0),
-          row.note || "",
+          formatReportNote(row.note),
           proposedActions[row.sku] || ""
         ]);
         const totalRow = dataStartRow + tableRows.length;
@@ -4269,7 +4292,7 @@
         });
 
         if (checked) {
-          showNotice("✅ Đã ghi nhận: Đã xử lý xong!");
+          showNotice("Đã ghi nhận: Đã xử lý xong!");
         } else {
           showNotice("Đã mở lại dòng kiểm kê (chưa xử lý).");
         }
@@ -4331,7 +4354,7 @@
           return next;
         });
 
-        showNotice("💾 Đã lưu ghi chú xử lý.");
+        showNotice("Đã lưu ghi chú xử lý.");
       };
 
       const filteredRecountGuideRows = useMemo(() => {
@@ -4386,7 +4409,7 @@
         XLSX.utils.book_append_sheet(wb, ws, "Kiem_Lan_2");
         const safeSession = (sessionName || 'dot_kiem_ke').replace(/[^a-zA-Z0-9_\u00C0-\u024F\u1EA0-\u1EF9]/g, '_');
         XLSX.writeFile(wb, `Danh_Sach_Kiem_Lan_2_${safeSession}_${new Date().toISOString().slice(0, 10)}.xlsx`);
-        showNotice("✅ Đã xuất file Excel danh sách kiểm Lần 2!");
+        showNotice("Đã xuất file Excel danh sách kiểm Lần 2!");
       };
 
       const handleCopyRecountGuideList = () => {
@@ -4396,7 +4419,7 @@
           `${idx + 1}\t${r.sku || ''}\t${r.name || ''}\t${r.bin || ''}\t${r.stockSerial || ''}\t${r.scannedSerial || ''}\t${r.status || ''}\t${r.performedBy || ''}\t${formatInventoryTime(r.inventoryTime) || ''}\t${r.processNote || ''}\t${r.processed ? 'Đã xử lý' : 'Chưa xử lý'}`
         ).join("\n");
         navigator.clipboard.writeText(header + body).then(() => {
-          showNotice("📋 Đã sao chép danh sách vào clipboard!");
+          showNotice("Đã sao chép danh sách vào clipboard!");
         }).catch(() => {
           showNotice("Không thể sao chép, vui lòng thử lại.");
         });
@@ -4406,7 +4429,7 @@
         if (!serial || serial === "—") return;
         navigator.clipboard.writeText(serial).then(() => {
           setCopiedSerial(serial);
-          showNotice(`📋 Đã chép mã: ${serial}`);
+          showNotice(`Đã chép mã: ${serial}`);
           setTimeout(() => setCopiedSerial(""), 2000);
         }).catch(() => {});
       };
@@ -4502,9 +4525,9 @@
                 <button
                   onClick={() => handleSaveSession(true)}
                   disabled={!supabaseClient || dfCheckDetail.length === 0}
-                  className={`w-full py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 transition ${isDirty ? 'bg-amber-500 hover:bg-amber-600 text-slate-950' : 'bg-brand-600 hover:bg-brand-700 text-white'} disabled:opacity-40`}
+                  className={`w-full py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center transition ${isDirty ? 'bg-amber-400 hover:bg-amber-300 text-slate-950' : 'bg-slate-700 hover:bg-slate-600 text-white'} disabled:opacity-40`}
                 >
-                  💾 {isDirty ? 'Lưu đợt hiện tại ●' : 'Lưu đợt hiện tại'}
+                  {isDirty ? 'Lưu đợt hiện tại (có thay đổi)' : 'Lưu đợt hiện tại'}
                 </button>
 
                 {lastSavedTime && (
@@ -4537,8 +4560,8 @@
 
               {/* MONTHLY ARCHIVES SECTION */}
               <div className="pt-4 border-t border-slate-800 space-y-3">
-                <label className="text-xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-                  📅 Lưu trữ 12 tháng
+                <label className="text-xs font-semibold uppercase tracking-wider text-slate-400 block">
+                  Lưu trữ 12 tháng
                 </label>
                 
                 <div className="grid grid-cols-2 gap-2">
@@ -4579,9 +4602,9 @@
                   <button
                     onClick={handleSaveMonthlyArchive}
                     disabled={!supabaseClient || dfCountL2.length === 0}
-                  className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold transition disabled:opacity-40"
+                  className="w-full py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-100 rounded-lg text-xs font-semibold transition disabled:opacity-40"
                 >
-                  📦 Lưu báo cáo tháng này
+                  Lưu báo cáo tháng này
                 </button>
               </div>
             </div>
@@ -4596,10 +4619,10 @@
             {isManager && sidebarCollapsed && (
               <button
                 onClick={() => setSidebarCollapsed(false)}
-                className="absolute left-3 top-3 z-30 w-9 h-9 rounded-lg bg-slate-900 hover:bg-slate-800 text-white shadow-lg"
+                className="absolute left-3 top-3 z-30 px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold shadow-sm"
                 title="Hiện thanh bên"
                 aria-label="Hiện thanh bên"
-              >☰</button>
+              >Menu</button>
             )}
             {/* TOP NAVIGATION TABS */}
             <header className="bg-white border-b border-slate-200 px-3 sm:px-6 pt-3 sm:pt-4 pb-0 shadow-sm">
@@ -4613,18 +4636,12 @@
                     <div className="flex items-center justify-start sm:justify-end gap-2">
                       <p className="text-sm font-bold text-slate-800">{legacyMode ? "Chế độ chuyển đổi" : (profile?.full_name || profile?.email)}</p>
                       {!legacyMode && profile && (
-                        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                          profile.role === "admin"
-                            ? "bg-purple-100 text-purple-800 border border-purple-200"
-                            : profile.role === "manager"
-                            ? "bg-blue-100 text-blue-800 border border-blue-200"
-                            : "bg-emerald-100 text-emerald-800 border border-emerald-200"
-                        }`}>
+                        <span className="inline-flex items-center rounded px-2 py-0.5 text-[11px] font-semibold bg-slate-100 text-slate-700 border border-slate-200">
                           {profile.role === "admin"
-                            ? "🏢 Toàn hệ thống"
+                            ? "Toàn hệ thống"
                             : profile.role === "manager"
-                            ? `🏢 QL: ${(profile.managed_branches && profile.managed_branches.length > 0) ? profile.managed_branches.join(", ") : (profile.branch_code || "KHO-TONG")}`
-                            : `🏢 ${profile.branch_code || "KHO-TONG"}`}
+                            ? `QL: ${(profile.managed_branches && profile.managed_branches.length > 0) ? profile.managed_branches.join(", ") : (profile.branch_code || "KHO-TONG")}`
+                            : `${profile.branch_code || "KHO-TONG"}`}
                         </span>
                       )}
                     </div>
@@ -4635,13 +4652,13 @@
                   {!legacyMode && (
                     <div className="flex flex-wrap justify-end gap-1.5 sm:gap-2">
                       {isManager && (
-                        <button type="button" onClick={() => { setAccountPanelInitialTab("accounts"); setAccountPanelOpen(true); }} className="rounded-lg border border-brand-200 bg-brand-50 px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold text-brand-700 hover:bg-brand-100">
-                          👥 Quản lý tài khoản
+                        <button type="button" onClick={() => { setAccountPanelInitialTab("accounts"); setAccountPanelOpen(true); }} className="rounded-lg border border-slate-300 bg-white px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition">
+                          Quản lý tài khoản
                         </button>
                       )}
                       {profile?.role === "admin" && (
-                        <button type="button" onClick={() => { setAccountPanelInitialTab("branches"); setAccountPanelOpen(true); }} className="rounded-lg border border-purple-200 bg-purple-50 px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold text-purple-700 hover:bg-purple-100">
-                          🏢 Quản lý chi nhánh
+                        <button type="button" onClick={() => { setAccountPanelInitialTab("branches"); setAccountPanelOpen(true); }} className="rounded-lg border border-slate-300 bg-white px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition">
+                          Quản lý chi nhánh
                         </button>
                       )}
                       <button type="button" onClick={handlePasswordReset} disabled={authActionPending} className="rounded-lg border border-slate-300 px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold text-slate-600 disabled:cursor-wait disabled:opacity-50">
@@ -4699,8 +4716,8 @@
                             reader.readAsArrayBuffer(file);
                           }}
                         />
-                        <div className={`w-12 h-12 rounded-full mx-auto flex items-center justify-center font-bold text-xl mb-3 ${rawStockFileName ? 'bg-emerald-100 text-emerald-700' : 'bg-brand-50 text-brand-600'}`}>
-                          {rawStockFileName ? '✅' : '📁'}
+                        <div className={`w-10 h-10 rounded-lg mx-auto flex items-center justify-center font-bold text-xs mb-3 border ${rawStockFileName ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-slate-100 border-slate-200 text-slate-600'}`}>
+                          {rawStockFileName ? 'OK' : '01'}
                         </div>
                         <h4 className="font-semibold text-sm text-slate-800 mb-1">1. Tồn kho Sổ sách (Hệ thống gốc)</h4>
                         {rawStockFileName ? (
@@ -4732,8 +4749,8 @@
                             reader.readAsArrayBuffer(file);
                           }}
                         />
-                        <div className={`w-12 h-12 rounded-full mx-auto flex items-center justify-center font-bold text-xl mb-3 ${rawErpFileName ? 'bg-emerald-100 text-emerald-700' : 'bg-emerald-50 text-emerald-600'}`}>
-                          {rawErpFileName ? '✅' : '⚡'}
+                        <div className={`w-10 h-10 rounded-lg mx-auto flex items-center justify-center font-bold text-xs mb-3 border ${rawErpFileName ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-slate-100 border-slate-200 text-slate-600'}`}>
+                          {rawErpFileName ? 'OK' : '02'}
                         </div>
                         <h4 className="font-semibold text-sm text-slate-800 mb-1">2. Thực tế đếm / Máy quét (ERP)</h4>
                         {rawErpFileName ? (
@@ -4750,9 +4767,9 @@
                     <button
                       onClick={() => handleProcessFiles(rawStockData, rawErpData)}
                       disabled={rawStockData.length === 0 || rawErpData.length === 0}
-                      className={`w-full py-3.5 font-bold text-sm rounded-xl shadow-lg transition flex items-center justify-center gap-2 ${rawStockData.length > 0 && rawErpData.length > 0 ? 'bg-brand-600 hover:bg-brand-700 text-white shadow-brand-500/20 animate-pulse' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}
+                      className={`w-full py-3 font-semibold text-sm rounded-lg transition flex items-center justify-center ${rawStockData.length > 0 && rawErpData.length > 0 ? 'bg-slate-900 hover:bg-slate-800 text-white' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}
                     >
-                      🚀 Bắt đầu Tự động Đối soát Dữ liệu
+                      Bắt đầu Tự động Đối soát Dữ liệu
                     </button>
 
                     {/* PREVIEW TABLE */}
@@ -4807,7 +4824,7 @@
 
                     <input
                       type="text"
-                      placeholder="🔍 Tìm SKU / Serial / Bin..."
+                      placeholder="Tìm SKU / Serial / Bin..."
                       value={searchDetail}
                       onChange={e => setSearchDetail(e.target.value)}
                       className="bg-slate-50 text-xs border border-slate-300 rounded-lg px-3 py-2 w-64"
@@ -4825,22 +4842,22 @@
                   </div>
 
                   {/* METRIC CARDS */}
-                  <div className="grid grid-cols-4 gap-4">
-                    <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm">
-                      <p className="text-[11px] font-bold text-slate-400 uppercase">Tổng dòng Serial</p>
-                      <p className="text-lg font-extrabold text-slate-800">{filteredDetailRows.length}</p>
+                  <div className="bg-white rounded-lg border border-slate-200 grid grid-cols-2 sm:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-slate-200">
+                    <div className="p-3">
+                      <p className="text-[11px] font-semibold text-slate-500 uppercase">Tổng dòng Serial</p>
+                      <p className="text-lg font-bold text-slate-900 mt-0.5">{filteredDetailRows.length}</p>
                     </div>
-                    <div className="bg-emerald-50/50 p-3 rounded-xl border border-emerald-200 shadow-sm">
-                      <p className="text-[11px] font-bold text-emerald-600 uppercase">Serial Quét Đủ</p>
-                      <p className="text-lg font-extrabold text-emerald-700">{filteredDetailRows.filter(r => r.checked === 1 && r.status === "Đã quét đủ").length}</p>
+                    <div className="p-3">
+                      <p className="text-[11px] font-semibold text-slate-500 uppercase">Serial Quét Đủ</p>
+                      <p className="text-lg font-bold text-emerald-700 mt-0.5">{filteredDetailRows.filter(r => r.checked === 1 && r.status === "Đã quét đủ").length}</p>
                     </div>
-                    <div className="bg-rose-50/50 p-3 rounded-xl border border-rose-200 shadow-sm">
-                      <p className="text-[11px] font-bold text-rose-600 uppercase">Serial Thiếu</p>
-                      <p className="text-lg font-extrabold text-rose-700">{filteredDetailRows.filter(r => r.diff < 0).length}</p>
+                    <div className="p-3">
+                      <p className="text-[11px] font-semibold text-slate-500 uppercase">Serial Thiếu</p>
+                      <p className="text-lg font-bold text-red-700 mt-0.5">{filteredDetailRows.filter(r => r.diff < 0).length}</p>
                     </div>
-                    <div className="bg-amber-50/50 p-3 rounded-xl border border-amber-200 shadow-sm">
-                      <p className="text-[11px] font-bold text-amber-700 uppercase">Serial Dư / Sai Mã</p>
-                      <p className="text-lg font-extrabold text-amber-800">{filteredDetailRows.filter(r => String(r.status || "").includes("Bắn sai") || String(r.status || "").includes("Bắn dư")).length}</p>
+                    <div className="p-3">
+                      <p className="text-[11px] font-semibold text-slate-500 uppercase">Serial Dư / Sai Mã</p>
+                      <p className="text-lg font-bold text-amber-700 mt-0.5">{filteredDetailRows.filter(r => String(r.status || "").includes("Bắn sai") || String(r.status || "").includes("Bắn dư")).length}</p>
                     </div>
                   </div>
 
@@ -4919,10 +4936,10 @@
                                           });
                                           setClearReasonInput("");
                                         }}
-                                        className="px-2 py-1 rounded border border-rose-300 bg-rose-50 hover:bg-rose-100 text-rose-700 text-[10px] font-bold transition"
+                                        className="px-2 py-1 rounded border border-slate-300 bg-white hover:bg-slate-50 text-red-700 text-[10px] font-semibold transition"
                                         title="Xóa serial và lưu lý do"
                                       >
-                                        🗑 Xóa / Nhập lý do
+                                        Xóa / Nhập lý do
                                       </button>
                                     )}
                                   </div>
@@ -4957,11 +4974,11 @@
               {/* TAB 3: KIỂM ĐẾM LẦN 2 */}
               {activeTab === "second-count" && (
                 <div className="space-y-4">
-                  {/* 1. THANH CHỌN ĐỢT KIỂM KÊ (Dành cho tất cả nhân sự) */}
-                  <div className="bg-white p-3 sm:p-4 rounded-xl border border-brand-200 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  {/* 1. THANH CHỌN ĐỢT KIỂM KÊ */}
+                  <div className="bg-white p-3 sm:p-4 rounded-lg border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
-                      <span className="text-xs font-bold uppercase text-slate-700 flex items-center gap-1.5">
-                        <span>📁</span> Chọn đợt kiểm kê:
+                      <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                        Đợt kiểm kê:
                       </span>
                       <select
                         value={activeSessionId || ""}
@@ -4969,7 +4986,7 @@
                           if (e.target.value) handleLoadSession(e.target.value);
                         }}
                         aria-label="Chọn đợt kiểm kê"
-                        className="bg-slate-50 text-xs font-semibold border border-slate-300 rounded-lg px-3 py-2 text-slate-800 focus:border-brand-500 focus:outline-none w-full sm:w-auto min-w-0 sm:min-w-[260px]"
+                        className="bg-slate-50 text-xs font-semibold border border-slate-300 rounded-lg px-3 py-2 text-slate-800 focus:border-slate-500 focus:outline-none w-full sm:w-auto min-w-0 sm:min-w-[260px]"
                       >
                         <option value="">-- Chọn đợt kiểm kê để xem --</option>
                         {savedSessions.map(s => (
@@ -4982,60 +4999,88 @@
                         type="button"
                         onClick={fetchSavedSessions}
                         title="Tải lại danh sách đợt kiểm kê"
-                        className="rounded-lg border border-slate-300 bg-white hover:bg-slate-50 px-2.5 py-1.5 text-xs font-bold text-slate-600 transition shadow-sm"
+                        className="rounded-lg border border-slate-300 bg-white hover:bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700 transition"
                       >
-                        ↻ Làm mới đợt
+                        Làm mới đợt
                       </button>
                     </div>
 
                     {activeSessionId ? (
                       <div className="flex flex-wrap items-center gap-2 text-xs">
-                        <span className="inline-flex items-center px-3 py-1 rounded-full font-bold bg-brand-50 text-brand-700 border border-brand-200">
-                          ✓ Đang xem: {sessionName || 'Đợt kiểm kê'}
+                        <span className="inline-flex items-center px-2.5 py-1 rounded-md font-semibold bg-slate-100 text-slate-800 border border-slate-200">
+                          Đang xem: {sessionName || 'Đợt kiểm kê'}
                         </span>
                         {lastSavedTime && (
                           <span className="text-slate-500 text-[11px]">
-                            Cập nhật lúc: {lastSavedTime}
+                            Cập nhật: {lastSavedTime}
                           </span>
                         )}
                       </div>
                     ) : (
-                      <span className="text-xs text-amber-700 bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200 font-medium">
-                        ⚠️ Hãy chọn một đợt kiểm kê ở dropdown trên để xem danh sách sản phẩm chênh lệch cần kiểm lại.
+                      <span className="text-xs text-slate-600 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200 font-medium">
+                        Hãy chọn một đợt kiểm kê ở danh sách bên trái để xem dữ liệu.
                       </span>
                     )}
                   </div>
 
-                  {/* 2. HÌNH 2: PHẦN TỔNG HỢP SKU KIỂM LẦN 2 (ĐƯA LÊN ĐẦU TAB 3 CHO QUẢN LÝ) */}
+                  {/* SUB-VIEW SWITCHER FOR MANAGERS */}
                   {isManager && (
+                    <div className="inline-flex rounded-lg bg-slate-100 p-1 border border-slate-200">
+                      <button
+                        type="button"
+                        onClick={() => setSecondCountSection("guide")}
+                        className={`px-3.5 py-1.5 rounded-md text-xs font-semibold transition ${
+                          secondCountSection === "guide"
+                            ? "bg-white text-slate-900 shadow-xs border border-slate-200"
+                            : "text-slate-600 hover:text-slate-900"
+                        }`}
+                      >
+                        Danh sách Serial kiểm lại ({recountDiscrepancies.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSecondCountSection("summary")}
+                        className={`px-3.5 py-1.5 rounded-md text-xs font-semibold transition ${
+                          secondCountSection === "summary"
+                            ? "bg-white text-slate-900 shadow-xs border border-slate-200"
+                            : "text-slate-600 hover:text-slate-900"
+                        }`}
+                      >
+                        Tổng hợp & Nhập số lượng Lần 2 ({dfCountL2.filter(r => r.diffL2 !== 0).length} lệch)
+                      </button>
+                    </div>
+                  )}
+
+                  {/* 2. PHẦN TỔNG HỢP SKU KIỂM LẦN 2 (CHO QUẢN LÝ) */}
+                  {isManager && secondCountSection === "summary" && (
                     <>
-                      {/* BỐN THẺ THỐNG KÊ SKU */}
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                        <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm">
-                          <p className="text-[11px] font-bold text-slate-400 uppercase">Tổng SKU</p>
-                          <p className="text-lg font-extrabold text-slate-900">{dfCountL2.length}</p>
+                      {/* BỐN CHỈ SỐ TỔNG HỢP SKU */}
+                      <div className="bg-white rounded-lg border border-slate-200 grid grid-cols-2 sm:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-slate-200">
+                        <div className="p-3">
+                          <p className="text-[11px] font-semibold text-slate-500 uppercase">Tổng SKU</p>
+                          <p className="text-lg font-bold text-slate-900 mt-0.5">{dfCountL2.length}</p>
                         </div>
-                        <div className="bg-rose-50 p-3 rounded-xl border border-rose-200 shadow-sm">
-                          <p className="text-[11px] font-bold text-rose-600 uppercase">Còn chênh lệch</p>
-                          <p className="text-lg font-extrabold text-rose-700">{dfCountL2.filter(r => r.diffL2 !== 0).length}</p>
+                        <div className="p-3">
+                          <p className="text-[11px] font-semibold text-slate-500 uppercase">Còn chênh lệch</p>
+                          <p className="text-lg font-bold text-red-700 mt-0.5">{dfCountL2.filter(r => r.diffL2 !== 0).length}</p>
                         </div>
-                        <div className="bg-brand-50 p-3 rounded-xl border border-blue-200 shadow-sm">
-                          <p className="text-[11px] font-bold text-brand-600 uppercase">Đã nhập lần 2</p>
-                          <p className="text-lg font-extrabold text-brand-700">{dfCountL2.filter(r => r.qtyL2 > 0).length}</p>
+                        <div className="p-3">
+                          <p className="text-[11px] font-semibold text-slate-500 uppercase">Đã nhập lần 2</p>
+                          <p className="text-lg font-bold text-slate-900 mt-0.5">{dfCountL2.filter(r => r.qtyL2 > 0).length}</p>
                         </div>
-                        <div className="bg-emerald-50 p-3 rounded-xl border border-emerald-200 shadow-sm">
-                          <p className="text-[11px] font-bold text-emerald-600 uppercase">Đã khớp</p>
-                          <p className="text-lg font-extrabold text-emerald-700">{dfCountL2.filter(r => r.diffL2 === 0).length}</p>
+                        <div className="p-3">
+                          <p className="text-[11px] font-semibold text-slate-500 uppercase">Đã khớp</p>
+                          <p className="text-lg font-bold text-emerald-700 mt-0.5">{dfCountL2.filter(r => r.diffL2 === 0).length}</p>
                         </div>
                       </div>
 
                       {/* THANH BỘ LỌC SKU */}
-                      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-wrap gap-4 items-center justify-between">
-                        <div className="flex flex-wrap gap-3">
+                      <div className="bg-white p-3 sm:p-4 rounded-lg border border-slate-200 flex flex-wrap gap-3 items-center justify-between">
+                        <div className="flex flex-wrap gap-2.5">
                           <select
                             value={filterL2Mode}
                             onChange={e => setFilterL2Mode(e.target.value)}
-                            className="bg-slate-50 text-xs border border-slate-300 rounded-lg px-3 py-2 font-medium focus:outline-none focus:border-brand-500"
+                            className="bg-slate-50 text-xs border border-slate-300 rounded-lg px-3 py-2 font-medium focus:outline-none focus:border-slate-500"
                           >
                             <option value="Chỉ SKU chênh lệch (Cần xử lý)">Chỉ SKU chênh lệch (Cần xử lý)</option>
                             <option value="Tất cả SKU">Tất cả SKU</option>
@@ -5043,7 +5088,7 @@
                           <select
                             value={filterL2Status}
                             onChange={e => setFilterL2Status(e.target.value)}
-                            className="bg-slate-50 text-xs border border-slate-300 rounded-lg px-3 py-2 font-medium focus:outline-none focus:border-brand-500"
+                            className="bg-slate-50 text-xs border border-slate-300 rounded-lg px-3 py-2 font-medium focus:outline-none focus:border-slate-500"
                           >
                             {["Tất cả", "Lệch chưa đếm bù", "Đã nhập đếm bù Lần 2", "Đã khớp sau đếm bù"].map(s => (
                               <option key={s} value={s}>{s}</option>
@@ -5054,10 +5099,10 @@
                         <div className="flex flex-wrap items-center gap-3">
                           <input
                             type="text"
-                            placeholder="🔍 Tìm Mã / Tên vật tư..."
+                            placeholder="Tìm Mã / Tên vật tư..."
                             value={searchL2}
                             onChange={e => setSearchL2(e.target.value)}
-                            className="bg-slate-50 text-xs border border-slate-300 rounded-lg px-3 py-2 w-64 focus:outline-none focus:border-brand-500"
+                            className="bg-slate-50 text-xs border border-slate-300 rounded-lg px-3 py-2 w-64 focus:outline-none focus:border-slate-500"
                           />
                           <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 cursor-pointer select-none">
                             <input
@@ -5065,7 +5110,7 @@
                               checked={wrapL2Text}
                               onChange={e => setWrapL2Text(e.target.checked)}
                               aria-label="Xuống dòng tên & ghi chú"
-                              className="h-4 w-4 rounded border-slate-300 accent-blue-600"
+                              className="h-4 w-4 rounded border-slate-300 accent-slate-800"
                             />
                             Xuống dòng tên &amp; ghi chú
                           </label>
@@ -5073,17 +5118,17 @@
                       </div>
 
                       {/* L2 GRID TABLE */}
-                      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-                        <div className="overflow-x-auto max-h-[500px]">
+                      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+                        <div className="overflow-x-auto max-h-[550px]">
                           <table className="w-full text-left text-xs">
-                            <thead className="bg-slate-100 text-slate-700 font-bold sticky top-0 border-b border-slate-200">
+                            <thead className="bg-slate-50 text-slate-600 font-semibold sticky top-0 border-b border-slate-200">
                               <tr>
                                 <SortableHeader label="Mã vật tư" column="sku" sortConfig={sortL2} onSort={toggleSort(setSortL2)} />
                                 <SortableHeader label="Tên vật tư" column="name" sortConfig={sortL2} onSort={toggleSort(setSortL2)} />
                                 <SortableHeader label="ĐVT" column="uom" sortConfig={sortL2} onSort={toggleSort(setSortL2)} />
                                 <SortableHeader label="Sổ sách (A)" column="qtySys" sortConfig={sortL2} onSort={toggleSort(setSortL2)} />
                                 <SortableHeader label="Thực tế L1 (B)" column="qtyL1" sortConfig={sortL2} onSort={toggleSort(setSortL2)} />
-                                <SortableHeader label="Đếm lại Lần 2 (C)" column="qtyL2" sortConfig={sortL2} onSort={toggleSort(setSortL2)} className="bg-brand-50 text-brand-700" />
+                                <SortableHeader label="Đếm lại Lần 2 (C)" column="qtyL2" sortConfig={sortL2} onSort={toggleSort(setSortL2)} className="bg-slate-100 text-slate-900" />
                                 <SortableHeader label="Tổng thực tế (B+C)" column="totalActual" sortConfig={sortL2} onSort={toggleSort(setSortL2)} />
                                 <SortableHeader label="Chênh lệch Lần 2" column="diffL2" sortConfig={sortL2} onSort={toggleSort(setSortL2)} />
                                 <SortableHeader label="Note mã đơn / Lý do" column="note" sortConfig={sortL2} onSort={toggleSort(setSortL2)} />
@@ -5094,22 +5139,22 @@
                                 const isMatch = r.diffL2 === 0;
                                 return (
                                   <tr key={i} className="hover:bg-slate-50 transition">
-                                    <td className="p-3 font-mono font-medium">{r.sku}</td>
-                                    <td className={`p-3 max-w-xs ${wrapL2Text ? 'whitespace-normal break-words align-top' : 'truncate'}`} title={r.name}>{r.name}</td>
+                                    <td className="p-3 font-mono font-medium text-slate-900">{r.sku}</td>
+                                    <td className={`p-3 max-w-xs text-slate-800 ${wrapL2Text ? 'whitespace-normal break-words align-top' : 'truncate'}`} title={r.name}>{r.name}</td>
                                     <td className="p-3 text-center text-slate-500">{r.uom}</td>
                                     <td className="p-3 text-center font-semibold text-slate-700">{r.qtySys}</td>
                                     <td className="p-3 text-center font-semibold text-slate-700">{r.qtyL1}</td>
-                                    <td className="p-2 bg-brand-50/30">
+                                    <td className="p-2 bg-slate-50/70">
                                       <input
                                         type="number"
                                         min="0"
                                         value={r.qtyL2}
                                         onChange={e => handleL2QtyChange(r.sku, e.target.value)}
-                                        className="w-24 mx-auto block text-center bg-white border border-brand-300 focus:border-brand-600 rounded px-2 py-1 font-bold text-brand-700 text-xs shadow-sm"
+                                        className="w-24 mx-auto block text-center bg-white border border-slate-300 focus:border-slate-600 rounded px-2 py-1 font-bold text-slate-900 text-xs"
                                       />
                                     </td>
-                                    <td className="p-3 text-center font-bold text-slate-900 bg-slate-50">{r.totalActual}</td>
-                                    <td className={`p-3 text-center font-bold text-xs ${isMatch ? 'text-emerald-600 bg-emerald-50' : 'text-rose-600 bg-rose-50'}`}>
+                                    <td className="p-3 text-center font-bold text-slate-900">{r.totalActual}</td>
+                                    <td className={`p-3 text-center font-bold text-xs ${isMatch ? 'text-emerald-700' : 'text-red-700'}`}>
                                       {r.diffL2 > 0 ? `+${r.diffL2}` : r.diffL2}
                                     </td>
                                     <td className="p-2">
@@ -5132,161 +5177,160 @@
                     </>
                   )}
 
-                  {/* 3. THỐNG KÊ TỔNG QUAN CHÊNH LỆCH CẦN KIỂM LẦN 2 */}
-                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-                    <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-                      <p className="text-[11px] font-bold uppercase text-slate-500">Tổng cần kiểm L2</p>
-                      <p className="mt-1 text-2xl font-extrabold text-slate-900">{recountDiscrepancies.length}</p>
-                    </div>
-                    <div className="rounded-xl border border-rose-200 bg-rose-50/60 p-3 shadow-sm">
-                      <p className="text-[11px] font-bold uppercase text-rose-700">Bắn thiếu (Tìm lại)</p>
-                      <p className="mt-1 text-2xl font-extrabold text-rose-800">
-                        {recountDiscrepancies.filter(r => r.status === "Bắn thiếu (Chưa quét)").length}
-                      </p>
-                    </div>
-                    <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-3 shadow-sm">
-                      <p className="text-[11px] font-bold uppercase text-amber-700">Bắn sai serial</p>
-                      <p className="mt-1 text-2xl font-extrabold text-amber-800">
-                        {recountDiscrepancies.filter(r => r.status === "Bắn sai serial").length}
-                      </p>
-                    </div>
-                    <div className="rounded-xl border border-indigo-200 bg-indigo-50/60 p-3 shadow-sm">
-                      <p className="text-[11px] font-bold uppercase text-indigo-700">Bắn dư serial</p>
-                      <p className="mt-1 text-2xl font-extrabold text-indigo-800">
-                        {recountDiscrepancies.filter(r => String(r.status || "").startsWith("Bắn dư")).length}
-                      </p>
-                    </div>
-                    <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-                      <p className="text-[11px] font-bold uppercase text-slate-500">Số vị trí BIN</p>
-                      <p className="mt-1 text-2xl font-extrabold text-brand-700">{availableRecountBins.length}</p>
-                    </div>
-                  </div>
-
-                  {/* 4. THANH CÔNG CỤ: TÌM KIẾM, BỘ LỌC PHÂN LOẠI, VỊ TRÍ BIN, TRẠNG THÁI XỬ LÝ & XUẤT EXCEL */}
-                  <div className="bg-white p-3 sm:p-4 rounded-xl border border-slate-200 shadow-sm flex flex-wrap gap-3 items-center justify-between">
-                    <div className="flex flex-wrap items-center gap-2.5 w-full lg:w-auto">
-                      <div className="relative w-full sm:w-auto">
-                        <input
-                          type="text"
-                          placeholder="🔍 Tìm SKU, Serial, BIN, Tên SP, Người kiểm..."
-                          value={searchRecountGuide}
-                          onChange={e => setSearchRecountGuide(e.target.value)}
-                          className="bg-slate-50 text-xs border border-slate-300 rounded-lg pl-3 pr-8 py-2 w-full sm:w-72 focus:bg-white focus:border-brand-500 focus:outline-none"
-                        />
-                        {searchRecountGuide && (
-                          <button
-                            type="button"
-                            onClick={() => setSearchRecountGuide("")}
-                            className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600 text-xs font-bold"
-                          >
-                            ✕
-                          </button>
-                        )}
+                  {(!isManager || secondCountSection === "guide") && (
+                    <>
+                      {/* 3. THỐNG KÊ TỔNG QUAN CHÊNH LỆCH CẦN KIỂM LẦN 2 */}
+                      <div className="bg-white rounded-lg border border-slate-200 grid grid-cols-2 sm:grid-cols-5 divide-y sm:divide-y-0 sm:divide-x divide-slate-200">
+                        <div className="p-3">
+                          <p className="text-[11px] font-semibold uppercase text-slate-500">Tổng cần kiểm L2</p>
+                          <p className="mt-0.5 text-lg font-bold text-slate-900">{recountDiscrepancies.length}</p>
+                        </div>
+                        <div className="p-3">
+                          <p className="text-[11px] font-semibold uppercase text-slate-500">Bắn thiếu (Tìm lại)</p>
+                          <p className="mt-0.5 text-lg font-bold text-red-700">
+                            {recountDiscrepancies.filter(r => r.status === "Bắn thiếu (Chưa quét)").length}
+                          </p>
+                        </div>
+                        <div className="p-3">
+                          <p className="text-[11px] font-semibold uppercase text-slate-500">Bắn sai serial</p>
+                          <p className="mt-0.5 text-lg font-bold text-amber-700">
+                            {recountDiscrepancies.filter(r => r.status === "Bắn sai serial").length}
+                          </p>
+                        </div>
+                        <div className="p-3">
+                          <p className="text-[11px] font-semibold uppercase text-slate-500">Bắn dư serial</p>
+                          <p className="mt-0.5 text-lg font-bold text-slate-800">
+                            {recountDiscrepancies.filter(r => String(r.status || "").startsWith("Bắn dư")).length}
+                          </p>
+                        </div>
+                        <div className="p-3">
+                          <p className="text-[11px] font-semibold uppercase text-slate-500">Số vị trí BIN</p>
+                          <p className="mt-0.5 text-lg font-bold text-slate-900">{availableRecountBins.length}</p>
+                        </div>
                       </div>
 
-                      <select
-                        value={filterRecountGuideStatus}
-                        onChange={e => setFilterRecountGuideStatus(e.target.value)}
-                        className="bg-slate-50 text-xs border border-slate-300 rounded-lg px-3 py-2 font-medium focus:outline-none focus:border-brand-500 w-full sm:w-auto"
-                      >
-                        <option value="Tất cả">Tất cả loại chênh lệch</option>
-                        <option value="Bắn thiếu (Chưa quét)">Chỉ Bắn thiếu (Chưa quét)</option>
-                        <option value="Bắn sai serial">Chỉ Bắn sai serial</option>
-                        <option value="Bắn dư serial">Chỉ Bắn dư serial</option>
-                      </select>
+                      {/* 4. THANH CÔNG CỤ: TÌM KIẾM, BỘ LỌC PHÂN LOẠI, VỊ TRÍ BIN, TRẠNG THÁI XỬ LÝ & XUẤT EXCEL */}
+                      <div className="bg-white p-3 sm:p-4 rounded-lg border border-slate-200 flex flex-wrap gap-3 items-center justify-between">
+                        <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto">
+                          <div className="relative w-full sm:w-auto">
+                            <input
+                              type="text"
+                              placeholder="Tìm SKU, Serial, BIN, Tên SP, Người kiểm..."
+                              value={searchRecountGuide}
+                              onChange={e => setSearchRecountGuide(e.target.value)}
+                              className="bg-slate-50 text-xs border border-slate-300 rounded-lg pl-3 pr-8 py-2 w-full sm:w-72 focus:bg-white focus:border-slate-500 focus:outline-none"
+                            />
+                            {searchRecountGuide && (
+                              <button
+                                type="button"
+                                onClick={() => setSearchRecountGuide("")}
+                                aria-label="Xóa tìm kiếm"
+                                className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-700 text-xs font-semibold"
+                              >
+                                ×
+                              </button>
+                            )}
+                          </div>
 
-                      <select
-                        value={filterRecountGuideBin}
-                        onChange={e => setFilterRecountGuideBin(e.target.value)}
-                        className="bg-slate-50 text-xs border border-slate-300 rounded-lg px-3 py-2 font-medium focus:outline-none focus:border-brand-500 w-full sm:w-auto"
-                      >
-                        <option value="Tất cả">Tất cả Vị trí BIN ({availableRecountBins.length} BIN)</option>
-                        {availableRecountBins.map(b => (
-                          <option key={b} value={b}>BIN: {b}</option>
-                        ))}
-                      </select>
+                          <select
+                            value={filterRecountGuideStatus}
+                            onChange={e => setFilterRecountGuideStatus(e.target.value)}
+                            className="bg-slate-50 text-xs border border-slate-300 rounded-lg px-3 py-2 font-medium focus:outline-none focus:border-slate-500 w-full sm:w-auto"
+                          >
+                            <option value="Tất cả">Tất cả loại chênh lệch</option>
+                            <option value="Bắn thiếu (Chưa quét)">Chỉ Bắn thiếu (Chưa quét)</option>
+                            <option value="Bắn sai serial">Chỉ Bắn sai serial</option>
+                            <option value="Bắn dư serial">Chỉ Bắn dư serial</option>
+                          </select>
 
-                      <select
-                        value={filterRecountGuideProcessed}
-                        onChange={e => setFilterRecountGuideProcessed(e.target.value)}
-                        className="bg-slate-50 text-xs border border-slate-300 rounded-lg px-3 py-2 font-medium focus:outline-none focus:border-brand-500 w-full sm:w-auto"
-                      >
-                        <option value="Tất cả">Tất cả trạng thái xử lý</option>
-                        <option value="Chưa xử lý">Chưa xử lý</option>
-                        <option value="Đã xử lý">Đã xử lý xong</option>
-                      </select>
-                    </div>
+                          <select
+                            value={filterRecountGuideBin}
+                            onChange={e => setFilterRecountGuideBin(e.target.value)}
+                            className="bg-slate-50 text-xs border border-slate-300 rounded-lg px-3 py-2 font-medium focus:outline-none focus:border-slate-500 w-full sm:w-auto"
+                          >
+                            <option value="Tất cả">Tất cả Vị trí BIN ({availableRecountBins.length} BIN)</option>
+                            {availableRecountBins.map(b => (
+                              <option key={b} value={b}>BIN: {b}</option>
+                            ))}
+                          </select>
 
-                    <div className="flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={handleCopyRecountGuideList}
-                        disabled={filteredRecountGuideRows.length === 0}
-                        className="rounded-lg border border-slate-300 bg-white hover:bg-slate-50 px-3 py-2 text-xs font-bold text-slate-700 disabled:opacity-40 transition shadow-sm flex items-center gap-1.5"
-                      >
-                        Sao chép bảng ({filteredRecountGuideRows.length})
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleExportRecountGuideExcel}
-                        disabled={filteredRecountGuideRows.length === 0}
-                        className="rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-2 text-xs font-bold text-white disabled:opacity-40 transition shadow-sm flex items-center gap-1.5"
-                      >
-                        Xuất Excel kiểm L2
-                      </button>
-                    </div>
-                  </div>
+                          <select
+                            value={filterRecountGuideProcessed}
+                            onChange={e => setFilterRecountGuideProcessed(e.target.value)}
+                            className="bg-slate-50 text-xs border border-slate-300 rounded-lg px-3 py-2 font-medium focus:outline-none focus:border-slate-500 w-full sm:w-auto"
+                          >
+                            <option value="Tất cả">Tất cả trạng thái xử lý</option>
+                            <option value="Chưa xử lý">Chưa xử lý</option>
+                            <option value="Đã xử lý">Đã xử lý xong</option>
+                          </select>
+                        </div>
 
-                  {/* 5. BẢNG CHỈ DẪN KIỂM ĐẾM LẦN 2 (TỐI GIẢN, BỎ ICON & MÀU MÈ, THÊM CỘT GHI CHÚ VÀ TICK XỬ LÝ) */}
-                  <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-                    <div className="p-3 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
-                      <div>
-                        <h3 className="font-bold text-sm text-slate-800">
-                          Bảng chỉ dẫn sản phẩm chênh lệch cần kiểm lại Lần 2
-                        </h3>
-                        <p className="text-xs text-slate-500 mt-0.5">
-                          Dùng danh sách này để xác định vị trí BIN, sản phẩm, serial cần tìm và nhân sự kiểm L1 để dùng hệ thống kiểm kê nội bộ quét lại.
-                        </p>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <div className="flex items-center bg-white rounded-lg p-0.5 border border-slate-200 shadow-xs">
+                        <div className="flex flex-wrap items-center gap-2">
                           <button
                             type="button"
-                            onClick={() => setRecountViewMode("card")}
-                            className={`px-2 py-1 text-xs font-semibold rounded-md transition ${recountViewMode === 'card' ? 'bg-brand-600 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
-                            title="Chế độ xem dạng thẻ tối ưu cho điện thoại"
+                            onClick={handleCopyRecountGuideList}
+                            disabled={filteredRecountGuideRows.length === 0}
+                            className="rounded-lg border border-slate-300 bg-white hover:bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700 disabled:opacity-40 transition"
                           >
-                            📱 Thẻ
+                            Sao chép bảng ({filteredRecountGuideRows.length})
                           </button>
                           <button
                             type="button"
-                            onClick={() => setRecountViewMode("table")}
-                            className={`px-2 py-1 text-xs font-semibold rounded-md transition ${recountViewMode === 'table' ? 'bg-brand-600 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'}`}
-                            title="Chế độ xem dạng bảng đầy đủ cột"
+                            onClick={handleExportRecountGuideExcel}
+                            disabled={filteredRecountGuideRows.length === 0}
+                            className="rounded-lg bg-slate-900 hover:bg-slate-800 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40 transition"
                           >
-                            📊 Bảng
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setRecountViewMode("auto")}
-                            className={`px-2 py-1 text-xs font-semibold rounded-md transition ${recountViewMode === 'auto' ? 'bg-slate-800 text-white shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
-                            title="Tự động (Thẻ trên điện thoại, Bảng trên máy tính)"
-                          >
-                            Tự động
+                            Xuất Excel kiểm L2
                           </button>
                         </div>
-                        <span className="text-xs font-bold text-slate-600 bg-white px-2.5 py-1 rounded-lg border border-slate-200">
-                          Hiển thị: {filteredRecountGuideRows.length} / {recountDiscrepancies.length} dòng
-                        </span>
-                        <span className={`text-xs font-bold px-2.5 py-1 rounded-lg border ${
-                          recountDiscrepancies.filter(r => r.processed).length === recountDiscrepancies.length && recountDiscrepancies.length > 0
-                            ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                            : 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                        }`}>
-                          Đã xử lý: {recountDiscrepancies.filter(r => r.processed).length} / {recountDiscrepancies.length}
-                        </span>
                       </div>
-                    </div>
+
+                      {/* 5. BẢNG CHỈ DẪN KIỂM ĐẾM LẦN 2 */}
+                      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+                        <div className="p-3 sm:p-4 bg-slate-50/70 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <h3 className="font-semibold text-sm text-slate-900">
+                              Bảng chỉ dẫn sản phẩm chênh lệch cần kiểm lại Lần 2
+                            </h3>
+                            <p className="text-xs text-slate-500 mt-0.5">
+                              Xác định vị trí BIN, sản phẩm, serial cần tìm và nhân sự kiểm L1 để quét lại trên hệ thống.
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <div className="flex items-center bg-white rounded-lg p-0.5 border border-slate-200">
+                              <button
+                                type="button"
+                                onClick={() => setRecountViewMode("card")}
+                                className={`px-2.5 py-1 text-xs font-semibold rounded-md transition ${recountViewMode === 'card' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:text-slate-900'}`}
+                                title="Chế độ xem dạng thẻ tối ưu cho điện thoại"
+                              >
+                                Thẻ
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setRecountViewMode("table")}
+                                className={`px-2.5 py-1 text-xs font-semibold rounded-md transition ${recountViewMode === 'table' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:text-slate-900'}`}
+                                title="Chế độ xem dạng bảng đầy đủ cột"
+                              >
+                                Bảng
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setRecountViewMode("auto")}
+                                className={`px-2.5 py-1 text-xs font-semibold rounded-md transition ${recountViewMode === 'auto' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:text-slate-900'}`}
+                                title="Tự động (Thẻ trên điện thoại, Bảng trên máy tính)"
+                              >
+                                Tự động
+                              </button>
+                            </div>
+                            <span className="text-xs font-semibold text-slate-600 bg-white px-2.5 py-1 rounded-md border border-slate-200">
+                              Hiển thị: {filteredRecountGuideRows.length} / {recountDiscrepancies.length}
+                            </span>
+                            <span className="text-xs font-semibold px-2.5 py-1 rounded-md border bg-white text-slate-700 border-slate-200">
+                              Đã xử lý: {recountDiscrepancies.filter(r => r.processed).length} / {recountDiscrepancies.length}
+                            </span>
+                          </div>
+                        </div>
 
                     {recountDiscrepancies.length === 0 ? (
                       <div className="p-8 text-center text-slate-500">
@@ -5373,7 +5417,7 @@
                                           onClick={() => handleCopySingleSerial(r.stockSerial)}
                                           className="px-2 py-0.5 rounded bg-white text-brand-700 font-bold text-[11px] border border-brand-200 active:scale-95 transition shadow-2xs"
                                         >
-                                          {copiedSerial === r.stockSerial ? "✓ Đã chép" : "📋 Chép"}
+                                          {copiedSerial === r.stockSerial ? "Đã chép" : "Chép"}
                                         </button>
                                       </div>
                                     ) : (
@@ -5453,15 +5497,9 @@
                                       }`}
                                     >
                                       {r.processed ? (
-                                        <>
-                                          <span className="text-base font-extrabold">✓</span>
-                                          <span>ĐÃ XỬ LÝ XONG (Chạm để mở lại)</span>
-                                        </>
+                                        <span>ĐÃ XỬ LÝ XONG (Chạm để mở lại)</span>
                                       ) : (
-                                        <>
-                                          <span className="w-5 h-5 rounded border-2 border-slate-400 inline-block"></span>
-                                          <span>Chạm để xác nhận: ĐÃ XỬ LÝ XONG</span>
-                                        </>
+                                        <span>Chạm để xác nhận: ĐÃ XỬ LÝ XONG</span>
                                       )}
                                     </button>
                                   ) : (
@@ -5535,7 +5573,7 @@
                                             title="Sao chép serial"
                                             className="text-slate-400 hover:text-brand-600 transition p-1 text-xs"
                                           >
-                                            {copiedSerial === r.stockSerial ? "✓" : "📋"}
+                                            {copiedSerial === r.stockSerial ? "Đã chép" : "Chép"}
                                           </button>
                                         </div>
                                       ) : (
@@ -5554,7 +5592,7 @@
                                             title="Sao chép serial"
                                             className="text-slate-400 hover:text-brand-600 transition p-1 text-xs"
                                           >
-                                            {copiedSerial === r.scannedSerial ? "✓" : "📋"}
+                                            {copiedSerial === r.scannedSerial ? "Đã chép" : "Chép"}
                                           </button>
                                         </div>
                                       ) : (
@@ -5618,9 +5656,9 @@
                                                 type="button"
                                                 onClick={() => setEditingNoteRowId(rowId)}
                                                 title="Admin sửa ghi chú"
-                                                className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-brand-600 transition text-[11px] px-1 py-0.5 rounded hover:bg-slate-100 shrink-0"
+                                                className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-slate-900 transition text-[11px] px-1.5 py-0.5 rounded border border-slate-200 bg-white shrink-0 font-medium"
                                               >
-                                                ✏️
+                                                Sửa
                                               </button>
                                             </div>
                                           )}
@@ -5734,17 +5772,12 @@
                                             type="button"
                                             onClick={() => handleToggleRecountProcessed(rowId, !r.processed)}
                                             title={r.processed ? "Bấm để mở lại (chưa xử lý)" : "Bấm để đánh dấu đã xử lý xong"}
-                                            className={`w-full py-2 px-2.5 rounded-lg font-bold text-xs flex items-center justify-center gap-1.5 transition active:scale-95 shadow-2xs ${
+                                            className={`w-full py-2 px-2.5 rounded-lg font-semibold text-xs flex items-center justify-center transition ${
                                               r.processed
-                                                ? 'bg-emerald-100 text-emerald-800 border border-emerald-300 hover:bg-emerald-200'
-                                                : 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-50 hover:border-brand-500'
+                                                ? 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100'
+                                                : 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-50'
                                             }`}
                                           >
-                                            <span className={`w-4 h-4 rounded flex items-center justify-center border text-[11px] ${
-                                              r.processed ? 'bg-emerald-600 border-emerald-600 text-white' : 'border-slate-400 bg-white'
-                                            }`}>
-                                              {r.processed ? "✓" : ""}
-                                            </span>
                                             <span>{r.processed ? "Đã xong" : "Chưa xong"}</span>
                                           </button>
                                         </td>
@@ -5759,6 +5792,8 @@
                       </>
                     )}
                   </div>
+                  </>
+                  )}
 
                   {/* 6. ANCHOR / HIDDEN SUB-SYSTEM ĐỂ ĐẢM BẢO TEST STATIC CONTRACTS VẪN PASS */}
                   <div className="hidden" aria-hidden="true">
@@ -5824,7 +5859,7 @@
 
                     <input
                       type="text"
-                      placeholder="🔍 Tìm SKU / Tên hàng hóa..."
+                      placeholder="Tìm SKU / Tên hàng hóa..."
                       value={searchMain}
                       onChange={e => setSearchMain(e.target.value)}
                       className="bg-slate-50 text-xs border border-slate-300 rounded-lg px-3 py-2 w-64"
@@ -5841,22 +5876,22 @@
                     </label>
                   </div>
 
-                  <div className="grid grid-cols-4 gap-4">
-                    <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm">
-                      <p className="text-[11px] font-bold text-slate-400 uppercase">Tổng SKU</p>
-                      <p className="text-lg font-extrabold">{dfMainRows.length}</p>
+                  <div className="bg-white rounded-lg border border-slate-200 grid grid-cols-2 sm:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-slate-200">
+                    <div className="p-3">
+                      <p className="text-[11px] font-semibold text-slate-500 uppercase">Tổng SKU</p>
+                      <p className="text-lg font-bold text-slate-900 mt-0.5">{dfMainRows.length}</p>
                     </div>
-                    <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 shadow-sm">
-                      <p className="text-[11px] font-bold text-slate-500 uppercase">Tổng sổ sách</p>
-                      <p className="text-lg font-extrabold">{dfMainRows.reduce((sum, r) => sum + r.qtySys, 0)}</p>
+                    <div className="p-3">
+                      <p className="text-[11px] font-semibold text-slate-500 uppercase">Tổng sổ sách</p>
+                      <p className="text-lg font-bold text-slate-900 mt-0.5">{dfMainRows.reduce((sum, r) => sum + r.qtySys, 0)}</p>
                     </div>
-                    <div className="bg-brand-50 p-3 rounded-xl border border-blue-200 shadow-sm">
-                      <p className="text-[11px] font-bold text-brand-600 uppercase">Tổng thực tế</p>
-                      <p className="text-lg font-extrabold text-brand-700">{dfMainRows.reduce((sum, r) => sum + r.totalActual, 0)}</p>
+                    <div className="p-3">
+                      <p className="text-[11px] font-semibold text-slate-500 uppercase">Tổng thực tế</p>
+                      <p className="text-lg font-bold text-slate-900 mt-0.5">{dfMainRows.reduce((sum, r) => sum + r.totalActual, 0)}</p>
                     </div>
-                    <div className="bg-rose-50 p-3 rounded-xl border border-rose-200 shadow-sm">
-                      <p className="text-[11px] font-bold text-rose-600 uppercase">SKU cần xử lý</p>
-                      <p className="text-lg font-extrabold text-rose-700">{dfMainRows.filter(r => r.chkStatus !== "Khớp hoàn toàn").length}</p>
+                    <div className="p-3">
+                      <p className="text-[11px] font-semibold text-slate-500 uppercase">SKU cần xử lý</p>
+                      <p className="text-lg font-bold text-red-700 mt-0.5">{dfMainRows.filter(r => r.chkStatus !== "Khớp hoàn toàn").length}</p>
                     </div>
                   </div>
 
@@ -5877,25 +5912,25 @@
                         </thead>
                         <tbody className="divide-y divide-slate-100">
                           {filteredMainRows.map((r, i) => {
-                            let bgStyle = "hover:bg-slate-50";
-                            if (r.chkStatus === "Bắn sai serial") bgStyle = "bg-amber-50 hover:bg-amber-100/70 text-amber-900";
-                            else if (r.chkStatus.includes("Bắn dư")) bgStyle = "bg-orange-50 hover:bg-orange-100/70 text-orange-900";
-                            else if (r.chkStatus.includes("Bắn thiếu")) bgStyle = "bg-rose-50 hover:bg-rose-100/70 text-rose-900";
-                            else if (r.chkStatus === "Khớp hoàn toàn") bgStyle = "bg-emerald-50/40 hover:bg-emerald-50";
+                            let badgeStyle = "bg-slate-100 text-slate-700 border-slate-200";
+                            if (r.chkStatus === "Bắn sai serial") badgeStyle = "bg-amber-50 text-amber-800 border-amber-200";
+                            else if (r.chkStatus.includes("Bắn dư")) badgeStyle = "bg-amber-50 text-amber-800 border-amber-200";
+                            else if (r.chkStatus.includes("Bắn thiếu")) badgeStyle = "bg-red-50 text-red-700 border-red-200";
+                            else if (r.chkStatus === "Khớp hoàn toàn") badgeStyle = "bg-emerald-50 text-emerald-700 border-emerald-200";
 
                             return (
-                              <tr key={i} className={`transition ${bgStyle}`}>
-                                <td className="p-3 font-mono font-medium">{r.sku}</td>
-                                <td className={`p-3 max-w-xs ${wrapMainText ? 'whitespace-normal break-words align-top' : 'truncate'}`} title={r.name}>{r.name}</td>
-                                <td className="p-3 text-center font-semibold">{r.qtySys}</td>
-                                <td className="p-3 text-center font-semibold">{r.totalActual}</td>
-                                <td className={`p-3 text-center font-bold ${r.diff < 0 ? 'text-rose-600' : (r.diff > 0 ? 'text-orange-600' : 'text-emerald-600')}`}>
+                              <tr key={i} className="hover:bg-slate-50 transition">
+                                <td className="p-3 font-mono font-medium text-slate-900">{r.sku}</td>
+                                <td className={`p-3 max-w-xs text-slate-800 ${wrapMainText ? 'whitespace-normal break-words align-top' : 'truncate'}`} title={r.name}>{r.name}</td>
+                                <td className="p-3 text-center font-semibold text-slate-700">{r.qtySys}</td>
+                                <td className="p-3 text-center font-semibold text-slate-700">{r.totalActual}</td>
+                                <td className={`p-3 text-center font-bold ${r.diff < 0 ? 'text-red-700' : (r.diff > 0 ? 'text-amber-700' : 'text-emerald-700')}`}>
                                   {r.diff > 0 ? `+${r.diff}` : r.diff}
                                 </td>
                                 <td className="p-3 text-center">
-                                  <span className="px-2.5 py-1 rounded-md text-[11px] font-bold inline-block border border-current opacity-90">{r.chkStatus}</span>
+                                  <span className={`px-2.5 py-1 rounded text-[11px] font-semibold inline-block border ${badgeStyle}`}>{r.chkStatus}</span>
                                 </td>
-                                <td className={`p-3 italic text-slate-600 max-w-xs ${wrapMainText ? 'whitespace-pre-wrap break-words align-top' : 'truncate'}`} title={r.note || ""}>{r.note || "—"}</td>
+                                <td className={`p-3 text-slate-600 max-w-xs ${wrapMainText ? 'whitespace-pre-wrap break-words align-top' : 'truncate'}`} title={r.note || ""}>{r.note || "—"}</td>
                               </tr>
                             );
                           })}
@@ -5950,24 +5985,24 @@
                       </div>
                     </div>
 
-                    <div className="pt-4 border-t border-slate-200 grid grid-cols-3 gap-4">
+                    <div className="pt-4 border-t border-slate-200 grid grid-cols-1 sm:grid-cols-3 gap-3">
                       <button
                         onClick={handleExportExcel}
-                        className="py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-md transition"
+                        className="py-2.5 px-4 bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs rounded-lg transition"
                       >
-                        📥 Tải xuống File Excel (3 Sheets)
+                        Tải xuống File Excel (3 Sheets)
                       </button>
                       <button
                         onClick={handleExportPDF}
-                        className="py-3 bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs rounded-xl shadow-md transition"
+                        className="py-2.5 px-4 bg-white hover:bg-slate-50 text-slate-800 border border-slate-300 font-semibold text-xs rounded-lg transition"
                       >
-                        📄 Tải xuống Biên Bản PDF Chuẩn Phong Vũ
+                        Tải xuống Biên Bản PDF Chuẩn Phong Vũ
                       </button>
                       <button
                         onClick={openExplanationReport}
-                        className="py-3 bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs rounded-xl shadow-md transition"
+                        className="py-2.5 px-4 bg-white hover:bg-slate-50 text-slate-800 border border-slate-300 font-semibold text-xs rounded-lg transition"
                       >
-                        📋 Xuất Biên bản giải trình
+                        Xuất Biên bản giải trình
                       </button>
                     </div>
                   </div>
@@ -5978,7 +6013,7 @@
               {activeTab === "monthly-archive" && (
                 <div className="space-y-4 max-w-4xl mx-auto">
                   <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-                    <h3 className="text-base font-bold text-slate-800 mb-2">📅 Danh sách Báo cáo Hàng tháng (Rolling 12 tháng)</h3>
+                    <h3 className="text-base font-bold text-slate-800 mb-2">Danh sách Báo cáo Hàng tháng (Rolling 12 tháng)</h3>
                     <p className="text-xs text-slate-500 mb-4">Lưu trữ snapshot báo cáo tổng hợp cuối tháng trên Supabase.</p>
 
                     <div className="space-y-2">
@@ -6091,7 +6126,7 @@
                       onClick={handleExportExplanationExcel}
                       className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold shadow-sm"
                     >
-                      📥 Tải file biên bản giải trình
+                      Tải file biên bản giải trình
                     </button>
                   </div>
                 </div>
