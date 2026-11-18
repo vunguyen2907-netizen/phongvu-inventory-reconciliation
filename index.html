@@ -4844,20 +4844,20 @@
                   {/* METRIC CARDS */}
                   <div className="bg-white rounded-lg border border-slate-200 grid grid-cols-2 sm:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-slate-200">
                     <div className="p-3">
-                      <p className="text-[11px] font-semibold text-slate-500 uppercase">Tổng dòng Serial</p>
+                      <p className="text-[11px] font-semibold text-slate-500 uppercase">Tổng dòng sản phẩm</p>
                       <p className="text-lg font-bold text-slate-900 mt-0.5">{filteredDetailRows.length}</p>
                     </div>
                     <div className="p-3">
-                      <p className="text-[11px] font-semibold text-slate-500 uppercase">Serial Quét Đủ</p>
-                      <p className="text-lg font-bold text-emerald-700 mt-0.5">{filteredDetailRows.filter(r => r.checked === 1 && r.status === "Đã quét đủ").length}</p>
+                      <p className="text-[11px] font-semibold text-slate-500 uppercase">Đã quét / Đếm đủ</p>
+                      <p className="text-lg font-bold text-emerald-700 mt-0.5">{filteredDetailRows.filter(r => r.status === "Đã quét đủ" || String(r.status || "").startsWith("Đã đếm đủ")).length}</p>
                     </div>
                     <div className="p-3">
-                      <p className="text-[11px] font-semibold text-slate-500 uppercase">Serial Thiếu</p>
+                      <p className="text-[11px] font-semibold text-slate-500 uppercase">Thiếu</p>
                       <p className="text-lg font-bold text-red-700 mt-0.5">{filteredDetailRows.filter(r => r.diff < 0).length}</p>
                     </div>
                     <div className="p-3">
-                      <p className="text-[11px] font-semibold text-slate-500 uppercase">Serial Dư / Sai Mã</p>
-                      <p className="text-lg font-bold text-amber-700 mt-0.5">{filteredDetailRows.filter(r => String(r.status || "").includes("Bắn sai") || String(r.status || "").includes("Bắn dư")).length}</p>
+                      <p className="text-[11px] font-semibold text-slate-500 uppercase">Dư / Sai mã / Thừa</p>
+                      <p className="text-lg font-bold text-amber-700 mt-0.5">{filteredDetailRows.filter(r => String(r.status || "").includes("Bắn sai") || String(r.status || "").includes("Bắn dư") || r.diff > 0).length}</p>
                     </div>
                   </div>
 
