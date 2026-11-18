@@ -4650,21 +4650,23 @@
                     {authActionMessage && <p role="status" className="mt-1 text-xs font-semibold text-emerald-600">{authActionMessage}</p>}
                   </div>
                   {!legacyMode && (
-                    <div className="flex flex-wrap justify-end gap-1.5 sm:gap-2">
-                      {isManager && (
-                        <button type="button" onClick={() => { setAccountPanelInitialTab("accounts"); setAccountPanelOpen(true); }} className="rounded-lg border border-slate-300 bg-white px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition">
-                          Quản lý tài khoản
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      <div className="inline-flex flex-wrap items-center rounded-lg border border-slate-300 bg-white divide-x divide-slate-200 overflow-hidden">
+                        {isManager && (
+                          <button type="button" onClick={() => { setAccountPanelInitialTab("accounts"); setAccountPanelOpen(true); }} className="px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition">
+                            Quản lý tài khoản
+                          </button>
+                        )}
+                        {profile?.role === "admin" && (
+                          <button type="button" onClick={() => { setAccountPanelInitialTab("branches"); setAccountPanelOpen(true); }} className="px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition">
+                            Quản lý chi nhánh
+                          </button>
+                        )}
+                        <button type="button" onClick={handlePasswordReset} disabled={authActionPending} className="px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition disabled:cursor-wait disabled:opacity-50">
+                          {authActionPending ? "Đang gửi email đổi mật khẩu…" : "Gửi email đổi mật khẩu"}
                         </button>
-                      )}
-                      {profile?.role === "admin" && (
-                        <button type="button" onClick={() => { setAccountPanelInitialTab("branches"); setAccountPanelOpen(true); }} className="rounded-lg border border-slate-300 bg-white px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition">
-                          Quản lý chi nhánh
-                        </button>
-                      )}
-                      <button type="button" onClick={handlePasswordReset} disabled={authActionPending} className="rounded-lg border border-slate-300 px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold text-slate-600 disabled:cursor-wait disabled:opacity-50">
-                        {authActionPending ? "Đang gửi email đổi mật khẩu…" : "Gửi email đổi mật khẩu"}
-                      </button>
-                      <button type="button" onClick={handleShellSignOut} disabled={authActionPending} className="rounded-lg bg-slate-900 px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold text-white disabled:opacity-50">Đăng xuất</button>
+                      </div>
+                      <button type="button" onClick={handleShellSignOut} disabled={authActionPending} className="rounded-lg bg-slate-900 hover:bg-slate-800 px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold text-white transition disabled:opacity-50">Đăng xuất</button>
                     </div>
                   )}
                 </div>
